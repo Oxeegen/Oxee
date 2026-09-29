@@ -56,6 +56,7 @@ import 'core/router/app_router.dart';
 import 'core/services/native_sheet_bridge.dart';
 import 'core/services/native_sheet_hydration_service.dart';
 import 'shared/services/navigation_service.dart';
+import 'brand/oxee_brand.dart'; // OXEE: region row in the native sheet
 import 'shared/services/raster_media_policy.dart';
 import 'platform/carplay_service.dart';
 
@@ -71,7 +72,6 @@ import 'features/chat/providers/text_to_speech_provider.dart';
 import 'features/chat/providers/chat_providers.dart'
     show chatWakelockCoordinatorProvider, restoreDefaultModel;
 import 'features/release_notes/release_notes_bootstrap.dart';
-import 'features/release_notes/release_notes_coordinator.dart';
 import 'features/release_notes/data/release_notes_repository.dart';
 import 'features/release_notes/release_notes_presenter.dart';
 import 'l10n/conduit_localizations.dart';
@@ -525,6 +525,15 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
   ) async {
     final value = event.value;
     try {
+      // OXEE: region row of the native settings sheet.
+      if (event.id == oxeeRegionNativeSheetItemId) {
+        await _dismissNativeSheetBeforeFollowUp();
+        final context = NavigationService.context;
+        if (context == null || !context.mounted) return;
+        await showOxeeRegionSwitcher(context, ref);
+        return;
+      }
+
       // Accountless (Hermes, Direct, Apple) "Connect to Open WebUI" row.
       // Dismiss the native sheet and route into the OWUI connect flow (the
       // router allows the serverConnection route for accountless users).
@@ -1114,10 +1123,10 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
         return Theme(
           data: materialTheme,
           child: Builder(
+            // OXEE: no release-notes popup; the bundled notes describe
+            // upstream's releases, not Oxee's.
             builder: (context) => LegacyDesignCompatibility(
-              child: ReleaseNotesCoordinator(
-                child: _KeyboardDismissOnScroll(child: safeChild),
-              ),
+              child: _KeyboardDismissOnScroll(child: safeChild),
             ),
           ),
         );

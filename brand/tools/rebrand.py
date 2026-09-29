@@ -325,6 +325,9 @@ IDENTITY: dict[str, list[tuple[str, str]]] = {
         ("'https://github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"] + "'"),
         ("'github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"].split("://", 1)[1] + "'"),
     ],
+    "lib/core/services/native_sheet_hydration_service.dart": [
+        ("url: 'https://github.com/cogwheel0/conduit',", "url: '" + BRAND["repoUrl"] + "',"),
+    ],
     "lib/features/release_notes/data/release_links.dart": [
         ("'https://play.google.com/store/apps/details?id=" + UPSTREAM_BUNDLE_ID + "'", "'" + BRAND["playStoreUrl"] + "'"),
         ("'https://apps.apple.com/us/app/conduit-open-webui-client/id6749840287?action=write-review'", "'" + BRAND["appStoreReviewUrl"] + "'"),

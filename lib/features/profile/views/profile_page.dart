@@ -14,7 +14,6 @@ import '../../../shared/widgets/adaptive_route_shell.dart';
 import '../../../shared/widgets/adaptive_toolbar_components.dart';
 
 import '../../../shared/utils/ui_utils.dart';
-import '../../../shared/utils/external_link_launcher.dart';
 import '../../../shared/widgets/sign_out_options_dialog.dart';
 
 import 'package:conduit_core/providers/app_providers.dart';
@@ -37,12 +36,11 @@ import 'package:conduit_core/utils/user_avatar_utils.dart';
 import '../../../shared/widgets/user_avatar.dart';
 import '../../../shared/widgets/utility_components.dart';
 
+import '../../../brand/oxee_brand.dart'; // OXEE: region row
+
 /// Profile page (You tab) showing user info and main actions
 /// Enhanced with production-grade design tokens for better cohesion
 class ProfilePage extends ConsumerWidget {
-  static const _githubSponsorsUrl = 'https://github.com/sponsors/cogwheel0';
-  static const _buyMeACoffeeUrl = 'https://www.buymeacoffee.com/cogwheel0';
-
   const ProfilePage({super.key});
 
   @override
@@ -153,8 +151,7 @@ class ProfilePage extends ConsumerWidget {
           const SizedBox(height: Spacing.lg),
         ],
         ...items,
-        const SizedBox(height: Spacing.xl),
-        _buildDonationSection(context),
+        // OXEE: no donation section.
         if (hasOpenWebUiAccount) const SizedBox(height: Spacing.xl),
         if (hasOpenWebUiAccount)
           InsetGroupedList(children: [_buildSignOutOption(context, ref)]),
@@ -164,74 +161,6 @@ class ProfilePage extends ConsumerWidget {
 
   double _topContentPadding(BuildContext context) {
     return Spacing.lg;
-  }
-
-  Widget _buildDonationSection(BuildContext context) {
-    final theme = context.conduitTheme;
-    final l10n = AppLocalizations.of(context)!;
-    final donationOptions = [
-      _buildSupportOption(
-        context,
-        icon: UiUtils.platformIcon(
-          ios: CupertinoIcons.gift,
-          android: Icons.coffee,
-        ),
-        title: l10n.buyMeACoffeeTitle,
-        subtitle: l10n.buyMeACoffeeSubtitle,
-        url: _buyMeACoffeeUrl,
-        color: theme.warning,
-      ),
-      _buildSupportOption(
-        context,
-        icon: UiUtils.platformIcon(
-          ios: CupertinoIcons.heart,
-          android: Icons.favorite_border,
-        ),
-        title: l10n.githubSponsorsTitle,
-        subtitle: l10n.githubSponsorsSubtitle,
-        url: _githubSponsorsUrl,
-        color: theme.success,
-      ),
-    ];
-
-    return InsetGroupedList(
-      key: const Key('settings-donations'),
-      title: l10n.supportConduit,
-      description: l10n.supportConduitSubtitle,
-      children: donationOptions,
-    );
-  }
-
-  Widget _buildSupportOption(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required String url,
-    required Color color,
-  }) {
-    final theme = context.conduitTheme;
-    return UtilityRow(
-      onTap: () => _openExternalLink(context, url),
-      leading: _buildIconBadge(context, icon, color: color),
-      title: title,
-      subtitle: subtitle,
-      trailing: Icon(
-        UiUtils.platformIcon(
-          ios: CupertinoIcons.arrow_up_right,
-          android: Icons.open_in_new,
-        ),
-        color: theme.iconSecondary,
-        size: IconSize.small,
-      ),
-    );
-  }
-
-  Future<void> _openExternalLink(BuildContext context, String url) async {
-    final launched = await launchExternalLink(url, scope: 'profile/support');
-    if (!launched && context.mounted) {
-      UiUtils.showMessage(context, AppLocalizations.of(context)!.errorMessage);
-    }
   }
 
   Widget _buildProfileHeader(
@@ -371,11 +300,18 @@ class ProfilePage extends ConsumerWidget {
         ),
     ];
     final connectionItems = <Widget>[
+      // OXEE: the Oxeegen region replaces the Hermes, Direct connections and
+      // "Connect Open WebUI" rows; those backends are not offered in Oxee.
       _buildAccountOption(
         context,
-        iconAsset: 'assets/icons/hermes_agent.png',
-        title: l10n.hermesAgentSettingsTitle,
-        onTap: () => context.pushNamed(RouteNames.hermesSettings),
+        key: const Key('oxee-region-entry'),
+        icon: UiUtils.platformIcon(
+          ios: CupertinoIcons.globe,
+          android: Icons.public,
+        ),
+        title: OxeeStrings.of(context).regionTitle,
+        subtitle: oxeeActiveRegion(ref)?.label,
+        onTap: () => showOxeeRegionSwitcher(context, ref),
       ),
       if (canManageWorkspace)
         _buildAccountOption(
@@ -398,25 +334,6 @@ class ProfilePage extends ConsumerWidget {
           ),
           title: l10n.settingsDataAndConnection,
           onTap: () => context.pushNamed(RouteNames.dataConnectionSettings),
-        ),
-      _buildAccountOption(
-        context,
-        icon: UiUtils.platformIcon(
-          ios: CupertinoIcons.link,
-          android: Icons.hub_outlined,
-        ),
-        title: l10n.directConnectionsTitle,
-        onTap: () => context.pushNamed(RouteNames.directConnections),
-      ),
-      if (!hasOpenWebUiAccount)
-        _buildAccountOption(
-          context,
-          icon: UiUtils.platformIcon(
-            ios: CupertinoIcons.add_circled,
-            android: Icons.add_circle_outline,
-          ),
-          title: l10n.connectOpenWebUITitle,
-          onTap: () => context.goNamed(RouteNames.serverConnection),
         ),
     ];
     return [

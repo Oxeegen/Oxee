@@ -48,6 +48,8 @@ import '../../workspace/providers/workspace_capabilities_provider.dart';
 import '../providers/sidebar_providers.dart';
 import 'sidebar_tab_registry.dart';
 
+import '../../../brand/oxee_brand.dart'; // OXEE: region row
+
 part 'sidebar_user_pill.g.dart';
 
 typedef SidebarNativeProfilePresenter = Future<bool> Function(
@@ -547,17 +549,9 @@ class SidebarProfileAppBarLeading extends ConsumerWidget {
         ),
     ];
     final connectionItems = <NativeSheetItemConfig>[
-      NativeSheetItemConfig(
-        id: NativeSheetRoutes.hermes,
-        title: l10n.hermesAgentSettingsTitle,
-        sfSymbol: 'sparkles',
-        iconAsset: 'assets/icons/hermes_agent.png',
-        iconSize: 26,
-        dismissOnSelect: true,
-        actionId: NativeSheetRoutes.hermes,
-        actionValue: true,
-      ),
-      buildDirectConnectionsNativeSheetItem(title: l10n.directConnectionsTitle),
+      // OXEE: the Oxeegen region replaces the Hermes, Direct connections and
+      // "Connect Open WebUI" rows; those backends are not offered in Oxee.
+      buildOxeeRegionNativeSheetItem(context: context, ref: ref),
       if (canManageWorkspace)
         NativeSheetItemConfig(
           id: NativeSheetRoutes.workspace,
@@ -572,15 +566,6 @@ class SidebarProfileAppBarLeading extends ConsumerWidget {
           id: NativeSheetRoutes.dataConnection,
           title: dataConnectionTitle,
           sfSymbol: 'network',
-        ),
-      if (user == null)
-        NativeSheetItemConfig(
-          id: 'add-owui-server',
-          title: l10n.connectOpenWebUITitle,
-          sfSymbol: 'plus.circle',
-          dismissOnSelect: true,
-          actionId: 'add-owui-server',
-          actionValue: true,
         ),
     ];
     final aboutItem = NativeSheetItemConfig(
@@ -604,20 +589,6 @@ class SidebarProfileAppBarLeading extends ConsumerWidget {
             sfSymbol: 'rectangle.portrait.and.arrow.right',
             destructive: true,
           );
-    final supportItems = <NativeSheetItemConfig>[
-      NativeSheetItemConfig(
-        id: 'buy-me-a-coffee',
-        title: l10n.buyMeACoffeeTitle,
-        sfSymbol: 'gift',
-        url: 'https://www.buymeacoffee.com/cogwheel0',
-      ),
-      NativeSheetItemConfig(
-        id: 'github-sponsors',
-        title: l10n.githubSponsorsTitle,
-        sfSymbol: 'heart',
-        url: 'https://github.com/sponsors/cogwheel0',
-      ),
-    ];
     final menuItems = <NativeSheetItemConfig>[
       ?profileMenuItem,
       ...appItems,
@@ -689,8 +660,7 @@ class SidebarProfileAppBarLeading extends ConsumerWidget {
         currentAvatarLabel: l10n.currentAvatar,
       ),
       menuItems: menuItems,
-      supportTitle: l10n.supportConduit,
-      supportItems: supportItems,
+      // OXEE: no donation section.
       sections: [
         if (profileMenuItem != null)
           NativeSheetSectionConfig(items: [profileMenuItem]),
@@ -698,10 +668,6 @@ class SidebarProfileAppBarLeading extends ConsumerWidget {
         NativeSheetSectionConfig(items: connectionItems),
         NativeSheetSectionConfig(items: [aboutItem]),
         if (signOutItem != null) NativeSheetSectionConfig(items: [signOutItem]),
-        NativeSheetSectionConfig(
-          title: l10n.supportConduit,
-          items: supportItems,
-        ),
       ],
       detailSheets: [
         if (user != null)

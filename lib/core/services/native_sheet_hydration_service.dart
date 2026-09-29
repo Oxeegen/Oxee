@@ -527,16 +527,12 @@ class NativeSheetHydrationService {
                 sfSymbol: 'number',
                 kind: NativeSheetItemKind.info,
               ),
-            NativeSheetItemConfig(
-              id: NativeSheetRoutes.releaseNotesManual,
-              title: l10n.releaseNotesTitle,
-              sfSymbol: 'sparkles',
-            ),
+            // OXEE: no bundled release notes.
             NativeSheetItemConfig(
               id: 'github',
               title: l10n.githubRepository,
               sfSymbol: 'chevron.left.forwardslash.chevron.right',
-              url: 'https://github.com/cogwheel0/conduit',
+              url: 'https://github.com/Oxeegen/Oxee',
             ),
           ],
         ),

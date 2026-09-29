@@ -6,8 +6,6 @@ import 'package:conduit_core/models/server_about_info.dart';
 
 import 'package:conduit_core/providers/app_providers.dart';
 
-import '../../../features/release_notes/data/release_notes_repository.dart';
-import '../../../features/release_notes/release_notes_presenter.dart';
 import '../../../l10n/app_localizations.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/external_link_launcher.dart';
@@ -117,16 +115,7 @@ class _AboutPageState extends ConsumerState<AboutPage> {
       title: l10n.appInformation,
       children: [
         UtilityValueRow(label: l10n.appVersion, value: versionLabel),
-        UtilityRow(
-          leading: Icon(
-            Icons.new_releases_rounded,
-            size: IconSize.medium,
-            color: theme.buttonPrimary,
-          ),
-          title: l10n.releaseNotesTitle,
-          showChevron: true,
-          onTap: () => _openReleaseNotes(context, info),
-        ),
+        // OXEE: no bundled release notes; they describe upstream's releases.
         UtilityRow(
           leading: Icon(
             Icons.code_rounded,
@@ -184,26 +173,5 @@ class _AboutPageState extends ConsumerState<AboutPage> {
 
   void _showLicenses(BuildContext context) {
     showLicensePage(context: context, applicationName: 'Oxee');
-  }
-
-  Future<void> _openReleaseNotes(BuildContext context, PackageInfo info) async {
-    final l10n = AppLocalizations.of(context)!;
-    final allNotes = await const ReleaseNotesRepository().load(
-      Localizations.localeOf(context),
-    );
-    if (!context.mounted) return;
-    final notes = latestBundledReleaseNotesForVersion(
-      currentVersion: info.version,
-      notes: allNotes,
-    );
-    if (notes.isEmpty) {
-      UiUtils.showMessage(context, l10n.errorMessage);
-      return;
-    }
-    await showReleaseNotesSheet(
-      context: context,
-      currentVersion: info.version,
-      notes: notes,
-    );
   }
 }

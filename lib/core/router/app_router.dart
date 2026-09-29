@@ -23,8 +23,6 @@ import 'package:conduit_core/utils/debug_logger.dart';
 import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
 
 import '../../features/auth/views/authentication_page.dart';
-import '../../features/auth/views/backend_chooser_page.dart';
-import '../../features/auth/views/connect_signin_page.dart';
 import '../../features/auth/views/connection_issue_page.dart';
 import '../../features/auth/views/proxy_auth_page.dart';
 import '../../features/auth/views/server_connection_page.dart';
@@ -62,6 +60,8 @@ import '../../features/direct_connections/views/direct_connection_editor_page.da
 import '../../features/direct_connections/views/direct_connections_page.dart';
 import '../../features/direct_connections/views/direct_mcp_server_editor_page.dart';
 import '../../l10n/app_localizations.dart';
+import '../../brand/oxee_brand.dart'; // OXEE: regions
+import '../../brand/oxee_region_page.dart'; // OXEE: region picker
 
 import 'package:conduit_core/models/server_config.dart';
 
@@ -512,19 +512,28 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       path: Routes.login,
       name: RouteNames.login,
       pageBuilder: (context, state) =>
-          _buildPlatformPage(state: state, child: const ConnectAndSignInPage()),
+          // OXEE: every "connect to a server" entry is the region picker.
+          _buildPlatformPage(state: state, child: const OxeeRegionPage()),
     ),
     GoRoute(
       path: Routes.backendChooser,
       name: RouteNames.backendChooser,
       pageBuilder: (context, state) =>
-          _buildPlatformPage(state: state, child: const BackendChooserPage()),
+          // OXEE: Oxee has one backend, Oxeegen Intelligence.
+          _buildPlatformPage(state: state, child: const OxeeRegionPage()),
     ),
     GoRoute(
       path: Routes.serverConnection,
       name: RouteNames.serverConnection,
-      pageBuilder: (context, state) =>
-          _buildPlatformPage(state: state, child: const ServerConnectionPage()),
+      pageBuilder: (context, state) => _buildPlatformPage(
+        state: state,
+        // OXEE: region picker; `extra` is the region a settings switch chose.
+        child: OxeeRegionPage(
+          initialRegion: state.extra is OxeeRegion
+              ? state.extra! as OxeeRegion
+              : null,
+        ),
+      ),
     ),
     GoRoute(
       path: Routes.connectionIssue,
