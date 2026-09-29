@@ -135,16 +135,22 @@ def ensure_profile(api: Api, identifier: str, cert: str) -> tuple[str, bytes]:
         raise SystemExit(f"App id {identifier} is not registered. Run the 'Apple setup' workflow.")
     bundle_id = bundles[0]["id"]
 
+    def fits(content: bytes) -> bool:
+        entitlements = profile_entitlements(content)
+        return (entitlements.get("application-identifier") == f"{TEAM}.{identifier}"
+                and APP_GROUP in entitlements.get("com.apple.security.application-groups", []))
+
     for attempt in range(2):
-        found = api.call("GET", "/profiles", params={"filter[name]": name, "limit": 10})["data"]
-        for profile in found:
+        # filter[name] matches substrings: "...com.oxeegen.oxee" also returns
+        # the ".ShareExtension" and ".ConduitWidget" profiles. Exact name only.
+        found = api.call("GET", "/profiles", params={"filter[name]": name, "limit": 50})["data"]
+        for profile in (p for p in found if p["attributes"]["name"] == name):
             attrs = profile["attributes"]
             certs = api.call("GET", f"/profiles/{profile['id']}/certificates")["data"]
             usable = (attrs["profileState"] == "ACTIVE" and attrs["profileType"] == "IOS_APP_STORE"
                       and any(c["id"] == cert for c in certs))
             content = base64.b64decode(attrs["profileContent"]) if usable else b""
-            groups = profile_entitlements(content).get("com.apple.security.application-groups", []) if usable else []
-            if usable and APP_GROUP in groups:
+            if usable and fits(content):
                 return name, content
             # Stale (capabilities changed, other certificate) or lacking the group: replace it.
             api.call("DELETE", f"/profiles/{profile['id']}")
@@ -156,7 +162,7 @@ def ensure_profile(api: Api, identifier: str, cert: str) -> tuple[str, bytes]:
                 "certificates": {"data": [{"type": "certificates", "id": cert}]},
             }}})["data"]["attributes"]
         content = base64.b64decode(created["profileContent"])
-        if APP_GROUP in profile_entitlements(content).get("com.apple.security.application-groups", []):
+        if fits(content):
             return name, content
     raise SystemExit(
         f"The App Group {APP_GROUP} is not enabled for {identifier}. On developer.apple.com: "
