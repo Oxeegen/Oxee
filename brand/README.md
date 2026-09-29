@@ -55,6 +55,7 @@ one (and the absence of what it removed).
 | `lib/core/services/native_sheet_hydration_service.dart` | No release-notes row in the native About sheet (repo link via `rebrand.py`). |
 | `lib/features/profile/views/about_page.dart` | No release-notes row (repo link via `rebrand.py`). |
 | `.github/workflows/release.yml` | Guarded to `cogwheel0/conduit`: upstream's release never runs here. |
+| `.github/workflows/l10n.yml` | Guarded the same way; `ci.yml`'s Localization job runs its ARB checks. |
 | `.github/workflows/ci.yml` | Runs `check_brand.py` and `flutter_test.py` instead of plain `flutter test`. |
 
 ### How switching region works

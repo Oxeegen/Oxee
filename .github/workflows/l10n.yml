@@ -9,6 +9,10 @@ on:
 
 jobs:
   l10n:
+    # OXEE: upstream's workflow (it only generates code at the root, so its
+    # analyzer step fails). ci.yml's Localization job runs the same ARB
+    # checks here.
+    if: github.repository == 'cogwheel0/conduit'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

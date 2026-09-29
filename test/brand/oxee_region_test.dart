@@ -13,16 +13,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-Widget _regionPage({ServerConfig? active, Locale locale = const Locale('en')}) {
-  return ProviderScope(
-    overrides: [activeServerProvider.overrideWith((_) async => active)],
-    child: MaterialApp(
-      locale: locale,
-      localizationsDelegates: conduitLocalizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,
-      home: const OxeeRegionPage(),
+Future<void> _pumpRegionPage(
+  WidgetTester tester, {
+  ServerConfig? active,
+  Locale locale = const Locale('en'),
+}) async {
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [activeServerProvider.overrideWith((_) async => active)],
+      child: MaterialApp(
+        locale: locale,
+        localizationsDelegates: conduitLocalizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: const OxeeRegionPage(),
+      ),
     ),
   );
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -67,8 +74,7 @@ void main() {
 
   group('OxeeRegionPage', () {
     testWidgets('offers exactly the two Oxeegen regions', (tester) async {
-      await tester.pumpWidget(_regionPage());
-      await tester.pumpAndSettle();
+      await _pumpRegionPage(tester);
 
       expect(find.text('Welcome to Oxee'), findsWidgets);
       expect(find.text('Oxeegen US'), findsOneWidget);
@@ -81,25 +87,22 @@ void main() {
     });
 
     testWidgets('speaks French on French devices', (tester) async {
-      await tester.pumpWidget(_regionPage(locale: const Locale('fr')));
-      await tester.pumpAndSettle();
+      await _pumpRegionPage(tester, locale: const Locale('fr'));
 
       expect(find.text('Bienvenue dans Oxee'), findsWidgets);
       expect(find.text('États-Unis · ai.oxeegen.com'), findsOneWidget);
     });
 
     testWidgets('marks the region of the saved server', (tester) async {
-      await tester.pumpWidget(
-        _regionPage(
-          active: const ServerConfig(
-            id: 'fr',
-            name: 'Oxeegen FR',
-            url: 'https://ia.oxeegen.fr',
-            isActive: true,
-          ),
+      await _pumpRegionPage(
+        tester,
+        active: const ServerConfig(
+          id: 'fr',
+          name: 'Oxeegen FR',
+          url: 'https://ia.oxeegen.fr',
+          isActive: true,
         ),
       );
-      await tester.pumpAndSettle();
 
       UtilitySelectionRow row(String key) =>
           tester.widget<UtilitySelectionRow>(find.byKey(ValueKey(key)));

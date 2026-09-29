@@ -52,6 +52,10 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
         ["if: github.repository == 'cogwheel0/conduit'"],
         [],
     ),
+    ".github/workflows/l10n.yml": (
+        ["if: github.repository == 'cogwheel0/conduit'"],
+        [],
+    ),
     ".github/workflows/ci.yml": (
         ["python3 brand/tools/flutter_test.py", "python3 brand/tools/check_brand.py"],
         [],
