@@ -182,8 +182,12 @@ jobs:
       - name: Archive and sign
         if: env.ASC_KEY_P8 != '' && env.APPLE_TEAM_ID != ''
         run: |
+          # Secrets set from Windows can carry carriage returns and stray
+          # spaces; xcodebuild rejects such a key with "Authentication failed".
+          ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
+          ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')
           key="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
-          printf '%s' "$ASC_KEY_P8" > "$key"
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' | sed '/^[[:space:]]*$/d' > "$key"
           auth=(-allowProvisioningUpdates
                 -authenticationKeyPath "$key"
                 -authenticationKeyID "$ASC_KEY_ID"

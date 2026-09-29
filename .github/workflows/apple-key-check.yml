@@ -26,9 +26,12 @@ jobs:
           import jwt, requests
           from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-          key_id = os.environ["ASC_KEY_ID"].strip()
-          issuer = os.environ["ASC_ISSUER_ID"].strip()
+          raw_id, raw_issuer = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
+          key_id, issuer = raw_id.strip(), raw_issuer.strip()
           pem = os.environ["ASC_KEY_P8"]
+          # Things other tools choke on even when this check copes.
+          print(f"Key ID has stray whitespace: {raw_id != key_id}; Issuer ID has stray whitespace: {raw_issuer != issuer}")
+          print(f"Key file has Windows line endings (CR): {chr(13) in pem}; ends with newline: {pem.endswith(chr(10))}")
 
           print(f"Key ID: {len(key_id)} characters, looks valid: {bool(re.fullmatch(r'[A-Z0-9]{10}', key_id))}")
           print(f"Issuer ID looks like a UUID: {bool(re.fullmatch(r'[0-9a-f-]{36}', issuer))}")
