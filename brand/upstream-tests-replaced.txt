@@ -1,0 +1,6 @@
+# Upstream test files that assert behaviour Oxee replaces on purpose.
+# brand/tools/flutter_test.py runs every other test file. One path per line,
+# then "#" and the reason. A listed file that no longer exists fails the run,
+# so this list cannot silently go stale.
+
+test/features/profile/profile_page_hermes_test.dart  # settings list: Oxee shows the Oxeegen region instead of Hermes/Direct rows and has no donation section

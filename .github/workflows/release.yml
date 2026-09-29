@@ -12,6 +12,9 @@ concurrency:
 jobs:
   validate-release-notes:
     name: Validate Release Notes
+    # OXEE: upstream's release. Oxee releases with release-oxee.yml; every
+    # job below needs this one, so they are all skipped in this repository.
+    if: github.repository == 'cogwheel0/conduit'
     runs-on: ubuntu-latest
     permissions:
       contents: read

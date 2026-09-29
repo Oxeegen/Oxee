@@ -52,7 +52,10 @@ jobs:
       # the same ones), which want their own clean-up. The packages below are
       # clean and stay held to --fatal-infos.
       - run: flutter analyze --no-fatal-warnings --no-fatal-infos
-      - run: flutter test
+      # OXEE: brand layer intact, then every test except the upstream files
+      # listed in brand/upstream-tests-replaced.txt.
+      - run: python3 brand/tools/check_brand.py
+      - run: python3 brand/tools/flutter_test.py
 
   # Each workspace member analyzes and tests on its own, which is what proves
   # the pub workspace actually works per package.
