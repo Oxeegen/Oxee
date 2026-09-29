@@ -1,0 +1,15 @@
+Oxee
+Copyright (C) 2026 Oxeegen
+
+Oxee is licensed under the GNU General Public License, version 3 (see LICENSE).
+This program comes with ABSOLUTELY NO WARRANTY; see sections 15 and 16 of the
+license for details.
+
+Oxee is a modified version of Conduit (https://github.com/cogwheel0/conduit),
+Copyright (C) 2026 Tunap Paul and contributors, licensed under the GNU General
+Public License, version 3. Oxeegen has modified it since 2026-09-28; the
+modifications are recorded in this repository's history and described in
+brand/README.md.
+
+Third-party components are listed in THIRD_PARTY_NOTICES.md and, for the
+bundled packages, in the app under Settings > About > Open source licenses.

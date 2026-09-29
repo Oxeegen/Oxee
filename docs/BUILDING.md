@@ -1,10 +1,7 @@
-# Building Conduit
+# Building Oxee
 
-Everything needed to build, run, and verify Conduit from source. If you only
-want to *use* the app, install it from the
-[App Store](https://apps.apple.com/us/app/conduit-open-webui-client/id6749840287)
-or [Google Play](https://play.google.com/store/apps/details?id=app.cogwheel.conduit)
-instead.
+Everything needed to build, run, and verify Oxee from source. To *use* the
+app, install it from the App Store or Google Play.
 
 ## Requirements
 
@@ -13,27 +10,17 @@ instead.
 | Flutter SDK | Flutter `3.47.0` or newer, with Dart `3.13.0` or newer |
 | Android | Java 17+, AGP 9.1.0, KGP 2.4.0, Gradle 9.3.1, Android SDK 36, Android 7.0+ (API 24) at runtime |
 | iOS | Xcode with an iOS 16.0+ deployment target |
-| Backend | An Open WebUI instance, an OpenAI-compatible API, an Ollama endpoint, or a Hermes server |
-
-Apple On-Device requires Xcode 26 and an iOS 26 device that supports Apple
-Intelligence. It uses the local SystemLanguageModel with a 4K context window;
-image input, reasoning controls, and tool parameters are rejected.
-
-Apple Private Cloud Compute additionally requires Xcode 27, an iOS 27 device
-that supports Apple Intelligence, and Apple's managed PCC entitlement. The iOS
-build keeps PCC compiled out on older SDKs while retaining the iOS 16 deployment
-target. PCC accepts image data URLs and Direct generation parameters including
-`temperature`, `max_tokens`, `top_p`, `top_k`, `seed`, and OpenAI-style
-`response_format.json_schema`; tool parameters are rejected.
+| Backend | An Oxeegen Intelligence account, in the US (`ai.oxeegen.com`) or FR (`ia.oxeegen.fr`) region |
+| Brand tooling | Python 3.10+ and Pillow (icons only) |
 
 ## Clone
 
 ```bash
-git clone --recursive https://github.com/cogwheel0/conduit.git
-cd conduit
+git clone --recursive https://github.com/Oxeegen/Oxee.git
+cd Oxee
 ```
 
-`--recursive` matters. Conduit vendors four submodules:
+`--recursive` matters. Oxee vendors four submodules:
 
 - `third_party/mermaid`: the native Mermaid renderer packages
   (`mermaid_core`, `mermaid_flutter`), referenced by path from `pubspec.yaml`.
@@ -83,11 +70,11 @@ dart tool/pigeon_codegen/bin/generate.dart
 ```
 
 `vad` 0.0.8 still declares Record 6.x support. The root pubspec temporarily
-pins VAD and overrides `record` to 7.1.1; Conduit passes VAD a PCM stream owned
+pins VAD and overrides `record` to 7.1.1; Oxee passes VAD a PCM stream owned
 by `VoiceInputService`, so VAD never creates its incompatible internal
 recorder. Remove the override and exact VAD pin when [upstream issue
 #22](https://github.com/keyur2maru/vad/issues/22) ships Record 7 support. Keep
-the Conduit-owned stream until upstream can also preserve externally managed
+the Oxee-owned stream until upstream can also preserve externally managed
 iOS audio sessions.
 
 ## Verify
@@ -96,13 +83,14 @@ iOS audio sessions.
 flutter pub get
 dart run build_runner build
 flutter analyze
-flutter test
+python brand/tools/check_brand.py
+python brand/tools/flutter_test.py
 ```
 
-`flutter analyze` and `flutter test` are the local gates before handing work
-off. GitHub Actions only runs localization validation (`.github/workflows/l10n.yml`)
-and releases (`.github/workflows/release.yml`). Nothing checks analyzer or test
-health on every push, so run them yourself.
+`brand/tools/flutter_test.py` runs `flutter test` on every test file except
+the few listed in `brand/upstream-tests-replaced.txt`. CI
+(`.github/workflows/ci.yml`) runs the same gates on every push to `main` and
+on pull requests.
 
 Tests use `flutter_test` with `package:checks` for assertions and `mocktail` for
 mocks. Lints come from `flutter_lints` plus `riverpod_lint`.
@@ -118,7 +106,9 @@ flutter build appbundle --target-platform android-arm,android-arm64 --release
 XCODE_XCCONFIG_FILE="$PWD/ios/Flutter/ArmOnly.xcconfig" flutter build ios --release
 ```
 
-`scripts/release.sh` drives the tagged release flow used by the maintainer.
+Signed store builds come from `.github/workflows/release-oxee.yml` on
+GitHub's macOS and Linux runners, so iOS releases do not need a local Mac.
+See `brand/README.md`, "Releasing".
 
 ## Localization
 
