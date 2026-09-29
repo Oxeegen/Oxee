@@ -1,0 +1,71 @@
+name: iOS signing probe
+
+# Diagnostic: why does xcodebuild reject the App Store Connect key that the
+# API accepts? Tries xcodebuild's key sign-in on a throwaway Flutter app in a
+# few variants and prints the first error of each. Delete once signing works.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    env:
+      ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
+      TEAM: 84S2U7WQDP
+    steps:
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+          cache: true
+      - name: Clock
+        run: |
+          echo "runner: $(date -u '+%a, %d %b %Y %H:%M:%S GMT')"
+          echo "apple:  $(curl -sI https://api.appstoreconnect.apple.com/v1/apps | grep -i '^date:' | cut -d' ' -f2-)"
+          ls -d /Applications/Xcode*.app
+          xcodebuild -version
+      - name: Key files
+        run: |
+          mkdir -p ~/.private_keys ~/private_keys ~/.appstoreconnect/private_keys
+          for d in ~/.private_keys ~/private_keys ~/.appstoreconnect/private_keys "$RUNNER_TEMP"; do
+            printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > "$d/AuthKey_$ASC_KEY_ID.p8"
+          done
+          wc -l ~/.private_keys/AuthKey_*.p8 | sed 's/AuthKey_.*\.p8/AuthKey_<id>.p8/'
+      - name: altool with the same key
+        continue-on-error: true
+        run: xcrun altool --list-apps --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tail -5
+      - name: Throwaway app
+        run: |
+          flutter create --platforms ios --org com.oxeegen --project-name oxee probe >/dev/null
+          cd probe
+          flutter build ios --release --no-codesign >/dev/null 2>&1 || true
+          grep -m1 'PRODUCT_BUNDLE_IDENTIFIER' ios/Runner.xcodeproj/project.pbxproj
+      - name: xcodebuild variants
+        working-directory: probe
+        run: |
+          try() {
+            label="$1"; shift
+            echo "::group::$label"
+            xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \
+              -archivePath "$RUNNER_TEMP/$label.xcarchive" DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
+              -allowProvisioningUpdates -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+              "$@" archive > "$RUNNER_TEMP/$label.log" 2>&1
+            code=$?
+            echo "::endgroup::"
+            echo "== $label: exit $code"
+            grep -E 'error:|ARCHIVE (SUCCEEDED|FAILED)' "$RUNNER_TEMP/$label.log" | sort -u | head -6
+          }
+          try tempdir -sdk iphoneos -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          try home-private-keys -destination generic/platform=iOS -authenticationKeyPath "$HOME/.private_keys/AuthKey_$ASC_KEY_ID.p8"
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-probe-logs
+          path: ${{ runner.temp }}/*.log
