@@ -36,6 +36,7 @@ device see) is `com.oxeegen.oxee`.
 | `tools/flutter_test.py` | `flutter test` over every test file except `upstream-tests-replaced.txt`. |
 | `upstream-tests-replaced.txt` | Upstream test files that assert behaviour Oxee replaces, each with its reason. A listed file that disappears fails the run. |
 | `tools/make_icons.py` | Draws the Oxee mark and regenerates every icon at its upstream size. Needs Pillow. |
+| `tools/android_keystore.py` | Run once: creates the permanent Android signing key, stores it in GitHub secrets and writes a backup to Documents\Oxee signing keys. |
 | `tools/ios_certificate.py` | Run once: creates the Apple Distribution certificate through the API and stores it in GitHub secrets without printing it. |
 | `tools/ios_signing.py` | CI: App Store profiles through the API, throwaway keychain, manual Release signing, ExportOptions. |
 | `assets/` | `oxee-icon-1024.png` (store icon, README), `oxee-mark-1024.png`, `oxee-mark.svg`. |
@@ -186,5 +187,8 @@ The Apple Team ID (`84S2U7WQDP`) is not a secret: it is `appleTeamId` in
 `brand.json`, written into the Xcode project by `rebrand.py` and read by the
 workflow.
 
-Keep the Android upload keystore safe and backed up outside GitHub: with Play
-App Signing, losing it means a key reset request to Google.
+The Android key comes from `tools/android_keystore.py`, which also writes a
+backup (keystore + password) to `Documents\Oxee signing keys`. Keep that
+backup offline: APKs installed outside Google Play can only be updated by
+builds signed with the same key. With Play App Signing it is the upload
+key, which Google can reset.

@@ -108,6 +108,10 @@ jobs:
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 --decode > app/oxee-upload.jks
+            # Fail here, not after a ten-minute build, if the key does not open.
+            keytool -list -keystore app/oxee-upload.jks -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null \
+              || { echo "::error::The Android signing key in the OXEE_ANDROID_* secrets does not open (password or alias)."; exit 1; }
+            keytool -list -v -keystore app/oxee-upload.jks -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | grep -m1 'SHA256:'
           else
             echo "::warning::No OXEE_ANDROID_KEYSTORE_BASE64 secret: signing with a throwaway key (test build only, not installable over a store build)."
             KEYSTORE_PASSWORD=throwaway KEY_PASSWORD=throwaway KEY_ALIAS=oxee
