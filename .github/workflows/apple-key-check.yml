@@ -1,0 +1,75 @@
+name: Check Apple key
+
+# Tells whether the App Store Connect API key in the OXEE_ASC_* secrets works,
+# without building anything and without printing the key. Run it after
+# creating or replacing the key: Actions -> Check Apple key -> Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pip install --quiet "pyjwt[crypto]" requests
+      - name: Check
+        env:
+          ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
+        shell: python
+        run: |
+          import os, re, time
+          import jwt, requests
+          from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+          key_id = os.environ["ASC_KEY_ID"].strip()
+          issuer = os.environ["ASC_ISSUER_ID"].strip()
+          pem = os.environ["ASC_KEY_P8"]
+
+          print(f"Key ID: {len(key_id)} characters, looks valid: {bool(re.fullmatch(r'[A-Z0-9]{10}', key_id))}")
+          print(f"Issuer ID looks like a UUID: {bool(re.fullmatch(r'[0-9a-f-]{36}', issuer))}")
+          lines = pem.strip().splitlines()
+          print(f"Key file: {len(lines)} lines, header ok: {lines[0:1] == ['-----BEGIN PRIVATE KEY-----']}, "
+                f"footer ok: {lines[-1:] == ['-----END PRIVATE KEY-----']}, BOM: {pem.startswith(chr(0xFEFF))}")
+          try:
+              load_pem_private_key(pem.strip().encode(), password=None)
+              print("Key file parses as a private key: yes")
+          except Exception as e:
+              print(f"Key file parses as a private key: NO ({type(e).__name__})")
+              raise SystemExit(1)
+
+          def call(payload, label):
+              token = jwt.encode(payload, pem.strip(), algorithm="ES256", headers={"kid": key_id, "typ": "JWT"})
+              results = []
+              for path in ("/v1/apps?limit=1", "/v1/bundleIds?limit=1", "/v1/certificates?limit=1"):
+                  r = requests.get("https://api.appstoreconnect.apple.com" + path,
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=30)
+                  detail = ""
+                  if r.status_code >= 400:
+                      err = (r.json().get("errors") or [{}])[0]
+                      detail = f" {err.get('code')}: {err.get('title')}"
+                  results.append(f"{path.split('?')[0]} -> {r.status_code}{detail}")
+              print(f"As a {label}:")
+              for line in results:
+                  print("   " + line)
+              return all(" -> 200" in line for line in results)
+
+          now = int(time.time())
+          base = {"iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"}
+          team_ok = call({**base, "iss": issuer}, "TEAM key (what the build needs)")
+          individual_ok = call({**base, "sub": "user"}, "INDIVIDUAL key")
+
+          if team_ok:
+              print("\nRESULT: the key works as a Team key. The build can use it.")
+          elif individual_ok:
+              print("\nRESULT: this is an Individual key. The build needs a Team key "
+                    "(App Store Connect -> Users and Access -> Integrations -> Team Keys).")
+              raise SystemExit(1)
+          else:
+              print("\nRESULT: Apple rejects the key both ways: the Key ID, Issuer ID and "
+                    "key file do not belong together, or the key was revoked.")
+              raise SystemExit(1)
