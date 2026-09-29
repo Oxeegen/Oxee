@@ -55,7 +55,10 @@ jobs:
 
           def get(tok, path):
               r = requests.get(API + path, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
-              body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+              try:
+                  body = r.json()
+              except ValueError:
+                  body = {}
               err = (body.get("errors") or [{}])[0]
               return r.status_code, body, f"{err.get('code')}: {err.get('title')}" if r.status_code >= 400 else ""
 
@@ -78,8 +81,13 @@ jobs:
           admin = status == 200
           print(f"Role: {'Admin' if admin else 'NOT Admin (' + str(status) + ' ' + detail + ')'}")
 
-          status, body, detail = get(team, f"/v1/bundleIds?filter[identifier]={bundle},{bundle}.ShareExtension,{bundle}.ConduitWidget&limit=10")
-          ids = sorted(b["attributes"]["identifier"] for b in body.get("data", [])) if status == 200 else []
+          ids = []
+          for identifier in (bundle, bundle + ".ShareExtension", bundle + ".ConduitWidget"):
+              status, body, detail = get(team, f"/v1/bundleIds?filter[identifier]={identifier}")
+              if status != 200:
+                  print(f"App id lookup {identifier}: {status} {detail}")
+              ids += [b["attributes"]["identifier"] for b in body.get("data", [])
+                      if b["attributes"]["identifier"] == identifier]
           print(f"Registered app ids: {ids or 'none yet'}")
 
           status, body, detail = get(team, "/v1/devices?limit=200")
@@ -91,7 +99,10 @@ jobs:
           kinds = {}
           for c in body.get("data", []) if status == 200 else []:
               kinds[c["attributes"]["certificateType"]] = kinds.get(c["attributes"]["certificateType"], 0) + 1
-          print(f"Certificates by type: {kinds or 'none'}")
+          print(f"Certificates by type: {kinds or 'none'}" + ("" if status == 200 else f" (could not list: {status} {detail})"))
+          status, body, detail = get(team, "/v1/certificates?filter[certificateType]=DISTRIBUTION")
+          print(f"Distribution certificates (the query the build uses): "
+                f"{len(body.get('data', [])) if status == 200 else f'error {status} {detail}'}")
 
           status, body, detail = get(team, f"/v1/apps?filter[bundleId]={bundle}")
           print(f"App Store Connect app record for {bundle}: {'yes' if status == 200 and body.get('data') else 'not created yet'}")

@@ -183,8 +183,6 @@ jobs:
           done
       - name: CocoaPods
         run: cd ios && pod install
-      - name: Build (unsigned)
-        run: flutter build ios --release --no-codesign --build-name="$VERSION" --build-number="$BUILD"
       # App Store (distribution) signing only: no registered iPhone needed.
       # brand/tools/ios_signing.py explains each step.
       - name: Signing
@@ -194,6 +192,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet "pyjwt[crypto]" requests
           "$RUNNER_TEMP/venv/bin/python" brand/tools/ios_signing.py "$RUNNER_TEMP/signing"
+      - name: Build (unsigned)
+        run: flutter build ios --release --no-codesign --build-name="$VERSION" --build-number="$BUILD"
       - name: Archive and export
         if: steps.signing.outcome == 'success'
         run: |
