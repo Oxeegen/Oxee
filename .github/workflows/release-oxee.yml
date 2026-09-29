@@ -147,6 +147,8 @@ jobs:
       ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
+      IOS_DIST_P12: ${{ secrets.OXEE_IOS_DIST_P12 }}
+      IOS_DIST_P12_PASSWORD: ${{ secrets.OXEE_IOS_DIST_P12_PASSWORD }}
       VERSION: ${{ needs.prepare.outputs.version }}
       BUILD: ${{ needs.prepare.outputs.build }}
       PUBLISH: ${{ needs.prepare.outputs.publish }}
@@ -183,44 +185,43 @@ jobs:
         run: cd ios && pod install
       - name: Build (unsigned)
         run: flutter build ios --release --no-codesign --build-name="$VERSION" --build-number="$BUILD"
-      - name: Archive and sign
-        if: env.ASC_KEY_P8 != '' && env.APPLE_TEAM_ID != ''
+      # App Store (distribution) signing only: no registered iPhone needed.
+      # brand/tools/ios_signing.py explains each step.
+      - name: Signing
+        id: signing
+        if: env.ASC_KEY_P8 != '' && env.IOS_DIST_P12 != ''
         run: |
-          # Secrets set from Windows can carry carriage returns and stray
-          # spaces; xcodebuild rejects such a key with "Authentication failed".
-          ASC_KEY_ID=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
-          ASC_ISSUER_ID=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')
-          key="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
-          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' | sed '/^[[:space:]]*$/d' > "$key"
-          auth=(-allowProvisioningUpdates
-                -authenticationKeyPath "$key"
-                -authenticationKeyID "$ASC_KEY_ID"
-                -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "pyjwt[crypto]" requests
+          "$RUNNER_TEMP/venv/bin/python" brand/tools/ios_signing.py "$RUNNER_TEMP/signing"
+      - name: Archive and export
+        if: steps.signing.outcome == 'success'
+        run: |
           xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \
-            -sdk iphoneos -archivePath "$RUNNER_TEMP/Oxee.xcarchive" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
-            "${auth[@]}" archive
-          destination=export
-          [ "$PUBLISH" = "true" ] && destination=upload
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>$destination</string>
-            <key>teamID</key><string>$APPLE_TEAM_ID</string>
-            <key>signingStyle</key><string>automatic</string>
-            <key>manageAppVersionAndBuildNumber</key><false/>
-          </dict></plist>
-          PLIST
+            -destination generic/platform=iOS -archivePath "$RUNNER_TEMP/Oxee.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            archive
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Oxee.xcarchive" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath dist "${auth[@]}"
-          rm -f "$key"
+            -exportOptionsPlist "$IPA_EXPORT_OPTIONS" -exportPath "$RUNNER_TEMP/export"
+          mkdir -p dist
+          cp "$RUNNER_TEMP"/export/*.ipa "dist/Oxee-$VERSION.ipa"
           ls -l dist
-      - name: Package unsigned build
-        if: env.ASC_KEY_P8 == '' || env.APPLE_TEAM_ID == ''
+      - name: Upload to TestFlight
+        if: steps.signing.outcome == 'success' && env.PUBLISH == 'true'
         run: |
-          echo "::warning::No App Store Connect key or team id: unsigned build only (it proves the app compiles; it cannot be installed)."
+          id=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
+          issuer=$(printf '%s' "$ASC_ISSUER_ID" | tr -d '[:space:]')
+          mkdir -p ~/.appstoreconnect/private_keys
+          printf '%s\n' "$ASC_KEY_P8" | tr -d '\r' > ~/.appstoreconnect/private_keys/AuthKey_$id.p8
+          xcrun altool --upload-app -f "dist/Oxee-$VERSION.ipa" -t ios --apiKey "$id" --apiIssuer "$issuer"
+          rm -f ~/.appstoreconnect/private_keys/AuthKey_$id.p8
+      - name: Remove signing keychain
+        if: always() && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+      - name: Package unsigned build
+        if: env.ASC_KEY_P8 == '' || env.IOS_DIST_P12 == ''
+        run: |
+          echo "::warning::No App Store Connect key or distribution certificate: unsigned build only (it proves the app compiles; it cannot be installed)."
           app=$(ls -d build/ios/iphoneos/Runner.app build/ios/Release-iphoneos/Runner.app 2>/dev/null | head -1)
           [ -n "$app" ] || { echo "::error::Runner.app not found"; exit 1; }
           mkdir -p dist/Payload

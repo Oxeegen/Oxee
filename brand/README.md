@@ -36,6 +36,8 @@ device see) is `com.oxeegen.oxee`.
 | `tools/flutter_test.py` | `flutter test` over every test file except `upstream-tests-replaced.txt`. |
 | `upstream-tests-replaced.txt` | Upstream test files that assert behaviour Oxee replaces, each with its reason. A listed file that disappears fails the run. |
 | `tools/make_icons.py` | Draws the Oxee mark and regenerates every icon at its upstream size. Needs Pillow. |
+| `tools/ios_certificate.py` | Run once: creates the Apple Distribution certificate through the API and stores it in GitHub secrets without printing it. |
+| `tools/ios_signing.py` | CI: App Store profiles through the API, throwaway keychain, manual Release signing, ExportOptions. |
 | `assets/` | `oxee-icon-1024.png` (store icon, README), `oxee-mark-1024.png`, `oxee-mark.svg`. |
 | `../lib/brand/oxee_brand.dart` | Regions, the strings the layer adds (English and French), the region switcher, the iOS native-sheet row. |
 | `../lib/brand/oxee_region_page.dart` | First-run / change-server screen. Health check and Open WebUI check against the fixed region URL, then upstream's sign-in page. |
@@ -123,30 +125,66 @@ GitHub's macOS runners. No Mac is needed.
 
 - Test build: Actions -> Release Oxee -> Run workflow, version `1.0.0`,
   publish unticked. Artifacts: arm64/armv7 APKs, the AAB, and the IPA.
-- Release: push an annotated tag `oxee-v1.0.0` whose message is the release
-  notes (written about Oxee only). APKs go to a GitHub release, the iOS build
-  to App Store Connect (TestFlight).
+- TestFlight: the same with publish ticked, or push an annotated tag
+  `oxee-v1.0.0` whose message is the release notes (written about Oxee only).
+  The iOS build is uploaded to App Store Connect; a tag also makes a GitHub
+  release with the APKs.
 
 Without secrets both jobs still build (Android with a throwaway key, iOS
 unsigned): that proves the code compiles on both platforms but produces
 nothing installable on iPhone.
 
+### iOS signing
+
+Distribution (App Store) signing only, done in CI by
+`tools/ios_signing.py`: it imports the Oxee distribution certificate into a
+throwaway keychain, finds or creates an App Store profile for each of the
+three app ids through the App Store Connect API (named `Oxee App Store <id>`),
+checks each carries the App Group, and switches the three Release
+configurations to manual signing in the CI checkout. The committed project
+keeps automatic signing, for anyone building from Xcode on a Mac.
+
+Why not Xcode's automatic signing (`-allowProvisioningUpdates`)? It archives
+with a development profile first, and Apple issues none to a team with no
+registered iPhone ("Your team has no devices from which to generate a
+provisioning profile"). Distribution profiles need no device.
+
+The distribution certificate is long-lived: revoking it would turn builds
+uploaded but not yet submitted for review into "Invalid Binary". It is made
+once with `tools/ios_certificate.py` (from a computer with `gh` signed in and
+the `.p8` key file), which stores it in the secrets below and never prints
+it. If the secrets are lost, run it again with `--replace`.
+
+### Apple account setup (once, on the web)
+
+The API cannot do these two:
+
+1. **App Group**: developer.apple.com -> Certificates, Identifiers & Profiles
+   -> Identifiers -> + -> App Groups -> description `Oxee`, identifier
+   `group.com.oxeegen.oxee`. Then open each of `com.oxeegen.oxee`,
+   `com.oxeegen.oxee.ShareExtension`, `com.oxeegen.oxee.ConduitWidget`
+   (registered by the "Apple setup" workflow), App Groups -> Configure -> tick
+   `group.com.oxeegen.oxee` -> Save.
+2. **App record**: appstoreconnect.apple.com -> Apps -> + -> New App: iOS,
+   name Oxee, bundle id `com.oxeegen.oxee`, any SKU. Needed before the first
+   upload.
+
+Workflows that help: **Check Apple key** (is the key valid, Admin, which team;
+what the account already has) and **Apple setup** (registers the app ids,
+enables App Groups on them, optionally registers an iPhone).
+
 ### Secrets
 
 | Secret | What |
 | --- | --- |
-| `OXEE_ASC_KEY_ID`, `OXEE_ASC_ISSUER_ID`, `OXEE_ASC_KEY_P8` | App Store Connect **Team** API key (Users and Access -> Integrations -> App Store Connect API -> Team Keys, role Admin, so Xcode can register app ids and create certificates and profiles). `OXEE_ASC_KEY_P8` is the text of the `.p8` file. |
+| `OXEE_ASC_KEY_ID`, `OXEE_ASC_ISSUER_ID`, `OXEE_ASC_KEY_P8` | App Store Connect **Team** API key, role Admin (Users and Access -> Integrations -> App Store Connect API -> Team Keys). `OXEE_ASC_KEY_P8` is the text of the `.p8` file. |
+| `OXEE_IOS_DIST_P12`, `OXEE_IOS_DIST_P12_PASSWORD` | The distribution certificate and its private key, written by `tools/ios_certificate.py`. Its App Store Connect id is the repository variable `OXEE_IOS_DIST_CERT_ID`. |
+| `OXEE_ANDROID_KEYSTORE_BASE64` | Upload keystore, base64 |
+| `OXEE_ANDROID_KEYSTORE_PASSWORD`, `OXEE_ANDROID_KEY_ALIAS`, `OXEE_ANDROID_KEY_PASSWORD` | Its passwords and alias |
 
 The Apple Team ID (`84S2U7WQDP`) is not a secret: it is `appleTeamId` in
 `brand.json`, written into the Xcode project by `rebrand.py` and read by the
 workflow.
-| `OXEE_ANDROID_KEYSTORE_BASE64` | Upload keystore, base64 |
-| `OXEE_ANDROID_KEYSTORE_PASSWORD`, `OXEE_ANDROID_KEY_ALIAS`, `OXEE_ANDROID_KEY_PASSWORD` | Its passwords and alias |
-
-iOS signing is automatic: `xcodebuild -allowProvisioningUpdates` with the API
-key registers the app ids (`com.oxeegen.oxee`, `.ShareExtension`,
-`.ConduitWidget`), the app group and the profiles on first run. The App Store
-Connect app record for `com.oxeegen.oxee` must exist before the first upload.
 
 Keep the Android upload keystore safe and backed up outside GitHub: with Play
 App Signing, losing it means a key reset request to Google.
