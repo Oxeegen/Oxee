@@ -1,0 +1,84 @@
+name: Apple setup
+
+# Registers Oxee's app ids with Apple through the App Store Connect API (the
+# key in the OXEE_ASC_* secrets) and enables App Groups on each. Idempotent:
+# ids that already exist are left alone. Also reports which Apple team the key
+# belongs to, which must match appleTeamId in brand/brand.json.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: pip install --quiet "pyjwt[crypto]" requests
+      - name: Register app ids
+        env:
+          ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
+        shell: python
+        run: |
+          import json, os, time
+          import jwt, requests
+
+          brand = json.load(open("brand/brand.json"))
+          bundle, team = brand["bundleId"], brand["appleTeamId"]
+          targets = [
+              (bundle, "Oxee"),
+              (bundle + ".ShareExtension", "Oxee Share Extension"),
+              (bundle + ".ConduitWidget", "Oxee Widget"),
+          ]
+
+          now = int(time.time())
+          token = jwt.encode(
+              {"iss": os.environ["ASC_ISSUER_ID"].strip(), "iat": now, "exp": now + 900, "aud": "appstoreconnect-v1"},
+              os.environ["ASC_KEY_P8"].strip(), algorithm="ES256",
+              headers={"kid": os.environ["ASC_KEY_ID"].strip(), "typ": "JWT"})
+          H = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+          API = "https://api.appstoreconnect.apple.com/v1"
+
+          def check(r, what):
+              if r.status_code >= 400:
+                  errors = r.json().get("errors", [])
+                  msg = "; ".join(f"{e.get('code')}: {e.get('detail') or e.get('title')}" for e in errors)
+                  raise SystemExit(f"{what} failed ({r.status_code}): {msg}")
+              return r.json()
+
+          seeds = set()
+          for identifier, name in targets:
+              found = check(requests.get(f"{API}/bundleIds", headers=H, timeout=30,
+                                         params={"filter[identifier]": identifier}), "lookup")["data"]
+              found = [b for b in found if b["attributes"]["identifier"] == identifier]
+              if found:
+                  bid = found[0]
+                  print(f"{identifier}: already registered")
+              else:
+                  bid = check(requests.post(f"{API}/bundleIds", headers=H, timeout=30, json={"data": {
+                      "type": "bundleIds",
+                      "attributes": {"identifier": identifier, "name": name, "platform": "IOS"}}}), f"register {identifier}")["data"]
+                  print(f"{identifier}: registered")
+              seeds.add(bid["attributes"].get("seedId"))
+
+              caps = check(requests.get(f"{API}/bundleIds/{bid['id']}/bundleIdCapabilities", headers=H, timeout=30), "capabilities")["data"]
+              if any(c["attributes"]["capabilityType"] == "APP_GROUPS" for c in caps):
+                  print("   App Groups: already enabled")
+              else:
+                  check(requests.post(f"{API}/bundleIdCapabilities", headers=H, timeout=30, json={"data": {
+                      "type": "bundleIdCapabilities",
+                      "attributes": {"capabilityType": "APP_GROUPS"},
+                      "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bid["id"]}}}}}), "enable App Groups")
+                  print("   App Groups: enabled")
+
+          print(f"\nTeam of this key (app id prefix): {sorted(seeds)}; brand.json appleTeamId: {team}")
+          if seeds != {team}:
+              raise SystemExit("RESULT: the key belongs to a different team than appleTeamId. "
+                               "Use the Team ID shown here, or a key from team " + team + ".")
+          print("RESULT: app ids registered in team " + team + ".")
