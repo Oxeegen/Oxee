@@ -1,8 +1,9 @@
 name: Check Apple key
 
 # Tells whether the App Store Connect API key in the OXEE_ASC_* secrets works,
-# without building anything and without printing the key. Run it after
-# creating or replacing the key: Actions -> Check Apple key -> Run workflow.
+# what it may do, and what the account already has, without building
+# anything and without printing the key. Run it after creating or replacing
+# the key: Actions -> Check Apple key -> Run workflow.
 
 on:
   workflow_dispatch:
@@ -20,59 +21,83 @@ jobs:
           ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
+          BUNDLE_ID: com.oxeegen.oxee
         shell: python
         run: |
           import os, re, time
           import jwt, requests
           from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
+          API = "https://api.appstoreconnect.apple.com"
           raw_id, raw_issuer = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
           key_id, issuer = raw_id.strip(), raw_issuer.strip()
-          pem = os.environ["ASC_KEY_P8"]
-          # Things other tools choke on even when this check copes.
-          print(f"Key ID has stray whitespace: {raw_id != key_id}; Issuer ID has stray whitespace: {raw_issuer != issuer}")
-          print(f"Key file has Windows line endings (CR): {chr(13) in pem}; ends with newline: {pem.endswith(chr(10))}")
+          pem = os.environ["ASC_KEY_P8"].strip()
+          bundle = os.environ["BUNDLE_ID"]
 
-          print(f"Key ID: {len(key_id)} characters, looks valid: {bool(re.fullmatch(r'[A-Z0-9]{10}', key_id))}")
-          print(f"Issuer ID looks like a UUID: {bool(re.fullmatch(r'[0-9a-f-]{36}', issuer))}")
-          lines = pem.strip().splitlines()
+          print("== The secrets")
+          print(f"Key ID: {len(key_id)} characters, valid form: {bool(re.fullmatch(r'[A-Z0-9]{10}', key_id))}, "
+                f"stray whitespace: {raw_id != key_id}")
+          print(f"Issuer ID valid form: {bool(re.fullmatch(r'[0-9a-f-]{36}', issuer))}, stray whitespace: {raw_issuer != issuer}")
+          lines = pem.splitlines()
           print(f"Key file: {len(lines)} lines, header ok: {lines[0:1] == ['-----BEGIN PRIVATE KEY-----']}, "
-                f"footer ok: {lines[-1:] == ['-----END PRIVATE KEY-----']}, BOM: {pem.startswith(chr(0xFEFF))}")
+                f"footer ok: {lines[-1:] == ['-----END PRIVATE KEY-----']}, "
+                f"carriage returns: {chr(13) in os.environ['ASC_KEY_P8']}")
           try:
-              load_pem_private_key(pem.strip().encode(), password=None)
-              print("Key file parses as a private key: yes")
+              load_pem_private_key(pem.encode(), password=None)
           except Exception as e:
-              print(f"Key file parses as a private key: NO ({type(e).__name__})")
+              print(f"RESULT: the key file is not a valid private key ({type(e).__name__}).")
               raise SystemExit(1)
 
-          def call(payload, label):
-              token = jwt.encode(payload, pem.strip(), algorithm="ES256", headers={"kid": key_id, "typ": "JWT"})
-              results = []
-              for path in ("/v1/apps?limit=1", "/v1/bundleIds?limit=1", "/v1/certificates?limit=1"):
-                  r = requests.get("https://api.appstoreconnect.apple.com" + path,
-                                   headers={"Authorization": f"Bearer {token}"}, timeout=30)
-                  detail = ""
-                  if r.status_code >= 400:
-                      err = (r.json().get("errors") or [{}])[0]
-                      detail = f" {err.get('code')}: {err.get('title')}"
-                  results.append(f"{path.split('?')[0]} -> {r.status_code}{detail}")
-              print(f"As a {label}:")
-              for line in results:
-                  print("   " + line)
-              return all(" -> 200" in line for line in results)
+          def token(payload):
+              now = int(time.time())
+              claims = {"iat": now, "exp": now + 600, "aud": "appstoreconnect-v1", **payload}
+              return jwt.encode(claims, pem, algorithm="ES256", headers={"kid": key_id, "typ": "JWT"})
 
-          now = int(time.time())
-          base = {"iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"}
-          team_ok = call({**base, "iss": issuer}, "TEAM key (what the build needs)")
-          individual_ok = call({**base, "sub": "user"}, "INDIVIDUAL key")
+          def get(tok, path):
+              r = requests.get(API + path, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
+              body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+              err = (body.get("errors") or [{}])[0]
+              return r.status_code, body, f"{err.get('code')}: {err.get('title')}" if r.status_code >= 400 else ""
 
-          if team_ok:
-              print("\nRESULT: the key works as a Team key. The build can use it.")
-          elif individual_ok:
-              print("\nRESULT: this is an Individual key. The build needs a Team key "
-                    "(App Store Connect -> Users and Access -> Integrations -> Team Keys).")
+          team = token({"iss": issuer})
+          status, _, detail = get(team, "/v1/apps?limit=1")
+          if status != 200:
+              individual = token({"sub": "user"})
+              if get(individual, "/v1/apps?limit=1")[0] == 200:
+                  print("RESULT: this is an Individual key. The build needs a Team key "
+                        "(App Store Connect -> Users and Access -> Integrations -> Team Keys).")
+              else:
+                  print(f"RESULT: Apple rejects the key ({status} {detail}): Key ID, Issuer ID and key "
+                        "file do not belong together, or the key was revoked.")
               raise SystemExit(1)
-          else:
-              print("\nRESULT: Apple rejects the key both ways: the Key ID, Issuer ID and "
-                    "key file do not belong together, or the key was revoked.")
+          print("\n== Team key accepted by the App Store Connect API")
+
+          # Only Admin keys may list users: the clearest role test the API offers.
+          # xcodebuild's automatic signing (-allowProvisioningUpdates) needs Admin.
+          status, _, detail = get(team, "/v1/users?limit=1")
+          admin = status == 200
+          print(f"Role: {'Admin' if admin else 'NOT Admin (' + str(status) + ' ' + detail + ')'}")
+
+          status, body, detail = get(team, f"/v1/bundleIds?filter[identifier]={bundle},{bundle}.ShareExtension,{bundle}.ConduitWidget&limit=10")
+          ids = sorted(b["attributes"]["identifier"] for b in body.get("data", [])) if status == 200 else []
+          print(f"Registered app ids: {ids or 'none yet'}")
+
+          status, body, detail = get(team, "/v1/devices?limit=200")
+          devices = body.get("data", []) if status == 200 else []
+          iphones = [d for d in devices if d["attributes"].get("deviceClass") in ("IPHONE", "IPAD") and d["attributes"].get("status") == "ENABLED"]
+          print(f"Registered iPhones/iPads: {len(iphones)}" + ("" if status == 200 else f" (could not list: {status} {detail})"))
+
+          status, body, detail = get(team, "/v1/certificates?limit=200")
+          kinds = {}
+          for c in body.get("data", []) if status == 200 else []:
+              kinds[c["attributes"]["certificateType"]] = kinds.get(c["attributes"]["certificateType"], 0) + 1
+          print(f"Certificates by type: {kinds or 'none'}")
+
+          status, body, detail = get(team, f"/v1/apps?filter[bundleId]={bundle}")
+          print(f"App Store Connect app record for {bundle}: {'yes' if status == 200 and body.get('data') else 'not created yet'}")
+
+          if not admin:
+              print("\nRESULT: the key works but its role is not Admin, and Xcode's automatic signing "
+                    "refuses such keys ('Authentication failed'). Create a Team key with Access = Admin.")
               raise SystemExit(1)
+          print("\nRESULT: the key works and has the Admin role.")
