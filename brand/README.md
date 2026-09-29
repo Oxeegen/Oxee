@@ -135,8 +135,11 @@ nothing installable on iPhone.
 
 | Secret | What |
 | --- | --- |
-| `OXEE_APPLE_TEAM_ID` | 10-character Team ID, developer.apple.com -> Membership |
-| `OXEE_ASC_KEY_ID`, `OXEE_ASC_ISSUER_ID`, `OXEE_ASC_KEY_P8` | App Store Connect API key (Users and Access -> Integrations -> App Store Connect API, role Admin, so Xcode can create the certificates and profiles). `OXEE_ASC_KEY_P8` is the text of the `.p8` file. |
+| `OXEE_ASC_KEY_ID`, `OXEE_ASC_ISSUER_ID`, `OXEE_ASC_KEY_P8` | App Store Connect **Team** API key (Users and Access -> Integrations -> App Store Connect API -> Team Keys, role Admin, so Xcode can register app ids and create certificates and profiles). `OXEE_ASC_KEY_P8` is the text of the `.p8` file. |
+
+The Apple Team ID (`84S2U7WQDP`) is not a secret: it is `appleTeamId` in
+`brand.json`, written into the Xcode project by `rebrand.py` and read by the
+workflow.
 | `OXEE_ANDROID_KEYSTORE_BASE64` | Upload keystore, base64 |
 | `OXEE_ANDROID_KEYSTORE_PASSWORD`, `OXEE_ANDROID_KEY_ALIAS`, `OXEE_ANDROID_KEY_PASSWORD` | Its passwords and alias |
 

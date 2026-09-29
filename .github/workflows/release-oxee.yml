@@ -145,7 +145,6 @@ jobs:
       ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
-      APPLE_TEAM_ID: ${{ secrets.OXEE_APPLE_TEAM_ID }}
       VERSION: ${{ needs.prepare.outputs.version }}
       BUILD: ${{ needs.prepare.outputs.build }}
       PUBLISH: ${{ needs.prepare.outputs.publish }}
@@ -164,6 +163,9 @@ jobs:
           channel: stable
           cache: true
       - run: python3 brand/tools/check_brand.py
+      - name: Apple team
+        # Public (it is in every signed app), so it lives in brand/brand.json.
+        run: echo "APPLE_TEAM_ID=$(python3 -c 'import json; print(json.load(open("brand/brand.json"))["appleTeamId"])')" >> "$GITHUB_ENV"
       - run: flutter pub get
       - name: Generate code
         shell: bash
