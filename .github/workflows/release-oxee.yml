@@ -75,7 +75,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          submodules: recursive
+      # Only the submodules the app builds from. openwebui-src and hermes-src
+      # are API references and took most of the job's time to clone.
+      - run: git submodule update --init --depth 1 third_party/mermaid third_party/katex
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -153,7 +155,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          submodules: recursive
+      # Only the submodules the app builds from. openwebui-src and hermes-src
+      # are API references and took most of the job's time to clone.
+      - run: git submodule update --init --depth 1 third_party/mermaid third_party/katex
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
