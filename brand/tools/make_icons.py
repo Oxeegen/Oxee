@@ -7,7 +7,7 @@ size and in its own role, so the file list never needs maintaining by hand:
 
   * app icons (iOS AppIcon sets, Android legacy launcher): the purple mark on
     white, filling MARK_SHARE of the icon (Claude's logo fills 65% of its
-    icon, ChatGPT's 81%, measured on an iPhone home screen); iOS icons are
+    icon, ChatGPT's 81%, measured on an iPhone home screen; 76% chosen); iOS icons are
     opaque, as the App Store requires;
   * Android adaptive layers: white background, the mark (or its monochrome
     silhouette) sized so it matches the iOS proportion inside the visible
@@ -32,7 +32,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[2]
 MASTER = ROOT / "brand/assets/oxee-mark-master.png"
 
-MARK_SHARE = 0.73                 # mark width / icon width
+MARK_SHARE = 0.76                 # mark width / icon width (Fred, 2026-09-29)
 WHITE = (255, 255, 255)
 DEBUG_GREY = (0xE6, 0xE6, 0xEC)
 # Cuts across the mark, as fractions of its width (measured on the master):
