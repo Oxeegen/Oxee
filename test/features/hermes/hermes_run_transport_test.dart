@@ -1066,7 +1066,7 @@ void main() {
 
       check(fake.getResponseCalls).equals(1);
       check(message.error?.content)
-          .equals('The Hermes recovery output exceeded Conduit\'s size limit.');
+          .equals('The Hermes recovery output exceeded Oxee\'s size limit.');
     });
 
     test('recovery waits while a stored response is queued', () async {
@@ -2701,7 +2701,7 @@ void main() {
     final fake = _FakeHermesApiService(
       const [],
       getRunError: const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s transfer limit.',
+        'The Hermes recovery response exceeded Oxee\'s transfer limit.',
       ),
       cancelTokenOnRecoveryError: true,
     );
@@ -2726,7 +2726,7 @@ void main() {
 
     check(fake.getRunCalls).equals(1);
     check(message.error?.content).equals(
-      'The Hermes recovery response exceeded Conduit\'s transfer limit.',
+      'The Hermes recovery response exceeded Oxee\'s transfer limit.',
     );
   });
 

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Ask Conduit</string>
+    <string>Ask Oxee</string>
     <key>AppGroupId</key>
     <string>$(APP_GROUP_ID)</string>
     <key>CFBundleVersion</key>

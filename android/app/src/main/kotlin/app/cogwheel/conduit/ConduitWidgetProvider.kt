@@ -62,42 +62,42 @@ class ConduitWidgetProvider : AppWidgetProvider() {
                 R.id.widget_container,
                 homeWidgetLaunchIntent(
                     context,
-                    Uri.parse("conduit://$ACTION_NEW_CHAT?homeWidget=true")
+                    Uri.parse("oxee://$ACTION_NEW_CHAT?homeWidget=true")
                 )
             )
             views.setOnClickPendingIntent(
                 R.id.btn_new_chat,
                 homeWidgetLaunchIntent(
                     context,
-                    Uri.parse("conduit://$ACTION_NEW_CHAT?homeWidget=true")
+                    Uri.parse("oxee://$ACTION_NEW_CHAT?homeWidget=true")
                 )
             )
             views.setOnClickPendingIntent(
                 R.id.btn_mic,
                 homeWidgetLaunchIntent(
                     context,
-                    Uri.parse("conduit://$ACTION_MIC?homeWidget=true")
+                    Uri.parse("oxee://$ACTION_MIC?homeWidget=true")
                 )
             )
             views.setOnClickPendingIntent(
                 R.id.btn_camera,
                 homeWidgetLaunchIntent(
                     context,
-                    Uri.parse("conduit://$ACTION_CAMERA?homeWidget=true")
+                    Uri.parse("oxee://$ACTION_CAMERA?homeWidget=true")
                 )
             )
             views.setOnClickPendingIntent(
                 R.id.btn_photos,
                 homeWidgetLaunchIntent(
                     context,
-                    Uri.parse("conduit://$ACTION_PHOTOS?homeWidget=true")
+                    Uri.parse("oxee://$ACTION_PHOTOS?homeWidget=true")
                 )
             )
             views.setOnClickPendingIntent(
                 R.id.btn_clipboard,
                 homeWidgetLaunchIntent(
                     context,
-                    Uri.parse("conduit://$ACTION_CLIPBOARD?homeWidget=true")
+                    Uri.parse("oxee://$ACTION_CLIPBOARD?homeWidget=true")
                 )
             )
 

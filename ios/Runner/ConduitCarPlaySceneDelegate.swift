@@ -84,7 +84,7 @@ final class ConduitCarPlaySceneDelegate: UIResponder,
     let template = CPVoiceControlTemplate(voiceControlStates: [
       CPVoiceControlState(
         identifier: VoiceState.unavailable,
-        titleVariants: ["Update iOS to use Conduit CarPlay", "CarPlay requires iOS 26.4"],
+        titleVariants: ["Update iOS to use Oxee CarPlay", "CarPlay requires iOS 26.4"],
         image: UIImage(systemName: "iphone"),
         repeats: false
       ),
@@ -104,14 +104,14 @@ final class ConduitCarPlaySceneDelegate: UIResponder,
     let template = CPVoiceControlTemplate(voiceControlStates: [
       makeState(
         identifier: VoiceState.working,
-        titleVariants: ["Conduit is starting", "Starting"],
+        titleVariants: ["Oxee is starting", "Starting"],
         systemImageName: "ellipsis",
         repeats: true,
         actionButtons: [makeEndButton()]
       ),
       makeState(
         identifier: VoiceState.listening,
-        titleVariants: ["Conduit is listening", "Listening"],
+        titleVariants: ["Oxee is listening", "Listening"],
         systemImageName: "mic.fill",
         repeats: true,
         actionButtons: [makePauseButton(), makeEndButton()]
@@ -125,14 +125,14 @@ final class ConduitCarPlaySceneDelegate: UIResponder,
       ),
       makeState(
         identifier: VoiceState.unavailable,
-        titleVariants: ["Open Conduit on iPhone", "Conduit unavailable"],
+        titleVariants: ["Open Oxee on iPhone", "Oxee unavailable"],
         systemImageName: "iphone",
         repeats: false,
         actionButtons: [makeStartButton()]
       ),
       makeState(
         identifier: VoiceState.ready,
-        titleVariants: ["Ask Conduit", "Conduit"],
+        titleVariants: ["Ask Oxee", "Oxee"],
         systemImageName: "waveform",
         repeats: true,
         actionButtons: [makeStartButton()]

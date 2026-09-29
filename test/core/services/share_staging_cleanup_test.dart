@@ -219,7 +219,7 @@ void main() {
             'unrelated-${DateTime.now().microsecondsSinceEpoch}.txt',
           ),
         );
-        await file.writeAsString('not owned by Conduit');
+        await file.writeAsString('not owned by Oxee');
         addTearDown(() async {
           if (await file.exists()) await file.delete();
         });

@@ -1,6 +1,6 @@
 {
   "@@locale": "cs",
-  "appTitle": "Conduit",
+  "appTitle": "Oxee",
   "serverIncompatibleTitle": "Server není podporován",
   "serverIncompatibleMessage": "Tento server používá Open WebUI {serverVersion}, což je novější verze, než tato aplikace podporuje (maximálně {maxVersion}).",
   "serverIncompatibleResolution": "Chcete-li pokračovat, snižte verzi serveru na {maxVersion} nebo nižší, nebo počkejte na aktualizaci aplikace, která podporu doplní.",
@@ -44,11 +44,11 @@
   "@account": {
     "description": "Section header for account-related options."
   },
-  "supportConduit": "Podpořit Conduit",
+  "supportConduit": "Podpořit Oxee",
   "@supportConduit": {
     "description": "Section header inviting the user to financially support the project."
   },
-  "supportConduitSubtitle": "Pomozte udržet Conduit nezávislý financováním dalšího vývoje.",
+  "supportConduitSubtitle": "Pomozte udržet Oxee nezávislý financováním dalšího vývoje.",
   "@supportConduitSubtitle": {
     "description": "Subtitle explaining why donations are helpful."
   },
@@ -72,7 +72,7 @@
   "releaseNotesAnnouncementTitle": "Novinky v {version}",
   "@releaseNotesAnnouncementTitle": {"placeholders": {"version": {"type": "String"}}},
   "releaseNotesLearnMore": "Zjistit více",
-  "releaseNotesReviewButton": "Ohodnotit Conduit",
+  "releaseNotesReviewButton": "Ohodnotit Oxee",
   "releaseNotesDoneButton": "Hotovo",
   "signOut": "Odhlásit se",
   "@signOut": {
@@ -528,7 +528,7 @@
   "@voiceCallErrorHelp": {
     "description": "Guidance shown when the voice call encounters an error."
   },
-  "messageHintText": "Zeptat se Conduitu",
+  "messageHintText": "Zeptat se Oxee",
   "@messageHintText": {
     "description": "Short placeholder text in the message input."
   },
@@ -640,7 +640,7 @@
   "@chatQueuedPendingTitle": {
     "description": "Title shown when a queued assistant response is waiting for sync/backoff."
   },
-  "chatQueuedPendingMessage": "Conduit spustí tuto odpověď, jakmile poběží synchronizace.",
+  "chatQueuedPendingMessage": "Oxee spustí tuto odpověď, jakmile poběží synchronizace.",
   "@chatQueuedPendingMessage": {
     "description": "Body text shown for a queued assistant response that is waiting to be sent."
   },
@@ -942,7 +942,7 @@
   "@aboutApp": {
     "description": "Settings tile title to view app information."
   },
-  "aboutAppSubtitle": "Informace o Conduitu a odkazy",
+  "aboutAppSubtitle": "Informace o Oxee a odkazy",
   "@aboutAppSubtitle": {
     "description": "Subtitle/description for the About section."
   },
@@ -1247,11 +1247,11 @@
   "@themePalette": {
     "description": "Title for selecting the app color palette."
   },
-  "themePaletteConduitLabel": "Conduit",
+  "themePaletteConduitLabel": "Oxee",
   "@themePaletteConduitLabel": {
     "description": "Palette name for the default Conduit theme."
   },
-  "themePaletteConduitDescription": "Čistý neutrální motiv navržený pro Conduit.",
+  "themePaletteConduitDescription": "Čistý neutrální motiv navržený pro Oxee.",
   "@themePaletteConduitDescription": {
     "description": "Description of the Conduit palette."
   },
@@ -1299,7 +1299,7 @@
   "@currentlyUsingLightTheme": {
     "description": "Status text indicating light theme is active."
   },
-  "aboutConduit": "O Conduitu",
+  "aboutConduit": "O Oxee",
   "@aboutConduit": {
     "description": "Dialog title for app information."
   },
@@ -1407,7 +1407,7 @@
   "@androidAssistantOverlayOption": {
     "description": "Option label for keeping the current assistant overlay."
   },
-  "androidAssistantNewChatOption": "Otevřít Conduit s novým chatem",
+  "androidAssistantNewChatOption": "Otevřít Oxee s novým chatem",
   "@androidAssistantNewChatOption": {
     "description": "Option label for opening the app to a fresh chat from the assistant trigger."
   },
@@ -2897,7 +2897,7 @@
   "@inactiveStatus": {
     "description": "Label for an inactive account status."
   },
-  "appInformation": "Aplikace Conduit",
+  "appInformation": "Aplikace Oxee",
   "@appInformation": {
     "description": "Heading for local app information."
   },
@@ -4557,7 +4557,7 @@
   "hermesAgentSettingsSubtitle": "Connect a self-hosted Hermes agent",
   "connectOpenWebUITitle": "Connect to Open WebUI",
   "connectOpenWebUISubtitle": "Add a self-hosted Open WebUI server",
-  "backendChooserWelcome": "Welcome to Conduit",
+  "backendChooserWelcome": "Welcome to Oxee",
   "backendChooserPrompt": "Choose how you want to connect.",
   "backendChooserOpenWebUISubtitle": "Use your self-hosted Open WebUI server with full chat, notes, and more.",
   "backendChooserHermesTitle": "Use a Hermes Agent",
@@ -4624,7 +4624,7 @@
   "openWebUiDirectConnectionsLoadFailed": "Připojení z Open WebUI se nepodařilo synchronizovat.",
   "openWebUiDirectConnectionSourceLabel": "Open WebUI",
   "deviceDirectConnectionSourceLabel": "Toto zařízení",
-  "openWebUiDirectConnectionUnsupportedAuth": "Toto připojení používá způsob ověřování, který Conduit nemůže bezpečně použít.",
+  "openWebUiDirectConnectionUnsupportedAuth": "Toto připojení používá způsob ověřování, který Oxee nemůže bezpečně použít.",
   "directConnectionUnavailableLabel": "Nedostupné",
   "openWebUiDirectConnectionEditorDescription": "Změny se uloží do vašeho účtu Open WebUI.",
   "openWebUiDirectConnectionProviderDescription": "Uživatelská připojení v Open WebUI podporují API kompatibilní s OpenAI.",
@@ -4660,7 +4660,7 @@
   "openRouterProviderName": "OpenRouter",
   "directApiBaseUrl": "Base URL",
   "directOpenRouterUrlInvalid": "Use OpenRouter’s HTTPS /api/v1 root (global or EU).",
-  "directOpenRouterBaseUrlDescription": "Uses your OpenRouter API key, authenticated model catalog, and Conduit-managed tools.",
+  "directOpenRouterBaseUrlDescription": "Uses your OpenRouter API key, authenticated model catalog, and Oxee-managed tools.",
   "directOpenRouterChatCompletionsDescription": "Chat Completions is used for native web search, image generation, PDF parsing, and reusable PDF annotations.",
   "directCompletionApi": "Completion API",
   "directChatCompletions": "Chat Completions",
@@ -4755,8 +4755,8 @@
   "ollamaThinkingMedium": "Medium",
   "ollamaThinkingHigh": "High",
   "ollamaThinkingMaximum": "Maximum",
-  "releaseNotesSupportPromptHeading": "Líbí se vám Conduit?",
-  "releaseNotesSupportPromptMessage": "Krátká recenze pomůže více lidem objevit Conduit. Malé dýško mi pomáhá pokračovat ve vývoji. Obojí pro mě hodně znamená.",
+  "releaseNotesSupportPromptHeading": "Líbí se vám Oxee?",
+  "releaseNotesSupportPromptMessage": "Krátká recenze pomůže více lidem objevit Oxee. Malé dýško mi pomáhá pokračovat ve vývoji. Obojí pro mě hodně znamená.",
   "directConnectProvider": "Připojit poskytovatele",
   "directConnectProviderTitle": "Připojit poskytovatele",
   "directConnectionEnabledSubtitle": "Zobrazovat modely tohoto připojení ve výběru modelů.",
@@ -4766,7 +4766,7 @@
   "directApiKeyPlaceholder": "Zadejte klíč API",
   "hermesOnboardingFailed": "Nastavení Hermes se nepodařilo dokončit. Zkontrolujte zabezpečené úložiště a zkuste to znovu.",
   "hermesConnectionDetailsTitle": "Podrobnosti připojení",
-  "hermesMemoryKeyShortDescription": "Přiřadí dlouhodobou paměť agenta k vám. Nechte prázdné a Conduit klíč vytvoří.",
+  "hermesMemoryKeyShortDescription": "Přiřadí dlouhodobou paměť agenta k vám. Nechte prázdné a Oxee klíč vytvoří.",
   "hermesConnectAction": "Připojit Hermes",
   "hermesToolCount": "{count, plural, one{1 nástroj} few{{count} nástroje} other{{count} nástrojů}}",
   "@hermesToolCount": {"placeholders":{"count":{"type":"int"}}},
@@ -4945,12 +4945,12 @@
   "backendChooserSelfHostedSectionTitle": "Vlastní hostované služby",
   "citationShowTitles": "Zobrazovat názvy stránek u citací",
   "citationShowTitlesDescription": "V odznacích citací používat názvy stránek místo domén webů",
-  "directContextCompactionDescription": "Tyto modely neuvádějí velikost kontextového okna. Conduit použije zvolený limit ke zhuštění starších zpráv dříve, než budou požadavky příliš velké.",
-  "directContextCompactionPickerDescription": "Vyberte kontextové okno, které má Conduit použít pro automatické zhuštění.",
+  "directContextCompactionDescription": "Tyto modely neuvádějí velikost kontextového okna. Oxee použije zvolený limit ke zhuštění starších zpráv dříve, než budou požadavky příliš velké.",
+  "directContextCompactionPickerDescription": "Vyberte kontextové okno, které má Oxee použít pro automatické zhuštění.",
   "directContextCompactionTitle": "Zhuštění kontextu",
   "directContextLimit": "Limit kontextu: {tokens}",
   "@directContextLimit": {"description": "Provider-neutral model context limit label.", "placeholders": {"tokens": {"type": "String"}}},
-  "notificationSystemSettingsDescription": "Změňte oprávnění, zvuk a možnosti bannerů pro Conduit.",
+  "notificationSystemSettingsDescription": "Změňte oprávnění, zvuk a možnosti bannerů pro Oxee.",
   "notificationSystemSettingsOpenFailed": "Systémové nastavení oznámení se nepodařilo otevřít.",
   "notificationSystemSettingsTitle": "Systémové nastavení oznámení",
   "proxyAuthSignInAgain": "Znovu se přihlásit přes proxy",

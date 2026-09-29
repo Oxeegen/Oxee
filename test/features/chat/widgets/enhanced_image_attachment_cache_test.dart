@@ -93,7 +93,7 @@ void main() {
     check(small.height).equals(60);
   });
 
-  test('same-origin image metadata cannot override the Conduit identity', () {
+  test('same-origin image metadata cannot override the Oxee identity', () {
     final headers = debugMergeImageHeaders(
       {
         'Authorization': 'Bearer token',

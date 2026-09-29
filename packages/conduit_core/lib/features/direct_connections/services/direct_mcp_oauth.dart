@@ -346,7 +346,7 @@ final class DirectMcpOAuthCoordinator {
     final authMethods = authorization.tokenEndpointAuthMethodsSupported;
     if (authMethods?.contains('none') != true) {
       throw const DirectMcpOAuthException(
-        'This OAuth server requires a confidential client, which Conduit does not support.',
+        'This OAuth server requires a confidential client, which Oxee does not support.',
       );
     }
     return _OAuthMetadata(
@@ -400,11 +400,11 @@ final class DirectMcpOAuthCoordinator {
     final endpoint = metadata.registrationEndpoint;
     if (endpoint == null) {
       throw const DirectMcpOAuthException(
-        'This OAuth server requires hosted client metadata or pre-registration, which Conduit does not support.',
+        'This OAuth server requires hosted client metadata or pre-registration, which Oxee does not support.',
       );
     }
     final response = await _postJson(endpoint, {
-      'client_name': 'Conduit',
+      'client_name': 'Oxee',
       'redirect_uris': [redirectUri.toString()],
       'grant_types': ['authorization_code', 'refresh_token'],
       'response_types': ['code'],
@@ -423,7 +423,7 @@ final class DirectMcpOAuthCoordinator {
     }
     if (authMethod != null && authMethod != 'none') {
       throw const DirectMcpOAuthException(
-        'This OAuth server registered a confidential client, which Conduit does not support.',
+        'This OAuth server registered a confidential client, which Oxee does not support.',
       );
     }
     final registeredRedirects = response['redirect_uris'];
@@ -554,8 +554,8 @@ final class DirectMcpOAuthCoordinator {
         ..headers.contentType = ContentType.html
         ..write(
           accepted
-              ? 'Authorization received. Return to Conduit.'
-              : 'Authorization rejected. Return to Conduit.',
+              ? 'Authorization received. Return to Oxee.'
+              : 'Authorization rejected. Return to Oxee.',
         );
       await request.response.close();
     }

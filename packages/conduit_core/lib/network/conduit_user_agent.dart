@@ -7,7 +7,7 @@ import 'conduit_user_agent_platform.dart' as platform;
 /// allowlists remain stable. A redirect can cross origins, therefore this value
 /// must stay product-specific and never contain device or account data.
 abstract final class ConduitUserAgent {
-  static const String productName = 'Conduit';
+  static const String productName = 'Oxee';
   static const String headerName = 'User-Agent';
 
   static String _value = productName;

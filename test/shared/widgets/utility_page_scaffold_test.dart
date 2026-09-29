@@ -14,7 +14,7 @@ void main() {
 
   tearDown(PlatformUiCapabilities.resetDebugOverrides);
 
-  testWidgets('iOS utility routes reuse the shared Conduit navigation bar', (
+  testWidgets('iOS utility routes reuse the shared Oxee navigation bar', (
     tester,
   ) async {
     PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;

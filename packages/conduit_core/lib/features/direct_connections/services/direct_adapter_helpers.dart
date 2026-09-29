@@ -192,7 +192,7 @@ Stream<List<int>> directStreamingResponseBytes(
           throw const DirectStreamDrainException();
         }
         throw const DirectProviderException(
-          'The provider stream exceeded Conduit\'s time limit.',
+          'The provider stream exceeded Oxee\'s time limit.',
         );
       }
       final drainRemaining = drainingSuccess
@@ -217,7 +217,7 @@ Stream<List<int>> directStreamingResponseBytes(
         }
         if (enforcingAbsoluteLimit) {
           throw DirectProviderException(
-            'The provider stream exceeded Conduit\'s time limit.',
+            'The provider stream exceeded Oxee\'s time limit.',
             cause: error,
           );
         }
@@ -245,7 +245,7 @@ Stream<List<int>> directStreamingResponseBytes(
           throw const DirectStreamDrainException();
         }
         throw const DirectProviderException(
-          'The provider stream exceeded Conduit\'s transfer limit.',
+          'The provider stream exceeded Oxee\'s transfer limit.',
         );
       }
       if (drainingSuccess) {
@@ -337,7 +337,7 @@ final class DirectStreamBudget {
     _events += 1;
     if (_events > maxEvents) {
       throw const DirectProviderException(
-        'The provider response exceeded Conduit\'s resource limit.',
+        'The provider response exceeded Oxee\'s resource limit.',
       );
     }
   }
@@ -349,7 +349,7 @@ final class DirectStreamBudget {
     _characters += characters;
     if (_characters > maxCharacters) {
       throw const DirectProviderException(
-        'The provider response exceeded Conduit\'s size limit.',
+        'The provider response exceeded Oxee\'s size limit.',
       );
     }
   }
@@ -361,7 +361,7 @@ final class DirectStreamBudget {
     _workUnits += units;
     if (_workUnits > maxWorkUnits) {
       throw const DirectProviderException(
-        'The provider response exceeded Conduit\'s resource limit.',
+        'The provider response exceeded Oxee\'s resource limit.',
       );
     }
   }

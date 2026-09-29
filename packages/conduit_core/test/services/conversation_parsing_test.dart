@@ -718,7 +718,7 @@ void main() {
           checkSingleToolTile(reloadedContent(pipeText));
         });
 
-        test('renders the tool tile once from Conduit-persisted content', () {
+        test('renders the tool tile once from Oxee-persisted content', () {
           // What the live stream rendered and /api/chat/completed persisted.
           final persisted = renderStructuredOutputBlocks(
             parseOpenWebUIStructuredOutput(pipeOutput),

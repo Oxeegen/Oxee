@@ -110,7 +110,7 @@ void main() {
 
     expect(find.text("What's new in 4.0.1"), findsOneWidget);
     expect(find.text("What's new"), findsNothing);
-    expect(find.text('Welcome to Conduit 4.0.'), findsNothing);
+    expect(find.text('Welcome to Oxee 4.0.'), findsNothing);
   });
 
   testWidgets('existing 4.0.0 install shows the bundled 4.0.1 banner', (
@@ -399,8 +399,8 @@ class _FakeNotesBundle extends CachingAssetBundle {
       },
       {
         'version': '4.0.1',
-        'title': 'Conduit 4.0',
-        'intro': 'Welcome to Conduit 4.0.',
+        'title': 'Oxee 4.0',
+        'intro': 'Welcome to Oxee 4.0.',
         'bullets': [
           {'text': 'Local-first chats'},
           {'text': 'Direct and Hermes backends'},
@@ -507,7 +507,7 @@ Widget _app({
       authNavigationStateProvider.overrideWithValue(authState),
       packageInfoProvider.overrideWith(
         (ref) async => PackageInfo(
-          appName: 'Conduit',
+          appName: 'Oxee',
           packageName: 'app.cogwheel.conduit',
           version: packageVersion,
           buildNumber: '132',

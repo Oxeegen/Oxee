@@ -520,7 +520,7 @@ final class PccBridge: PccHostApi {
     }
 
     private static let pccUnentitledMessage =
-        "Apple Private Cloud Compute is not enabled in this build of Conduit."
+        "Apple Private Cloud Compute is not enabled in this build of Oxee."
 
     private static let pccUnentitledStatus = PlatformPccStatus(
         availability: .unsupported,

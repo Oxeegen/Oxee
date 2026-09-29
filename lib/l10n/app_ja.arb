@@ -1,6 +1,6 @@
 {
   "@@locale": "ja",
-  "appTitle": "Conduit",
+  "appTitle": "Oxee",
   "serverIncompatibleTitle": "サーバーは未対応です",
   "serverIncompatibleMessage": "このサーバーは Open WebUI {serverVersion} を実行しており、このアプリが対応するバージョン（{maxVersion} まで）よりも新しいバージョンです。",
   "serverIncompatibleResolution": "続行するには、サーバーを {maxVersion} 以前にダウングレードするか、対応を追加するアプリの更新をお待ちください。",
@@ -44,11 +44,11 @@
   "@account": {
     "description": "Section header for account-related options."
   },
-  "supportConduit": "Conduit を支援",
+  "supportConduit": "Oxee を支援",
   "@supportConduit": {
     "description": "Section header inviting the user to financially support the project."
   },
-  "supportConduitSubtitle": "継続的な開発を支援して、Conduit の独立性を保ちます。",
+  "supportConduitSubtitle": "継続的な開発を支援して、Oxee の独立性を保ちます。",
   "@supportConduitSubtitle": {
     "description": "Subtitle explaining why donations are helpful."
   },
@@ -72,7 +72,7 @@
   "releaseNotesAnnouncementTitle": "{version} の新機能",
   "@releaseNotesAnnouncementTitle": {"placeholders": {"version": {"type": "String"}}},
   "releaseNotesLearnMore": "詳細を見る",
-  "releaseNotesReviewButton": "Conduit をレビュー",
+  "releaseNotesReviewButton": "Oxee をレビュー",
   "releaseNotesDoneButton": "完了",
   "signOut": "サインアウト",
   "@signOut": {
@@ -528,7 +528,7 @@
   "@voiceCallErrorHelp": {
     "description": "Guidance shown when the voice call encounters an error."
   },
-  "messageHintText": "Conduit に質問",
+  "messageHintText": "Oxee に質問",
   "@messageHintText": {
     "description": "Short placeholder text in the message input."
   },
@@ -640,7 +640,7 @@
   "@chatQueuedPendingTitle": {
     "description": "Title shown when a queued assistant response is waiting for sync/backoff."
   },
-  "chatQueuedPendingMessage": "同期が実行され次第、Conduit がこの応答を開始します。",
+  "chatQueuedPendingMessage": "同期が実行され次第、Oxee がこの応答を開始します。",
   "@chatQueuedPendingMessage": {
     "description": "Body text shown for a queued assistant response that is waiting to be sent."
   },
@@ -942,7 +942,7 @@
   "@aboutApp": {
     "description": "Settings tile title to view app information."
   },
-  "aboutAppSubtitle": "Conduit の情報とリンク",
+  "aboutAppSubtitle": "Oxee の情報とリンク",
   "@aboutAppSubtitle": {
     "description": "Subtitle/description for the About section."
   },
@@ -1247,11 +1247,11 @@
   "@themePalette": {
     "description": "Title for selecting the app color palette."
   },
-  "themePaletteConduitLabel": "Conduit",
+  "themePaletteConduitLabel": "Oxee",
   "@themePaletteConduitLabel": {
     "description": "Palette name for the default Conduit theme."
   },
-  "themePaletteConduitDescription": "Conduit 向けに設計されたクリーンなニュートラルテーマ。",
+  "themePaletteConduitDescription": "Oxee 向けに設計されたクリーンなニュートラルテーマ。",
   "@themePaletteConduitDescription": {
     "description": "Description of the Conduit palette."
   },
@@ -1299,7 +1299,7 @@
   "@currentlyUsingLightTheme": {
     "description": "Status text indicating light theme is active."
   },
-  "aboutConduit": "Conduit について",
+  "aboutConduit": "Oxee について",
   "@aboutConduit": {
     "description": "Dialog title for app information."
   },
@@ -1407,7 +1407,7 @@
   "@androidAssistantOverlayOption": {
     "description": "Option label for keeping the current assistant overlay."
   },
-  "androidAssistantNewChatOption": "新しいチャットで Conduit を開く",
+  "androidAssistantNewChatOption": "新しいチャットで Oxee を開く",
   "@androidAssistantNewChatOption": {
     "description": "Option label for opening the app to a fresh chat from the assistant trigger."
   },
@@ -2679,7 +2679,7 @@
   "passwordUpdated": "パスワードを更新しました。",
   "activeStatus": "有効",
   "inactiveStatus": "無効",
-  "appInformation": "Conduit アプリ",
+  "appInformation": "Oxee アプリ",
   "appVersion": "バージョン",
   "serverInformation": "サーバー情報",
   "serverInfoUnavailable": "現在サーバー情報を利用できません。",
@@ -4242,7 +4242,7 @@
   "hermesAgentSettingsSubtitle": "Connect a self-hosted Hermes agent",
   "connectOpenWebUITitle": "Connect to Open WebUI",
   "connectOpenWebUISubtitle": "Add a self-hosted Open WebUI server",
-  "backendChooserWelcome": "Welcome to Conduit",
+  "backendChooserWelcome": "Welcome to Oxee",
   "backendChooserPrompt": "Choose how you want to connect.",
   "backendChooserOpenWebUISubtitle": "Use your self-hosted Open WebUI server with full chat, notes, and more.",
   "backendChooserHermesTitle": "Use a Hermes Agent",
@@ -4309,7 +4309,7 @@
   "openWebUiDirectConnectionsLoadFailed": "Open WebUIから接続を同期できませんでした。",
   "openWebUiDirectConnectionSourceLabel": "Open WebUI",
   "deviceDirectConnectionSourceLabel": "このデバイス",
-  "openWebUiDirectConnectionUnsupportedAuth": "この接続では、Conduitが安全に使用できない認証方式が設定されています。",
+  "openWebUiDirectConnectionUnsupportedAuth": "この接続では、Oxeeが安全に使用できない認証方式が設定されています。",
   "directConnectionUnavailableLabel": "利用不可",
   "openWebUiDirectConnectionEditorDescription": "変更内容はOpen WebUIアカウントに保存されます。",
   "openWebUiDirectConnectionProviderDescription": "Open WebUIのユーザー接続はOpenAI互換APIに対応しています。",
@@ -4345,7 +4345,7 @@
   "openRouterProviderName": "OpenRouter",
   "directApiBaseUrl": "Base URL",
   "directOpenRouterUrlInvalid": "Use OpenRouter’s HTTPS /api/v1 root (global or EU).",
-  "directOpenRouterBaseUrlDescription": "Uses your OpenRouter API key, authenticated model catalog, and Conduit-managed tools.",
+  "directOpenRouterBaseUrlDescription": "Uses your OpenRouter API key, authenticated model catalog, and Oxee-managed tools.",
   "directOpenRouterChatCompletionsDescription": "Chat Completions is used for native web search, image generation, PDF parsing, and reusable PDF annotations.",
   "directCompletionApi": "Completion API",
   "directChatCompletions": "Chat Completions",
@@ -4440,8 +4440,8 @@
   "ollamaThinkingMedium": "Medium",
   "ollamaThinkingHigh": "High",
   "ollamaThinkingMaximum": "Maximum",
-  "releaseNotesSupportPromptHeading": "Conduit を気に入っていただけましたか?",
-  "releaseNotesSupportPromptMessage": "短いレビューは、より多くの人が Conduit と出会う助けになります。小さなチップは、開発を続ける力になります。どちらも本当に励みになります。",
+  "releaseNotesSupportPromptHeading": "Oxee を気に入っていただけましたか?",
+  "releaseNotesSupportPromptMessage": "短いレビューは、より多くの人が Oxee と出会う助けになります。小さなチップは、開発を続ける力になります。どちらも本当に励みになります。",
   "directConnectProvider": "プロバイダーに接続",
   "directConnectProviderTitle": "プロバイダーに接続",
   "directConnectionEnabledSubtitle": "この接続のモデルをモデル選択に表示します。",
@@ -4451,7 +4451,7 @@
   "directApiKeyPlaceholder": "API キーを入力",
   "hermesOnboardingFailed": "Hermes の設定を完了できませんでした。セキュアストレージを確認して、もう一度お試しください。",
   "hermesConnectionDetailsTitle": "接続の詳細",
-  "hermesMemoryKeyShortDescription": "エージェントの長期記憶をあなたに関連付けます。空欄の場合は Conduit がキーを作成します。",
+  "hermesMemoryKeyShortDescription": "エージェントの長期記憶をあなたに関連付けます。空欄の場合は Oxee がキーを作成します。",
   "hermesConnectAction": "Hermes に接続",
   "hermesToolCount": "ツール {count} 個",
   "@hermesToolCount": {"placeholders":{"count":{"type":"int"}}},
@@ -4630,12 +4630,12 @@
   "backendChooserSelfHostedSectionTitle": "セルフホストのサービス",
   "citationShowTitles": "引用にページタイトルを表示",
   "citationShowTitlesDescription": "引用バッジにサイトのドメインではなくページタイトルを使用します",
-  "directContextCompactionDescription": "これらのモデルはコンテキストウィンドウを報告しません。Conduit はリクエストが大きくなりすぎる前に、選択した上限を使って古いメッセージを圧縮します。",
-  "directContextCompactionPickerDescription": "Conduit が自動圧縮に使用するコンテキストウィンドウを選択してください。",
+  "directContextCompactionDescription": "これらのモデルはコンテキストウィンドウを報告しません。Oxee はリクエストが大きくなりすぎる前に、選択した上限を使って古いメッセージを圧縮します。",
+  "directContextCompactionPickerDescription": "Oxee が自動圧縮に使用するコンテキストウィンドウを選択してください。",
   "directContextCompactionTitle": "コンテキストの圧縮",
   "directContextLimit": "コンテキスト上限: {tokens}",
   "@directContextLimit": {"description": "Provider-neutral model context limit label.", "placeholders": {"tokens": {"type": "String"}}},
-  "notificationSystemSettingsDescription": "Conduit の許可、サウンド、バナーの設定を変更します。",
+  "notificationSystemSettingsDescription": "Oxee の許可、サウンド、バナーの設定を変更します。",
   "notificationSystemSettingsOpenFailed": "システムの通知設定を開けませんでした。",
   "notificationSystemSettingsTitle": "システムの通知設定",
   "proxyAuthSignInAgain": "プロキシ経由で再度サインイン",

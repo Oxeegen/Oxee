@@ -700,7 +700,7 @@ final class _BoundedRawLineScanner {
       }
       if (_buffer.length >= maxLineCharacters) {
         throw const DirectProviderException(
-          'The provider response exceeded Conduit\'s size limit.',
+          'The provider response exceeded Oxee\'s size limit.',
         );
       }
       _buffer.writeCharCode(codeUnit);

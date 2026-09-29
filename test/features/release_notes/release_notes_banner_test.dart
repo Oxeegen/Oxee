@@ -95,7 +95,7 @@ Future<void> _pumpBanner(
             ReleaseNote(
               version: '4.0.1',
               title: 'Local models, polished details',
-              intro: 'Welcome to Conduit 4.0.',
+              intro: 'Welcome to Oxee 4.0.',
               bullets: ['Local-first chats'],
             ),
           ],

@@ -8,16 +8,16 @@ void main() {
   group('ConduitUserAgent', () {
     test('builds a product and app-version token', () {
       check(ConduitUserAgent.build(appVersion: ' 3.4.3 '))
-          .equals('Conduit/3.4.3');
+          .equals('Oxee/3.4.3');
     });
 
     test('sanitizes characters that are invalid in a product token', () {
       check(ConduitUserAgent.build(appVersion: '3.4 beta/1'))
-          .equals('Conduit/3.4-beta-1');
+          .equals('Oxee/3.4-beta-1');
     });
 
     test('falls back to the product name when the version is empty', () {
-      check(ConduitUserAgent.build(appVersion: '   ')).equals('Conduit');
+      check(ConduitUserAgent.build(appVersion: '   ')).equals('Oxee');
     });
 
     test('configure updates the process-wide identity', () {
@@ -25,7 +25,7 @@ void main() {
 
       ConduitUserAgent.configure(appVersion: '9.8.7');
 
-      check(ConduitUserAgent.value).equals('Conduit/9.8.7');
+      check(ConduitUserAgent.value).equals('Oxee/9.8.7');
     });
 
     test('runtime fallback matches dart:io', () {

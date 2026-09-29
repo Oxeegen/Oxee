@@ -141,7 +141,7 @@ void main() {
     });
 
     test(
-      'configured User-Agent cannot override the Conduit identity',
+      'configured User-Agent cannot override the Oxee identity',
       () async {
         final interceptor = ApiAuthInterceptor(
           serverUrl: _serverUrl,

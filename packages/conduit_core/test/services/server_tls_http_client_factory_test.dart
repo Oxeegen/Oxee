@@ -71,13 +71,13 @@ void main() {
       ServerTlsHttpClientFactory.configureDio(
         dio,
         _server(),
-        userAgent: 'Conduit/test',
+        userAgent: 'Oxee/test',
       );
 
       final adapter = dio.httpClientAdapter as IOHttpClientAdapter;
       final client = adapter.createHttpClient!();
       addTearDown(() => client.close(force: true));
-      check(client.userAgent).equals('Conduit/test');
+      check(client.userAgent).equals('Oxee/test');
     });
   });
 }

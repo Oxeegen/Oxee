@@ -23,7 +23,7 @@ void main() {
 
         expect(systemUserAgents, [ConduitUserAgent.value]);
         expect(
-          directUserAgents.where((value) => value.contains('Conduit')),
+          directUserAgents.where((value) => value.contains('Oxee')),
           isEmpty,
         );
       } finally {

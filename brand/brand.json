@@ -1,0 +1,17 @@
+{
+  "appName": "Oxee",
+  "upstreamAppName": "Conduit",
+  "bundleId": "com.oxeegen.oxee",
+  "upstreamBundleId": "app.cogwheel.conduit",
+  "appGroupId": "group.com.oxeegen.oxee",
+  "debugAppGroupId": "group.com.oxeegen.oxee.debug",
+  "urlScheme": "oxee",
+  "appleTeamId": "",
+  "repoUrl": "https://github.com/Oxeegen/Oxee",
+  "playStoreUrl": "https://play.google.com/store/apps/details?id=com.oxeegen.oxee",
+  "appStoreReviewUrl": "",
+  "regions": {
+    "us": { "label": "Oxeegen US", "url": "https://ai.oxeegen.com" },
+    "fr": { "label": "Oxeegen FR", "url": "https://ia.oxeegen.fr" }
+  }
+}

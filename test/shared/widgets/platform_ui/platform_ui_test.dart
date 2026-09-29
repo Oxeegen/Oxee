@@ -342,7 +342,7 @@ void main() {
     debugDefaultTargetPlatformOverride = null;
   });
 
-  testWidgets('Conduit buttons keep geometry and typography across states', (
+  testWidgets('Oxee buttons keep geometry and typography across states', (
     tester,
   ) async {
     PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;

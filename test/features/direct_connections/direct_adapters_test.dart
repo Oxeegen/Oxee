@@ -649,7 +649,7 @@ void main() {
     () async {
       final http = _QueuedAdapter([
         _Reply.json({
-          'data': {'label': 'Conduit key', 'limit_remaining': 10},
+          'data': {'label': 'Oxee key', 'limit_remaining': 10},
         }),
         _Reply.json({
           'data': [
@@ -1780,7 +1780,7 @@ void main() {
     expect(http.requests, isEmpty);
     expect(
       events.whereType<DirectStreamError>().single.message,
-      'This provider does not support Conduit-managed server tools.',
+      'This provider does not support Oxee-managed server tools.',
     );
   });
 

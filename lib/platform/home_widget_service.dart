@@ -35,8 +35,8 @@ class WidgetActions {
 }
 
 /// App group identifier for iOS widget data sharing.
-const String _releaseAppGroupId = 'group.app.cogwheel.conduit';
-const String _debugAppGroupId = 'group.app.cogwheel.conduit.x2662v5dt2.debug';
+const String _releaseAppGroupId = 'group.com.oxeegen.oxee';
+const String _debugAppGroupId = 'group.com.oxeegen.oxee.debug';
 
 String get _appGroupId => kReleaseMode ? _releaseAppGroupId : _debugAppGroupId;
 

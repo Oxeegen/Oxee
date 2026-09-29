@@ -43,7 +43,7 @@ void main() {
             );
             final hasGreeting =
                 result.contains('help you explore') ||
-                result.contains('Welcome to Conduit') ||
+                result.contains('Welcome to Oxee') ||
                 result.contains('chat capabilities');
             check(hasGreeting).isTrue();
           }
@@ -137,7 +137,7 @@ void main() {
           );
           final hasGreeting =
               result.contains('help you explore') ||
-              result.contains('Welcome to Conduit') ||
+              result.contains('Welcome to Oxee') ||
               result.contains('chat capabilities');
           check(hasGreeting).isTrue();
         });

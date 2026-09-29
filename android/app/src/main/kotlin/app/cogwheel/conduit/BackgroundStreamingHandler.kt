@@ -122,7 +122,7 @@ class BackgroundStreamingService : Service() {
                 // Otherwise startForeground throws "Bad notification" error
                 ensureNotificationChannel()
                 val fallbackNotification = NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("Conduit")
+                    .setContentTitle("Oxee")
                     .setSmallIcon(R.drawable.ic_hub)
                     .setSilent(true)
                     .setOngoing(true)  // Prevent user from dismissing foreground service notification
@@ -329,7 +329,7 @@ class BackgroundStreamingService : Service() {
 
         // Create a minimal, silent notification (required for foreground service)
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Conduit")
+            .setContentTitle("Oxee")
             .setContentText("Background service active")
             .setSmallIcon(R.drawable.ic_hub)
             .setContentIntent(pendingIntent)
@@ -354,7 +354,7 @@ class BackgroundStreamingService : Service() {
             "Background Service",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Background service for Conduit"
+            description = "Background service for Oxee"
             setShowBadge(false)
             enableLights(false)
             enableVibration(false)
@@ -397,7 +397,7 @@ class BackgroundStreamingService : Service() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
-            "Conduit::StreamingWakeLock"
+            "Oxee::StreamingWakeLock"
         ).apply {
             // Disable reference counting for deterministic single-holder behavior
             // This prevents accumulation if acquireWakeLock is called multiple times
@@ -916,7 +916,7 @@ class BackgroundStreamingHandler(private val activity: MainActivity) : Backgroun
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val name = "Background Service"
-            val descriptionText = "Background service for Conduit"
+            val descriptionText = "Background service for Oxee"
             val importance = NotificationManager.IMPORTANCE_LOW
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val existingChannel = notificationManager.getNotificationChannel(

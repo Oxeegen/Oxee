@@ -858,12 +858,12 @@ final class OpenAiCompatibleAdapter implements DirectProviderAdapter {
       totalCalls += result.calls.length;
       if (totalCalls > kDirectMaxToolCalls) {
         throw const DirectProviderException(
-          'The provider exceeded Conduit\'s tool-call limit.',
+          'The provider exceeded Oxee\'s tool-call limit.',
         );
       }
       if (round + 1 >= kDirectMaxToolRounds) {
         throw const DirectProviderException(
-          'The provider exceeded Conduit\'s tool round limit.',
+          'The provider exceeded Oxee\'s tool round limit.',
         );
       }
       conversation.add(<String, dynamic>{
@@ -1118,12 +1118,12 @@ final class OpenAiCompatibleAdapter implements DirectProviderAdapter {
       totalCalls += result.calls.length;
       if (totalCalls > kDirectMaxToolCalls) {
         throw const DirectProviderException(
-          'The provider exceeded Conduit\'s tool-call limit.',
+          'The provider exceeded Oxee\'s tool-call limit.',
         );
       }
       if (round + 1 >= kDirectMaxToolRounds) {
         throw const DirectProviderException(
-          'The provider exceeded Conduit\'s tool round limit.',
+          'The provider exceeded Oxee\'s tool round limit.',
         );
       }
       for (final item in result.replayItems) {
@@ -1522,7 +1522,7 @@ Map<String, dynamic> _chatRequestBody(
     _applyOpenRouterRequestFeatures(body, request, messages);
   } else if (request.enableWebSearch || request.enableImageGeneration) {
     throw const DirectProviderException(
-      'This provider does not support Conduit-managed server tools.',
+      'This provider does not support Oxee-managed server tools.',
     );
   }
   final runtime = request.tools;
@@ -1758,7 +1758,7 @@ Map<String, dynamic> _responsesRequestBody(
   if (!profile.isOpenRouter &&
       (request.enableWebSearch || request.enableImageGeneration)) {
     throw const DirectProviderException(
-      'This provider does not support Conduit-managed server tools.',
+      'This provider does not support Oxee-managed server tools.',
     );
   }
   return body;
@@ -2049,7 +2049,7 @@ void _appendChatToolCallFragments(
     final builder = calls.putIfAbsent(index, () {
       if (calls.length >= kDirectMaxToolCalls) {
         throw const DirectProviderException(
-          'The provider exceeded Conduit\'s tool-call limit.',
+          'The provider exceeded Oxee\'s tool-call limit.',
         );
       }
       return _ChatToolCallBuilder();
@@ -2302,7 +2302,7 @@ final class _ResponsesToolCallCollector {
     return _builders.putIfAbsent(outputIndex, () {
       if (_builders.length >= kDirectMaxToolCalls) {
         throw const DirectProviderException(
-          'The provider exceeded Conduit\'s tool-call limit.',
+          'The provider exceeded Oxee\'s tool-call limit.',
         );
       }
       return _ResponsesToolCallBuilder();
@@ -2386,13 +2386,13 @@ final class _ResponsesReplayBudget {
     _items += 1;
     if (_items > _kMaxResponsesReplayItems) {
       throw const DirectProviderException(
-        'The provider exceeded Conduit\'s response replay limit.',
+        'The provider exceeded Oxee\'s response replay limit.',
       );
     }
     _bytes += utf8.encode(jsonEncode(item)).length;
     if (_bytes > _kMaxResponsesReplayBytes) {
       throw const DirectProviderException(
-        'The provider exceeded Conduit\'s response replay limit.',
+        'The provider exceeded Oxee\'s response replay limit.',
       );
     }
   }

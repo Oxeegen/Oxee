@@ -307,7 +307,7 @@ Iterable<HermesRunEvent> parseHermesRunFrame(SseFrame frame) sync* {
     );
     if (output == null) {
       yield const HermesRunError(
-        'The Hermes response output exceeded Conduit\'s size or shape limit.',
+        'The Hermes response output exceeded Oxee\'s size or shape limit.',
       );
       return;
     }
@@ -423,7 +423,7 @@ Iterable<HermesRunEvent> parseHermesRunFrame(SseFrame frame) sync* {
         final output = _extractHermesTerminalOutput(data['output']);
         if (output == null) {
           yield const HermesRunError(
-            'The Hermes response output exceeded Conduit\'s size or shape limit.',
+            'The Hermes response output exceeded Oxee\'s size or shape limit.',
           );
           return;
         }

@@ -44,7 +44,7 @@ void main() {
         endpoint: fixture.endpoint,
         headers: const {
           HttpHeaders.authorizationHeader: 'Bearer secret',
-          'X-Conduit-Test': 'yes',
+          'X-Oxee-Test': 'yes',
         },
       );
       addTearDown(client.close);
@@ -444,7 +444,7 @@ final class _McpFixture {
     authorizationHeaders.add(
       request.headers.value(HttpHeaders.authorizationHeader),
     );
-    customHeaders.add(request.headers.value('X-Conduit-Test'));
+    customHeaders.add(request.headers.value('X-Oxee-Test'));
     if (requiredAuthorization != null &&
         request.headers.value(HttpHeaders.authorizationHeader) !=
             requiredAuthorization) {

@@ -1154,7 +1154,7 @@ graph TD
     },
   );
 
-  testWidgets('opens a mermaid preview in the full-height Conduit sheet', (
+  testWidgets('opens a mermaid preview in the full-height Oxee sheet', (
     tester,
   ) async {
     const content = '''

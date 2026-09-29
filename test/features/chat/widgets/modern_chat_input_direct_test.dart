@@ -1395,7 +1395,7 @@ void main() {
           home: Scaffold(
             body: ModernChatInput(
               onSendMessage: (_) {},
-              placeholder: 'Ask Conduit about a detailed multilingual question',
+              placeholder: 'Ask Oxee about a detailed multilingual question',
             ),
           ),
         ),

@@ -729,12 +729,12 @@ final class OllamaAdapter
             totalToolCalls += roundToolCalls.length;
             if (totalToolCalls > kDirectMaxToolCalls) {
               throw const DirectProviderException(
-                'The Ollama agent exceeded Conduit\'s tool-call limit.',
+                'The Ollama agent exceeded Oxee\'s tool-call limit.',
               );
             }
             if (round + 1 >= kDirectMaxToolRounds) {
               throw const DirectProviderException(
-                'The Ollama agent exceeded Conduit\'s round limit.',
+                'The Ollama agent exceeded Oxee\'s round limit.',
               );
             }
 

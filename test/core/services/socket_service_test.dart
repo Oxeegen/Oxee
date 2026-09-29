@@ -297,7 +297,7 @@ void main() {
   });
 
   test(
-    'connect includes the Conduit User-Agent in handshake headers',
+    'connect includes the Oxee User-Agent in handshake headers',
     () async {
       final socketFactory = _RecordingSocketFactory();
       final service = SocketService(
@@ -342,7 +342,7 @@ void main() {
     expect(options['reconnectionDelayMax'], 60000);
   });
 
-  test('native handshake sends one Conduit User-Agent value', () async {
+  test('native handshake sends one Oxee User-Agent value', () async {
     await HttpOverrides.runWithHttpOverrides(() async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final receivedUserAgents = Completer<List<String>>();

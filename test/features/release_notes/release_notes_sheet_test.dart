@@ -62,20 +62,20 @@ void main() {
         AppTypography.headlineMedium,
       );
       expect(find.text("What's new in 3.3.2"), findsNothing);
-      expect(find.text('Enjoying Conduit?'), findsOneWidget);
+      expect(find.text('Enjoying Oxee?'), findsOneWidget);
       expect(
         find.text(
-          'A short review helps more people find Conduit. A small tip helps me keep building it. Either one means a lot.',
+          'A short review helps more people find Oxee. A small tip helps me keep building it. Either one means a lot.',
         ),
         findsOneWidget,
       );
-      expect(find.text('Review Conduit'), findsOneWidget);
+      expect(find.text('Review Oxee'), findsOneWidget);
       expect(find.text('Buy Me a Coffee'), findsOneWidget);
       expect(
         tester
             .widget<Text>(
               find.text(
-                'A short review helps more people find Conduit. A small tip helps me keep building it. Either one means a lot.',
+                'A short review helps more people find Oxee. A small tip helps me keep building it. Either one means a lot.',
               ),
             )
             .style
@@ -83,7 +83,7 @@ void main() {
         AppTypography.bodyMedium,
       );
       expect(
-        tester.widget<Text>(find.text('Review Conduit')).style?.fontSize,
+        tester.widget<Text>(find.text('Review Oxee')).style?.fontSize,
         AppTypography.bodyMedium,
       );
       expect(find.text('Since 3.3.1, now on 3.3.2'), findsNothing);
@@ -110,9 +110,9 @@ void main() {
       expect(find.text('Baked changelog'), findsOneWidget);
       expect(find.text('Localized copy'), findsOneWidget);
 
-      expect(find.text('Review Conduit').hitTestable(), findsOneWidget);
+      expect(find.text('Review Oxee').hitTestable(), findsOneWidget);
       expect(find.text('Buy Me a Coffee').hitTestable(), findsOneWidget);
-      await tester.tap(find.text('Review Conduit'));
+      await tester.tap(find.text('Review Oxee'));
       await tester.pump();
       expect(reviewCalls, 1);
       expect(supportCalls, 0);
@@ -194,7 +194,7 @@ void main() {
         find.byKey(const ValueKey('release-notes-summary-scroll')),
         findsOneWidget,
       );
-      expect(find.text('Review Conduit').hitTestable(), findsOneWidget);
+      expect(find.text('Review Oxee').hitTestable(), findsOneWidget);
       expect(find.text('Buy Me a Coffee').hitTestable(), findsOneWidget);
       expect(find.text('Done').hitTestable(), findsOneWidget);
     },
@@ -223,7 +223,7 @@ void main() {
 
     final firstFeature = find.text('Feature 0.0');
     final featureBefore = tester.getTopLeft(firstFeature).dy;
-    final reviewBefore = tester.getTopLeft(find.text('Review Conduit')).dy;
+    final reviewBefore = tester.getTopLeft(find.text('Review Oxee')).dy;
     await tester.drag(
       find.byKey(const ValueKey('release-notes-summary-scroll')),
       const Offset(0, -240),
@@ -232,10 +232,10 @@ void main() {
 
     expect(tester.getTopLeft(firstFeature).dy, lessThan(featureBefore));
     expect(tester.takeException(), isNull);
-    expect(find.text('Review Conduit').hitTestable(), findsOneWidget);
+    expect(find.text('Review Oxee').hitTestable(), findsOneWidget);
     expect(find.text('Buy Me a Coffee').hitTestable(), findsOneWidget);
     expect(find.text('Done').hitTestable(), findsOneWidget);
-    expect(tester.getTopLeft(find.text('Review Conduit')).dy, reviewBefore);
+    expect(tester.getTopLeft(find.text('Review Oxee')).dy, reviewBefore);
   });
 
   testWidgets('matches the iOS compact composer bottom inset', (tester) async {
@@ -274,7 +274,7 @@ void main() {
       find.byKey(const ValueKey('release-notes-summary-scroll')),
       findsOneWidget,
     );
-    expect(find.text('Review Conduit').hitTestable(), findsOneWidget);
+    expect(find.text('Review Oxee').hitTestable(), findsOneWidget);
     expect(find.text('Buy Me a Coffee').hitTestable(), findsOneWidget);
     expect(
       tester.getSize(find.byType(ReleaseNotesSheet)).height,
@@ -294,8 +294,8 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Done'), findsOneWidget);
-    expect(find.text('Enjoying Conduit?'), findsOneWidget);
-    expect(find.text('Review Conduit').hitTestable(), findsOneWidget);
+    expect(find.text('Enjoying Oxee?'), findsOneWidget);
+    expect(find.text('Review Oxee').hitTestable(), findsOneWidget);
     expect(find.text('Buy Me a Coffee').hitTestable(), findsOneWidget);
   });
 
@@ -310,8 +310,8 @@ void main() {
     expect(find.text("What's new"), findsOneWidget);
     expect(find.text('Local models'), findsOneWidget);
     expect(find.text('Polished details'), findsOneWidget);
-    await tester.ensureVisible(find.text('Review Conduit'));
-    await tester.tap(find.text('Review Conduit'));
+    await tester.ensureVisible(find.text('Review Oxee'));
+    await tester.tap(find.text('Review Oxee'));
     await tester.pump();
     expect(tester.takeException(), isNull);
   });
@@ -335,7 +335,7 @@ void main() {
       disableAnimations: true,
     );
     await tester.pump();
-    expect(find.text('喜欢 Conduit 吗？'), findsOneWidget);
+    expect(find.text('喜欢 Oxee 吗？'), findsOneWidget);
     expect(find.textContaining('无论哪一种，对我都意义重大。'), findsOneWidget);
 
     await _pumpReleaseNotesSheet(
@@ -344,7 +344,7 @@ void main() {
       disableAnimations: true,
     );
     await tester.pump();
-    expect(find.text('喜歡 Conduit 嗎？'), findsOneWidget);
+    expect(find.text('喜歡 Oxee 嗎？'), findsOneWidget);
     expect(find.textContaining('無論哪一種，對我都意義重大。'), findsOneWidget);
   });
 }

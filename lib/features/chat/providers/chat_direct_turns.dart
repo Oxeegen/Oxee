@@ -1256,7 +1256,7 @@ Future<void> _dispatchDirectRunFromChatWithTrackedOwner(
               done: false,
               event: null,
               error: const DirectProviderException(
-                'The provider stream exceeded Conduit\'s time limit.',
+                'The provider stream exceeded Oxee\'s time limit.',
               ),
               stackTrace: StackTrace.current,
             ));
@@ -1274,7 +1274,7 @@ Future<void> _dispatchDirectRunFromChatWithTrackedOwner(
                 event: null,
                 error: DirectProviderException(
                   reachesAbsoluteDeadline
-                      ? 'The provider stream exceeded Conduit\'s time limit.'
+                      ? 'The provider stream exceeded Oxee\'s time limit.'
                       : 'The provider stream timed out while waiting for data.',
                 ),
                 stackTrace: StackTrace.current,

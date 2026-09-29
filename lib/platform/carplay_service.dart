@@ -138,12 +138,12 @@ final class CarPlayCoordinator {
     if (next.phase == ChatVoiceModePhase.error) {
       _startedByCarPlay = false;
       return _failure(
-        next.errorMessage ?? 'Unable to start Conduit voice conversation.',
+        next.errorMessage ?? 'Unable to start Oxee voice conversation.',
       );
     }
     if (!next.isActive) {
       _startedByCarPlay = false;
-      return _failure('Conduit voice conversation ended before it started.');
+      return _failure('Oxee voice conversation ended before it started.');
     }
 
     return _success(next);
@@ -166,7 +166,7 @@ final class CarPlayCoordinator {
   Future<Map<String, Object?>> _pauseVoiceConversation() async {
     final snapshot = _ref.read(chatVoiceModeControllerProvider);
     if (!snapshot.canPause) {
-      return _failure('Conduit is not currently listening.');
+      return _failure('Oxee is not currently listening.');
     }
 
     await _ref.read(chatVoiceModeControllerProvider.notifier).pause();
@@ -176,7 +176,7 @@ final class CarPlayCoordinator {
   Future<Map<String, Object?>> _resumeVoiceConversation() async {
     final snapshot = _ref.read(chatVoiceModeControllerProvider);
     if (!snapshot.canResume) {
-      return _failure('No paused Conduit voice conversation.');
+      return _failure('No paused Oxee voice conversation.');
     }
 
     await _ref.read(chatVoiceModeControllerProvider.notifier).resume();

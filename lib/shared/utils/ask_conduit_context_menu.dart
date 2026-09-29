@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../features/chat/providers/chat_providers.dart';
 
-const String _askConduitLabel = 'Ask Conduit';
+const String _askConduitLabel = 'Ask Oxee';
 
 bool get _canShowAskConduitSelectionAction =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;

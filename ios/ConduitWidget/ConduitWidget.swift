@@ -14,7 +14,7 @@ private enum WidgetDeepLink {
             let configuredScheme = Bundle.main.object(forInfoDictionaryKey: "AppUrlScheme") as? String,
             !configuredScheme.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            return "conduit"
+            return "oxee"
         }
         return configuredScheme
     }
@@ -79,7 +79,7 @@ struct ConduitWidgetEntryView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 28, height: 28)
                         .foregroundStyle(contentColor.opacity(0.85))
-                    Text("Ask Conduit")
+                    Text("Ask Oxee")
                         .font(.system(size: 18, weight: .medium, design: .rounded))
                         .foregroundStyle(contentColor.opacity(0.85))
                     Spacer()
@@ -164,7 +164,7 @@ struct ConduitWidget: Widget {
                     .background(Color("WidgetBackground"))
             }
         }
-        .configurationDisplayName("Conduit")
+        .configurationDisplayName("Oxee")
         .description("Quick access to chat, camera, photos, and voice.")
         .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()

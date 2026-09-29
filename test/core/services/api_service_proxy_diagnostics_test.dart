@@ -21,7 +21,7 @@ void main() {
   tearDown(ConnectivityService.debugResetTrafficSignals);
 
   test(
-    'health check preserves the Conduit User-Agent across redirects',
+    'health check preserves the Oxee User-Agent across redirects',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final receivedUserAgents = <String?>[];

@@ -152,7 +152,7 @@ final class AppIntentInvocationLedger {
         records.remove(key);
         return PlatformAppIntentResponse(
           success: false,
-          error: 'Conduit is still processing earlier requests. Try again.',
+          error: 'Oxee is still processing earlier requests. Try again.',
         );
       }
       await _writePayload(jsonEncode(records));
@@ -246,7 +246,7 @@ final class AppIntentInvocationLedger {
         final success = record['success'] == true;
         return PlatformAppIntentResponse(
           success: success,
-          value: success ? 'Request already completed in Conduit.' : null,
+          value: success ? 'Request already completed in Oxee.' : null,
           error: success ? null : 'The earlier request could not be completed.',
         );
       case 'running':
@@ -802,7 +802,7 @@ class AppIntentCoordinator extends _$AppIntentCoordinator
       await _prepareChat(prompt: prompt);
       final summary = prompt != null && prompt.isNotEmpty
           ? 'Opening chat for "$prompt"'
-          : 'Opening Conduit chat';
+          : 'Opening Oxee chat';
 
       return {'success': true, 'value': summary};
     } catch (error, stackTrace) {
@@ -838,7 +838,7 @@ class AppIntentCoordinator extends _$AppIntentCoordinator
         'Voice call launched from Siri/Shortcuts',
         scope: 'app-intents/voice',
       );
-      return {'success': true, 'value': 'Starting Conduit voice call'};
+      return {'success': true, 'value': 'Starting Oxee voice call'};
     } catch (error, stackTrace) {
       DebugLogger.error(
         'app-intents-voice',
@@ -864,7 +864,7 @@ class AppIntentCoordinator extends _$AppIntentCoordinator
         focusComposer: true,
         resetChat: true,
       );
-      return {'success': true, 'value': 'Sent to Conduit'};
+      return {'success': true, 'value': 'Sent to Oxee'};
     } catch (error, stackTrace) {
       DebugLogger.error(
         'app-intents-text',
@@ -946,13 +946,13 @@ class AppIntentCoordinator extends _$AppIntentCoordinator
         return {
           'success': true,
           'value': isYoutube
-              ? 'YouTube video attached in Conduit'
-              : 'Webpage attached in Conduit',
+              ? 'YouTube video attached in Oxee'
+              : 'Webpage attached in Oxee',
         };
       } else {
         return {
           'success': true,
-          'value': 'Opening Conduit with URL (content could not be fetched)',
+          'value': 'Opening Oxee with URL (content could not be fetched)',
         };
       }
     } catch (error, stackTrace) {
@@ -992,7 +992,7 @@ class AppIntentCoordinator extends _$AppIntentCoordinator
               : p.basename(filenameRaw),
         ),
       ], onOwnershipTransferred: ownership.transferToMediaUploadController);
-      return {'success': true, 'value': 'Image attached in Conduit'};
+      return {'success': true, 'value': 'Image attached in Oxee'};
     } catch (error, stackTrace) {
       DebugLogger.error(
         'app-intents-image',

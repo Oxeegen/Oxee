@@ -278,7 +278,7 @@ final class ApplePccAdapter implements DirectProviderAdapter, PccFlutterApi {
       // each callback as a round keeps Apple stricter than the shared limits.
       if (++run.toolCallCount > kDirectMaxToolRounds) {
         throw const DirectProviderException(
-          'Apple Foundation Models exceeded Conduit\'s tool-call limit.',
+          'Apple Foundation Models exceeded Oxee\'s tool-call limit.',
         );
       }
       if (utf8.encode(call.argumentsJson).length >

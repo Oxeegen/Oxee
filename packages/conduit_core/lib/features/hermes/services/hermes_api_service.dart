@@ -146,7 +146,7 @@ final class _HermesRawStreamBudget {
     _bytes += chunk.length;
     if (_bytes > limits.maxBytes) {
       throw const HermesStreamGuardException(
-        'The Hermes stream exceeded Conduit\'s transfer limit.',
+        'The Hermes stream exceeded Oxee\'s transfer limit.',
       );
     }
 
@@ -174,7 +174,7 @@ final class _HermesRawStreamBudget {
       _frames++;
       if (_frames > limits.maxRawFrames) {
         throw const HermesStreamGuardException(
-          'The Hermes stream exceeded Conduit\'s frame limit.',
+          'The Hermes stream exceeded Oxee\'s frame limit.',
         );
       }
     }
@@ -229,7 +229,7 @@ Stream<HermesRunEvent> guardHermesEventStream(
       final remaining = limits.maxDuration - elapsed.elapsed;
       if (remaining <= Duration.zero) {
         throw const HermesStreamGuardException(
-          'The Hermes stream exceeded Conduit\'s time limit.',
+          'The Hermes stream exceeded Oxee\'s time limit.',
         );
       }
       final enforcingAbsoluteLimit =
@@ -241,7 +241,7 @@ Stream<HermesRunEvent> guardHermesEventStream(
       } on TimeoutException {
         if (enforcingAbsoluteLimit) {
           throw const HermesStreamGuardException(
-            'The Hermes stream exceeded Conduit\'s time limit.',
+            'The Hermes stream exceeded Oxee\'s time limit.',
           );
         }
         throw const HermesStreamGuardException(
@@ -258,7 +258,7 @@ Stream<HermesRunEvent> guardHermesEventStream(
       events++;
       if (events > limits.maxEvents) {
         throw const HermesStreamGuardException(
-          'The Hermes stream exceeded Conduit\'s event limit.',
+          'The Hermes stream exceeded Oxee\'s event limit.',
         );
       }
       final remainingCharacters = limits.maxCharacters - characters;
@@ -268,7 +268,7 @@ Stream<HermesRunEvent> guardHermesEventStream(
       );
       if (eventCharacters > remainingCharacters) {
         throw const HermesStreamGuardException(
-          'The Hermes stream exceeded Conduit\'s size limit.',
+          'The Hermes stream exceeded Oxee\'s size limit.',
         );
       }
       characters += eventCharacters;
@@ -438,7 +438,7 @@ Future<Object?> _decodeHermesBoundedJsonValue(
           (advertisedLength > byteLimit ||
               advertisedLength > recoveryBudget.remainingBytes)) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s transfer limit.',
+          'The Hermes recovery response exceeded Oxee\'s transfer limit.',
         );
       }
       final bytes = await _readHermesRecoveryBytes(
@@ -455,7 +455,7 @@ Future<Object?> _decodeHermesBoundedJsonValue(
       final bytes = utf8.encode(data);
       if (bytes.length > byteLimit) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s transfer limit.',
+          'The Hermes recovery response exceeded Oxee\'s transfer limit.',
         );
       }
       recoveryBudget.consume(bytes.length);
@@ -510,7 +510,7 @@ Future<void> _consumeHermesBoundedBody(
           (advertisedLength > byteLimit ||
               advertisedLength > recoveryBudget.remainingBytes)) {
         throw const HermesStreamGuardException(
-          'The Hermes response exceeded Conduit\'s transfer limit.',
+          'The Hermes response exceeded Oxee\'s transfer limit.',
         );
       }
       await _readHermesRecoveryBytes(
@@ -523,7 +523,7 @@ Future<void> _consumeHermesBoundedBody(
       final bytes = utf8.encode(data);
       if (bytes.length > byteLimit) {
         throw const HermesStreamGuardException(
-          'The Hermes response exceeded Conduit\'s transfer limit.',
+          'The Hermes response exceeded Oxee\'s transfer limit.',
         );
       }
       recoveryBudget.consume(bytes.length);
@@ -565,7 +565,7 @@ Future<Uint8List> _readHermesRecoveryBytes(
       } on TimeoutException {
         throw HermesStreamGuardException(
           remaining <= idleTimeout
-              ? 'The Hermes recovery response exceeded Conduit\'s time limit.'
+              ? 'The Hermes recovery response exceeded Oxee\'s time limit.'
               : 'The Hermes recovery response was idle for too long.',
         );
       }
@@ -575,7 +575,7 @@ Future<Uint8List> _readHermesRecoveryBytes(
       total += chunk.length;
       if (total > maxBytes) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s transfer limit.',
+          'The Hermes recovery response exceeded Oxee\'s transfer limit.',
         );
       }
       recoveryBudget.consume(chunk.length);
@@ -612,7 +612,7 @@ final class _HermesRecoveryDeadline {
     final remaining = remainingDuration;
     if (remaining <= Duration.zero) {
       throw const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s time limit.',
+        'The Hermes recovery response exceeded Oxee\'s time limit.',
       );
     }
     return remaining;
@@ -645,7 +645,7 @@ final class _HermesRecoveryBudget {
     requireRemainingDuration();
     if (count < 0 || count > remainingBytes) {
       throw const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s transfer limit.',
+        'The Hermes recovery response exceeded Oxee\'s transfer limit.',
       );
     }
     remainingBytes -= count;
@@ -668,13 +668,13 @@ void _validateHermesJsonStructure(String source) {
   } on HermesJsonGuardException catch (error) {
     throw switch (error.limit) {
       HermesJsonLimit.depth => const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s nesting limit.',
+        'The Hermes recovery response exceeded Oxee\'s nesting limit.',
       ),
       HermesJsonLimit.nodes => const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s value limit.',
+        'The Hermes recovery response exceeded Oxee\'s value limit.',
       ),
       HermesJsonLimit.tokens => const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s token limit.',
+        'The Hermes recovery response exceeded Oxee\'s token limit.',
       ),
     };
   }
@@ -697,7 +697,7 @@ void _validateHermesJsonStructure(String source) {
       scheduledNodes++;
       if (scheduledNodes > kMaxHermesRecoveryJsonNodes) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s value limit.',
+          'The Hermes recovery response exceeded Oxee\'s value limit.',
         );
       }
       stack.add((value: child, depth: depth, exiting: false));
@@ -713,7 +713,7 @@ void _validateHermesJsonStructure(String source) {
     nodes++;
     if (nodes > kMaxHermesRecoveryJsonNodes) {
       throw const HermesStreamGuardException(
-        'The Hermes recovery response exceeded Conduit\'s value limit.',
+        'The Hermes recovery response exceeded Oxee\'s value limit.',
       );
     }
 
@@ -722,7 +722,7 @@ void _validateHermesJsonStructure(String source) {
       characters += value.length;
       if (characters > maxCharacters) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s size limit.',
+          'The Hermes recovery response exceeded Oxee\'s size limit.',
         );
       }
       continue;
@@ -734,12 +734,12 @@ void _validateHermesJsonStructure(String source) {
       }
       if (current.depth >= kMaxHermesRecoveryJsonDepth && value.isNotEmpty) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s nesting limit.',
+          'The Hermes recovery response exceeded Oxee\'s nesting limit.',
         );
       }
       if (value.length > kMaxHermesRecoveryJsonNodes - scheduledNodes) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s value limit.',
+          'The Hermes recovery response exceeded Oxee\'s value limit.',
         );
       }
       for (final entry in value.entries) {
@@ -752,7 +752,7 @@ void _validateHermesJsonStructure(String source) {
         characters += key.length;
         if (characters > maxCharacters) {
           throw const HermesStreamGuardException(
-            'The Hermes recovery response exceeded Conduit\'s size limit.',
+            'The Hermes recovery response exceeded Oxee\'s size limit.',
           );
         }
       }
@@ -766,12 +766,12 @@ void _validateHermesJsonStructure(String source) {
       }
       if (current.depth >= kMaxHermesRecoveryJsonDepth && value.isNotEmpty) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s nesting limit.',
+          'The Hermes recovery response exceeded Oxee\'s nesting limit.',
         );
       }
       if (value.length > kMaxHermesRecoveryJsonNodes - scheduledNodes) {
         throw const HermesStreamGuardException(
-          'The Hermes recovery response exceeded Conduit\'s value limit.',
+          'The Hermes recovery response exceeded Oxee\'s value limit.',
         );
       }
       stack.add((value: value, depth: current.depth, exiting: true));
@@ -958,7 +958,7 @@ class HermesApiService implements HermesBackendService, HermesTurnService {
             onTimeout: () {
               _signalHermesStreamCancellation(cancelToken);
               throw const HermesStreamGuardException(
-                'The Hermes response exceeded Conduit\'s time limit.',
+                'The Hermes response exceeded Oxee\'s time limit.',
               );
             },
           );
@@ -973,7 +973,7 @@ class HermesApiService implements HermesBackendService, HermesTurnService {
               error.type == DioExceptionType.receiveTimeout)) {
         _signalHermesStreamCancellation(cancelToken);
         throw const HermesStreamGuardException(
-          'The Hermes response exceeded Conduit\'s time limit.',
+          'The Hermes response exceeded Oxee\'s time limit.',
         );
       }
       rethrow;
@@ -1105,7 +1105,7 @@ class HermesApiService implements HermesBackendService, HermesTurnService {
             onTimeout: () {
               _signalHermesStreamCancellation(requestCancelToken);
               throw const HermesStreamGuardException(
-                'The Hermes create response exceeded Conduit\'s time limit.',
+                'The Hermes create response exceeded Oxee\'s time limit.',
               );
             },
           );
@@ -1447,7 +1447,7 @@ class HermesApiService implements HermesBackendService, HermesTurnService {
     if (list.length > kMaxHermesSessionHistoryMessages) {
       _signalHermesStreamCancellation(requestCancelToken);
       throw const HermesResponseTooLargeException(
-        'The Hermes session history exceeded Conduit\'s message limit.',
+        'The Hermes session history exceeded Oxee\'s message limit.',
       );
     }
     return list.whereType<Map>().map((m) => m.cast<String, dynamic>()).toList();
@@ -1854,7 +1854,7 @@ List<Map<String, dynamic>> _boundedHermesMapList(
   if (candidate is! List) return const <Map<String, dynamic>>[];
   if (candidate.length > kMaxHermesJsonCollectionItems) {
     throw const HermesStreamGuardException(
-      'The Hermes response exceeded Conduit\'s item limit.',
+      'The Hermes response exceeded Oxee\'s item limit.',
     );
   }
   return candidate

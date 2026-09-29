@@ -1,6 +1,6 @@
 {
   "@@locale": "pl",
-  "appTitle": "Conduit",
+  "appTitle": "Oxee",
   "@appTitle": {
     "description": "Application name displayed in the app and OS UI."
   },
@@ -126,11 +126,11 @@
   "@account": {
     "description": "Section header for account-related options."
   },
-  "supportConduit": "Wesprzyj Conduit",
+  "supportConduit": "Wesprzyj Oxee",
   "@supportConduit": {
     "description": "Section header inviting the user to financially support the project."
   },
-  "supportConduitSubtitle": "Zachowaj niezależność Conduit, finansując dalszy rozwój.",
+  "supportConduitSubtitle": "Zachowaj niezależność Oxee, finansując dalszy rozwój.",
   "@supportConduitSubtitle": {
     "description": "Subtitle explaining why donations are helpful."
   },
@@ -167,7 +167,7 @@
   "@releaseNotesLearnMore": {
     "description": "Prompt shown beneath the release announcement banner title."
   },
-  "releaseNotesReviewButton": "Oceń Conduit",
+  "releaseNotesReviewButton": "Oceń Oxee",
   "@releaseNotesReviewButton": {
     "description": "Button opening the app store review/listing page."
   },
@@ -735,7 +735,7 @@
   "@voiceCallErrorHelp": {
     "description": "Guidance shown when the voice call encounters an error."
   },
-  "messageHintText": "Zapytaj Conduit",
+  "messageHintText": "Zapytaj Oxee",
   "@messageHintText": {
     "description": "Short placeholder text in the message input."
   },
@@ -847,7 +847,7 @@
   "@chatQueuedPendingTitle": {
     "description": "Title shown when a queued assistant response is waiting for sync/backoff."
   },
-  "chatQueuedPendingMessage": "Conduit rozpocznie tę odpowiedź, gdy tylko wykona synchronizację.",
+  "chatQueuedPendingMessage": "Oxee rozpocznie tę odpowiedź, gdy tylko wykona synchronizację.",
   "@chatQueuedPendingMessage": {
     "description": "Body text shown for a queued assistant response that is waiting to be sent."
   },
@@ -1171,7 +1171,7 @@
   "@aboutApp": {
     "description": "Settings tile title to view app information."
   },
-  "aboutAppSubtitle": "Informacje i linki o Conduit",
+  "aboutAppSubtitle": "Informacje i linki o Oxee",
   "@aboutAppSubtitle": {
     "description": "Subtitle/description for the About section."
   },
@@ -1353,7 +1353,7 @@
   "@customHeaders": {
     "description": "Section title for adding custom HTTP headers."
   },
-  "customHeadersDescription": "Conduit wysyła te nagłówki z żądaniami do tego serwera i przechowuje je bezpiecznie na tym urządzeniu.",
+  "customHeadersDescription": "Oxee wysyła te nagłówki z żądaniami do tego serwera i przechowuje je bezpiecznie na tym urządzeniu.",
   "@customHeadersDescription": {
     "description": "Helper text explaining use-cases for custom headers."
   },
@@ -1480,11 +1480,11 @@
   "@themePalette": {
     "description": "Title for selecting the app color palette."
   },
-  "themePaletteConduitLabel": "Conduit",
+  "themePaletteConduitLabel": "Oxee",
   "@themePaletteConduitLabel": {
     "description": "Palette name for the default Conduit theme."
   },
-  "themePaletteConduitDescription": "Czysty, neutralny motyw zaprojektowany dla Conduit.",
+  "themePaletteConduitDescription": "Czysty, neutralny motyw zaprojektowany dla Oxee.",
   "@themePaletteConduitDescription": {
     "description": "Description of the Conduit palette."
   },
@@ -1532,7 +1532,7 @@
   "@currentlyUsingLightTheme": {
     "description": "Status text indicating light theme is active."
   },
-  "aboutConduit": "O aplikacji Conduit",
+  "aboutConduit": "O aplikacji Oxee",
   "@aboutConduit": {
     "description": "Dialog title for app information."
   },
@@ -1652,7 +1652,7 @@
   "@androidAssistantOverlayOption": {
     "description": "Option label for keeping the current assistant overlay."
   },
-  "androidAssistantNewChatOption": "Otwórz Conduit z nowym czatem",
+  "androidAssistantNewChatOption": "Otwórz Oxee z nowym czatem",
   "@androidAssistantNewChatOption": {
     "description": "Option label for opening the app to a fresh chat from the assistant trigger."
   },
@@ -3264,7 +3264,7 @@
   "@inactiveStatus": {
     "description": "Label for an inactive account status."
   },
-  "appInformation": "Aplikacja Conduit",
+  "appInformation": "Aplikacja Oxee",
   "@appInformation": {
     "description": "Heading for local app information."
   },
@@ -3980,7 +3980,7 @@
   "@notificationSystemSettingsTitle": {
     "description": "Row that opens the OS notification settings for this app."
   },
-  "notificationSystemSettingsDescription": "Zmień uprawnienia, dźwięk i opcje banerów dla Conduit.",
+  "notificationSystemSettingsDescription": "Zmień uprawnienia, dźwięk i opcje banerów dla Oxee.",
   "@notificationSystemSettingsDescription": {
     "description": "Subtitle for the row that opens the OS notification settings."
   },
@@ -5476,7 +5476,7 @@
   "@deviceDirectConnectionSourceLabel": {
     "description": "Source label identifying a direct connection stored only on this device."
   },
-  "openWebUiDirectConnectionUnsupportedAuth": "To połączenie używa metody uwierzytelniania, której Conduit nie może bezpiecznie użyć.",
+  "openWebUiDirectConnectionUnsupportedAuth": "To połączenie używa metody uwierzytelniania, której Oxee nie może bezpiecznie użyć.",
   "@openWebUiDirectConnectionUnsupportedAuth": {
     "description": "Warning shown when an Open WebUI direct connection uses unsupported authentication."
   },
@@ -5750,7 +5750,7 @@
   "@directOpenRouterUrlInvalid": {
     "description": "Validation error shown when an OpenRouter direct connection does not use an approved API root."
   },
-  "directOpenRouterBaseUrlDescription": "Używa Twojego klucza API OpenRouter, uwierzytelnionego katalogu modeli i narzędzi zarządzanych przez Conduit.",
+  "directOpenRouterBaseUrlDescription": "Używa Twojego klucza API OpenRouter, uwierzytelnionego katalogu modeli i narzędzi zarządzanych przez Oxee.",
   "@directOpenRouterBaseUrlDescription": {
     "description": "Help text shown below the OpenRouter direct connection base URL."
   },
@@ -5947,11 +5947,11 @@
   "@directContextCompactionTitle": {
     "description": "Section title for fallback context windows used by Direct models."
   },
-  "directContextCompactionDescription": "Te modele nie podają rozmiaru okna kontekstu. Conduit używa wybranego limitu do kompaktowania starszych wiadomości, zanim żądanie stanie się zbyt duże.",
+  "directContextCompactionDescription": "Te modele nie podają rozmiaru okna kontekstu. Oxee używa wybranego limitu do kompaktowania starszych wiadomości, zanim żądanie stanie się zbyt duże.",
   "@directContextCompactionDescription": {
     "description": "Footer explaining per-model Direct context window fallbacks."
   },
-  "directContextCompactionPickerDescription": "Wybierz okno kontekstu używane przez Conduit do automatycznego kompaktowania.",
+  "directContextCompactionPickerDescription": "Wybierz okno kontekstu używane przez Oxee do automatycznego kompaktowania.",
   "@directContextCompactionPickerDescription": {
     "description": "Description in the Direct context window fallback picker."
   },
@@ -6276,11 +6276,11 @@
   "@ollamaThinkingMaximum": {
     "description": "Maximum Ollama thinking level."
   },
-  "releaseNotesSupportPromptHeading": "Podoba Ci się Conduit?",
+  "releaseNotesSupportPromptHeading": "Podoba Ci się Oxee?",
   "@releaseNotesSupportPromptHeading": {
     "description": "Heading above the combined review and donation actions in release notes."
   },
-  "releaseNotesSupportPromptMessage": "Krótka opinia pomaga większej liczbie osób znaleźć Conduit. Niewielki datek pomaga mi w dalszym rozwoju. Każde z tych działań wiele znaczy.",
+  "releaseNotesSupportPromptMessage": "Krótka opinia pomaga większej liczbie osób znaleźć Oxee. Niewielki datek pomaga mi w dalszym rozwoju. Każde z tych działań wiele znaczy.",
   "@releaseNotesSupportPromptMessage": {
     "description": "Combined message explaining how a review or donation supports Conduit."
   },

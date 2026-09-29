@@ -2567,7 +2567,7 @@ class AuthStateManager extends _$AuthStateManager {
         );
         errorMessage =
             '$errorMessage. Also failed to clear saved '
-            'credentials; please clear Conduit credentials from '
+            'credentials; please clear Oxee credentials from '
             'system settings.';
       }
 

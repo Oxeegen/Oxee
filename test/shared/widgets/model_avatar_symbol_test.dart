@@ -140,7 +140,7 @@ void main() {
   });
 
   group('ModelAvatar', () {
-    testWidgets("a symbol url keeps Conduit's mark until the glyph lands", (
+    testWidgets("a symbol url keeps Oxee's mark until the glyph lands", (
       tester,
     ) async {
       await _pumpAvatar(tester, imageUrl: 'symbol:$kAppleIntelligenceSymbol');

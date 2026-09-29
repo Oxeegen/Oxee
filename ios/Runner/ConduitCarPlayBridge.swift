@@ -55,13 +55,13 @@ struct ConduitCarPlayActionResult {
 
   static let unavailable = ConduitCarPlayActionResult(
     success: false,
-    error: "Conduit is still starting.",
+    error: "Oxee is still starting.",
     snapshot: nil
   )
 
   static let startTimedOut = ConduitCarPlayActionResult(
     success: false,
-    error: "Conduit did not finish starting. Try again in a moment.",
+    error: "Oxee did not finish starting. Try again in a moment.",
     snapshot: nil
   )
 

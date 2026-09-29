@@ -1037,7 +1037,7 @@ String _extractBoundedHermesRecoveryOutput(
     );
   } on FormatException {
     throw const HermesStreamGuardException(
-      'The Hermes recovery output exceeded Conduit\'s size or shape limit.',
+      'The Hermes recovery output exceeded Oxee\'s size or shape limit.',
     );
   }
 }
@@ -1051,7 +1051,7 @@ String _requireHermesRecoveryTextWithinLimit(
     characters++;
     if (characters > maxCharacters) {
       throw const HermesStreamGuardException(
-        'The Hermes recovery output exceeded Conduit\'s size limit.',
+        'The Hermes recovery output exceeded Oxee\'s size limit.',
       );
     }
   }

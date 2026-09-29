@@ -17,7 +17,7 @@ CONDUIT_PCC_SDK_FLAG = $(CONDUIT_PCC_SDK_FLAG_$(SDK_VERSION_MAJOR):default=CONDU
 // `availability`; it traps on the first request, so the bridge keeps the model
 // unsupported whenever this flag is empty. Clear it if the signing identity
 // ever loses the grant, otherwise the app dies when a request starts.
-CONDUIT_PCC_ENTITLEMENT_FLAG = CONDUIT_PCC_ENTITLEMENT
+CONDUIT_PCC_ENTITLEMENT_FLAG =
 
 SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos*] = $(inherited) $(CONDUIT_PCC_SDK_FLAG) $(CONDUIT_PCC_ENTITLEMENT_FLAG)
 SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*] = $(inherited) $(CONDUIT_PCC_SDK_FLAG) $(CONDUIT_PCC_ENTITLEMENT_FLAG)

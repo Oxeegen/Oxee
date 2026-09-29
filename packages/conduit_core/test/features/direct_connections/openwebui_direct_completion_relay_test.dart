@@ -460,7 +460,7 @@ void main() {
           const <String, dynamic>{
             'error': <String, dynamic>{
               'message':
-                  'The provider response exceeded Conduit\'s size limit.',
+                  'The provider response exceeded Oxee\'s size limit.',
             },
           },
           const <String, dynamic>{'done': true},
