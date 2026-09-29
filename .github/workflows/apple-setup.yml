@@ -4,9 +4,21 @@ name: Apple setup
 # key in the OXEE_ASC_* secrets) and enables App Groups on each. Idempotent:
 # ids that already exist are left alone. Also reports which Apple team the key
 # belongs to, which must match appleTeamId in brand/brand.json.
+#
+# Optionally registers an iPhone: Apple creates no signing profile for a team
+# without at least one registered device.
 
 on:
   workflow_dispatch:
+    inputs:
+      device_udid:
+        description: 'iPhone UDID to register (optional)'
+        required: false
+        default: ''
+      device_name:
+        description: 'Name for that iPhone'
+        required: false
+        default: 'Oxeegen iPhone'
 
 permissions:
   contents: read
@@ -24,6 +36,8 @@ jobs:
           ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.OXEE_ASC_KEY_P8 }}
+          DEVICE_UDID: ${{ inputs.device_udid }}
+          DEVICE_NAME: ${{ inputs.device_name }}
         shell: python
         run: |
           import json, os, time
@@ -76,6 +90,19 @@ jobs:
                       "attributes": {"capabilityType": "APP_GROUPS"},
                       "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bid["id"]}}}}}), "enable App Groups")
                   print("   App Groups: enabled")
+
+          udid = os.environ.get("DEVICE_UDID", "").strip().upper()
+          if udid:
+              existing = check(requests.get(f"{API}/devices", headers=H, timeout=30,
+                                            params={"filter[udid]": udid}), "device lookup")["data"]
+              if existing:
+                  print(f"Device {udid[:8]}...: already registered ({existing[0]['attributes']['name']})")
+              else:
+                  check(requests.post(f"{API}/devices", headers=H, timeout=30, json={"data": {
+                      "type": "devices",
+                      "attributes": {"name": os.environ.get("DEVICE_NAME") or "Oxeegen iPhone",
+                                     "udid": udid, "platform": "IOS"}}}), "register device")
+                  print(f"Device {udid[:8]}...: registered")
 
           print(f"\nTeam of this key (app id prefix): {sorted(seeds)}; brand.json appleTeamId: {team}")
           if seeds != {team}:
