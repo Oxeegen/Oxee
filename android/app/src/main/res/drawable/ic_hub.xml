@@ -8,11 +8,11 @@
     android:tint="#FFFFFF">
     <path
         android:fillColor="@android:color/white"
-        android:pathData="M7.94,2.861 A10,10 0 0,0 7.94,21.139 Z" />
+        android:pathData="M7.96,2.852 A10,10 0 0,0 7.96,21.148 Z" />
     <path
         android:fillColor="@android:color/white"
-        android:pathData="M10.75,2.078 A10,10 0 0,1 13.25,2.078 L13.25,21.922 A10,10 0 0,1 10.75,21.922 Z" />
+        android:pathData="M10.64,2 L13.36,2 L13.36,22 L10.64,22 Z" />
     <path
         android:fillColor="@android:color/white"
-        android:pathData="M16.06,2.861 A10,10 0 0,1 16.06,21.139 Z" />
+        android:pathData="M16.02,2.844 A10,10 0 0,1 16.02,21.156 Z" />
 </vector>

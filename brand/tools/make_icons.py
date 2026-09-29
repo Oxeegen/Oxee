@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
-"""Regenerate every Oxee icon from the Oxee mark.
+"""Regenerate every Oxee icon from the official Oxee mark.
 
-The mark is a disc cut by two vertical gaps into three bands, measured from
-the 64 px mark Oxeegen uses in its other apps. Every upstream image is
-replaced at its own size and in its own role, so the file list never needs
-maintaining by hand:
+Source: brand/assets/oxee-mark-master.png (1120 px, transparent), the mark
+Oxeegen uses in its other apps. Every upstream image is replaced at its own
+size and in its own role, so the file list never needs maintaining by hand:
 
-  * app icons (iOS AppIcon sets, Android legacy launcher): white mark on the
-    Oxee purple gradient; iOS icons are opaque, as App Store requires;
-  * Android adaptive layers: gradient background, white or monochrome mark
-    inside the 66 dp safe zone;
-  * splash / launch images and assets/icons/icon.png: rounded icon on
+  * app icons (iOS AppIcon sets, Android legacy launcher): the purple mark on
+    white, filling MARK_SHARE of the icon (Claude's logo fills 65% of its
+    icon, ChatGPT's 81%, measured on an iPhone home screen); iOS icons are
+    opaque, as the App Store requires;
+  * Android adaptive layers: white background, the mark (or its monochrome
+    silhouette) sized so it matches the iOS proportion inside the visible
+    72 dp of the 108 dp canvas;
+  * splash / launch images and assets/icons/icon.png: the mark alone on
     transparency;
-  * the widget and notification glyph (vector): the mark alone.
+  * the widget and notification glyph (vector): the mark's shape, one colour.
 
-The debug build gets a graphite background so both can sit side by side.
+The debug build gets a light grey background so both can sit side by side.
 
     python brand/tools/make_icons.py
 
-Requires Pillow. The geometry is in one place (GAP_1, GAP_2); when Oxeegen
-supplies official artwork, draw from it here instead.
+Requires Pillow.
 """
 
 from __future__ import annotations
@@ -29,40 +30,45 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
+MASTER = ROOT / "brand/assets/oxee-mark-master.png"
 
-# Horizontal bands across the disc's diameter, as fractions of it:
-# solid, gap, solid (middle bar), gap, solid.
-GAP_1 = (0.297, 0.4375)
-GAP_2 = (0.5625, 0.703)
-
-PURPLE = ((0x6E, 0x2F, 0xFF), (0x47, 0x03, 0xE8))   # top-left -> bottom-right
-GRAPHITE = ((0x4B, 0x50, 0x5C), (0x22, 0x25, 0x2C))  # debug builds
-SS = 4  # supersampling factor
-
-
-def gradient(size: int, colors) -> Image.Image:
-    (r0, g0, b0), (r1, g1, b1) = colors
-    small = 256
-    grad = Image.new("RGB", (small, small))
-    px = grad.load()
-    for y in range(small):
-        for x in range(small):
-            t = (x + y) / (2 * (small - 1))
-            px[x, y] = (round(r0 + (r1 - r0) * t), round(g0 + (g1 - g0) * t), round(b0 + (b1 - b0) * t))
-    return grad.resize((size, size), Image.BICUBIC)
+MARK_SHARE = 0.73                 # mark width / icon width
+WHITE = (255, 255, 255)
+DEBUG_GREY = (0xE6, 0xE6, 0xEC)
+# Cuts across the mark, as fractions of its width (measured on the master):
+# left segment, gap, middle bar (full height), gap, right segment.
+GAP_1 = (0.298, 0.432)
+GAP_2 = (0.568, 0.701)
+GLYPH_COLOURS = ((0x5C, 0x1B, 0xFF), (0x42, 0x00, 0xEA))  # master, top -> bottom
+SS = 4  # supersampling for masks
 
 
-def mark_mask(size: int, diameter: float) -> Image.Image:
-    """L-mode mask of the mark centred in a size x size canvas."""
-    big = size * SS
-    d = diameter * SS
-    off = (big - d) / 2
-    mask = Image.new("L", (big, big), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.ellipse((off, off, off + d, off + d), fill=255)
-    for lo, hi in (GAP_1, GAP_2):
-        draw.rectangle((off + lo * d, 0, off + hi * d, big), fill=0)
-    return mask.resize((size, size), Image.LANCZOS)
+def master() -> Image.Image:
+    im = Image.open(MASTER).convert("RGBA")
+    return im.crop(im.getbbox())
+
+
+MARK = None
+
+
+def mark(width: int) -> Image.Image:
+    global MARK
+    if MARK is None:
+        MARK = master()
+    height = round(MARK.height * width / MARK.width)
+    return MARK.resize((width, height), Image.LANCZOS)
+
+
+def on_canvas(size: int, share: float, background=None) -> Image.Image:
+    canvas = Image.new("RGBA", (size, size), (background or WHITE) + ((255,) if background else (0,)))
+    m = mark(max(1, round(size * share)))
+    canvas.alpha_composite(m, ((size - m.width) // 2, (size - m.height) // 2))
+    return canvas
+
+
+def app_icon(size: int, background=WHITE) -> Image.Image:
+    """Full square; the OS applies its own mask. Opaque for the App Store."""
+    return on_canvas(size, MARK_SHARE, background).convert("RGB")
 
 
 def rounded_mask(size: int, radius_frac: float = 0.2237) -> Image.Image:
@@ -72,25 +78,25 @@ def rounded_mask(size: int, radius_frac: float = 0.2237) -> Image.Image:
     return mask.resize((size, size), Image.LANCZOS)
 
 
-def app_icon(size: int, colors, opaque: bool) -> Image.Image:
-    """White mark on the gradient, full square (the OS applies its own mask)."""
-    base = gradient(size, colors).convert("RGBA")
-    white = Image.new("RGBA", (size, size), (255, 255, 255, 255))
-    base.paste(white, (0, 0), mark_mask(size, size * 0.60))
-    return base.convert("RGB") if opaque else base
-
-
-def rounded_icon(size: int, colors) -> Image.Image:
-    icon = app_icon(size, colors, opaque=False)
+def rounded_icon(size: int, background=WHITE) -> Image.Image:
+    icon = on_canvas(size, MARK_SHARE, background)
     icon.putalpha(rounded_mask(size))
     return icon
 
 
-def adaptive_foreground(size: int, color=(255, 255, 255)) -> Image.Image:
-    # 108 dp canvas, 66 dp safe circle: a 48% mark keeps clear of every mask.
-    layer = Image.new("RGBA", (size, size), color + (0,))
-    layer.putalpha(mark_mask(size, size * 0.48))
-    return layer
+# Adaptive icons show the middle 72 dp of a 108 dp layer.
+ADAPTIVE_SHARE = MARK_SHARE * 72 / 108
+
+
+def adaptive_foreground(size: int) -> Image.Image:
+    return on_canvas(size, ADAPTIVE_SHARE)
+
+
+def adaptive_monochrome(size: int) -> Image.Image:
+    layer = on_canvas(size, ADAPTIVE_SHARE)
+    silhouette = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    silhouette.putalpha(layer.getchannel("A"))
+    return silhouette
 
 
 def replace(path: Path, image: Image.Image) -> None:
@@ -112,20 +118,19 @@ def glyph_paths(center: float, radius: float) -> list[str]:
 
     d = 2 * radius
     left = center - radius
+    top, bottom = center - radius, center + radius
     x1, x2 = left + GAP_1[0] * d, left + GAP_1[1] * d
     x3, x4 = left + GAP_2[0] * d, left + GAP_2[1] * d
     f = lambda v: f"{v:.3f}".rstrip("0").rstrip(".")
     t1, b1 = chord(x1)
-    t2, b2 = chord(x2)
-    t3, b3 = chord(x3)
     t4, b4 = chord(x4)
     r = f(radius)
     return [
-        # Left band: chord at x1, round side on the left.
+        # Left segment: chord at x1, round side on the left.
         f"M{f(x1)},{f(t1)} A{r},{r} 0 0,0 {f(x1)},{f(b1)} Z",
-        # Middle bar between x2 and x3, round top and bottom.
-        f"M{f(x2)},{f(t2)} A{r},{r} 0 0,1 {f(x3)},{f(t3)} L{f(x3)},{f(b3)} A{r},{r} 0 0,1 {f(x2)},{f(b2)} Z",
-        # Right band: chord at x4, round side on the right.
+        # Middle bar: the full height of the mark.
+        f"M{f(x2)},{f(top)} L{f(x3)},{f(top)} L{f(x3)},{f(bottom)} L{f(x2)},{f(bottom)} Z",
+        # Right segment: chord at x4, round side on the right.
         f"M{f(x4)},{f(t4)} A{r},{r} 0 0,1 {f(x4)},{f(b4)} Z",
     ]
 
@@ -152,61 +157,57 @@ def write_vectors() -> None:
         + "</svg>\n"
     )
     (ROOT / "ios/ConduitWidget/Assets.xcassets/HubIcon.imageset/hub.svg").write_text(svg, encoding="utf-8")
-    master = (
+    top, bottom = ("#%02X%02X%02X" % c for c in GLYPH_COLOURS)
+    vector = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">'
-        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
-        f'<stop offset="0" stop-color="#{"%02X%02X%02X" % PURPLE[0]}"/>'
-        f'<stop offset="1" stop-color="#{"%02X%02X%02X" % PURPLE[1]}"/></linearGradient></defs>'
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0" stop-color="{top}"/><stop offset="1" stop-color="{bottom}"/>'
+        "</linearGradient></defs>"
         + "".join(f'<path fill="url(#g)" d="{p}"/>' for p in glyph_paths(512, 512))
         + "</svg>\n"
     )
-    (ROOT / "brand/assets/oxee-mark.svg").write_text(master, encoding="utf-8")
+    (ROOT / "brand/assets/oxee-mark.svg").write_text(vector, encoding="utf-8")
 
 
 def main() -> None:
-    (ROOT / "brand/assets").mkdir(parents=True, exist_ok=True)
-    app_icon(1024, PURPLE, opaque=True).save(ROOT / "brand/assets/oxee-icon-1024.png", optimize=True)
-    mark = gradient(1024, PURPLE).convert("RGBA")
-    mark.putalpha(mark_mask(1024, 1024))
-    mark.save(ROOT / "brand/assets/oxee-mark-1024.png", optimize=True)
+    assets = ROOT / "brand/assets"
+    app_icon(1024).save(assets / "oxee-icon-1024.png", optimize=True)
+    on_canvas(1024, 1.0).save(assets / "oxee-mark-1024.png", optimize=True)
 
     count = 0
-    for set_dir, colors in (("AppIcon.appiconset", PURPLE), ("AppIcon-Debug.appiconset", GRAPHITE)):
+    for set_dir, background in (("AppIcon.appiconset", WHITE), ("AppIcon-Debug.appiconset", DEBUG_GREY)):
         for png in sorted((ROOT / "ios/Runner/Assets.xcassets" / set_dir).glob("*.png")):
-            replace(png, app_icon(Image.open(png).size[0], colors, opaque=True))
+            replace(png, app_icon(Image.open(png).size[0], background))
             count += 1
 
     for png in sorted((ROOT / "ios/Runner/Assets.xcassets/LaunchImage.imageset").glob("*.png")):
-        replace(png, rounded_icon(Image.open(png).size[0], PURPLE))
+        replace(png, on_canvas(Image.open(png).size[0], 0.8))
         count += 1
 
-    for variant, colors in (("main", PURPLE), ("debug", GRAPHITE)):
+    for variant, background in (("main", WHITE), ("debug", DEBUG_GREY)):
         for mip in sorted((ROOT / f"android/app/src/{variant}/res").glob("mipmap-*")):
             for png in sorted(mip.glob("*.png")):
                 size = Image.open(png).size[0]
-                name = png.stem
-                if name == "ic_launcher":
-                    image = rounded_icon(size, colors)
-                elif name == "ic_launcher_background":
-                    image = gradient(size, colors).convert("RGBA")
-                elif name == "ic_launcher_foreground":
-                    image = adaptive_foreground(size)
-                elif name == "ic_launcher_monochrome":
-                    image = adaptive_foreground(size, (0, 0, 0))
-                else:
+                layer = {
+                    "ic_launcher": lambda: rounded_icon(size, background),
+                    "ic_launcher_background": lambda: Image.new("RGBA", (size, size), background + (255,)),
+                    "ic_launcher_foreground": lambda: adaptive_foreground(size),
+                    "ic_launcher_monochrome": lambda: adaptive_monochrome(size),
+                }.get(png.stem)
+                if layer is None:
                     raise SystemExit(f"unknown launcher layer {png}")
-                replace(png, image)
+                replace(png, layer())
                 count += 1
 
     for png in sorted((ROOT / "android/app/src/main/res").glob("drawable-*/splash.png")):
-        replace(png, rounded_icon(Image.open(png).size[0], PURPLE))
+        replace(png, on_canvas(Image.open(png).size[0], 0.8))
         count += 1
 
-    replace(ROOT / "assets/icons/icon.png", rounded_icon(512, PURPLE))
+    replace(ROOT / "assets/icons/icon.png", on_canvas(512, 0.8))
     count += 1
 
     write_vectors()
-    print(f"make_icons: {count} raster icons regenerated, vectors written")
+    print(f"make_icons: {count} raster icons regenerated from {MASTER.name}, vectors written")
 
 
 if __name__ == "__main__":
