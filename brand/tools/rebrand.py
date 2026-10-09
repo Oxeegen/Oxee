@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -385,8 +386,21 @@ RULES = [
 ]
 
 
+def source_files() -> set[str] | None:
+    """Files git tracks, plus new ones it does not ignore. Generated output
+    (gen-l10n's app_localizations_*.dart, build_runner's *.g.dart, ...) is
+    git-ignored, so it is never rewritten or reported. None outside git."""
+    try:
+        listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                                cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return set(listed.splitlines())
+
+
 def selected_files() -> dict[Path, list[Callable[[str], str]]]:
     files: dict[Path, list[Callable[[str], str]]] = {}
+    in_git = source_files()
     for rule in RULES:
         for pattern in rule.globs:
             for path in ROOT.glob(pattern):
@@ -394,6 +408,8 @@ def selected_files() -> dict[Path, list[Callable[[str], str]]]:
                 if not path.is_file() or EXCLUDED_PARTS.intersection(rel_parts):
                     continue
                 if path.name.endswith(EXCLUDED_SUFFIXES):
+                    continue
+                if in_git is not None and path.relative_to(ROOT).as_posix() not in in_git:
                     continue
                 files.setdefault(path, [])
                 if rule.rewrite not in files[path]:
