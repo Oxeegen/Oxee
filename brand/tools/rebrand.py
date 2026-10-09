@@ -325,7 +325,11 @@ IDENTITY: dict[str, list[tuple[str, str]]] = {
         ("'https://github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"] + "'"),
         ("'github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"].split("://", 1)[1] + "'"),
     ],
-    "lib/core/services/native_sheet_hydration_service.dart": [
+    # Wikipedia's API asks clients to name a contact in the User-Agent.
+    "packages/conduit_ddgs/lib/src/engines/wikipedia.dart": [
+        ("(https://github.com/cogwheel0/conduit) conduit_ddgs", "(" + BRAND["repoUrl"] + ") conduit_ddgs"),
+    ],
+    "lib/core/utils/native_sheet_utils.dart": [
         ("url: 'https://github.com/cogwheel0/conduit',", "url: '" + BRAND["repoUrl"] + "',"),
     ],
     "lib/features/release_notes/data/release_links.dart": [
@@ -420,6 +424,26 @@ def apply_locale_fixes(rel: str, text: str) -> str:
     return text
 
 
+# English article: "Conduit" took "a", "Oxee" takes "an". Only English text:
+# code literals (English source strings), the English ARB and en.lproj, and
+# the keys of every .strings file (they are the English source text, and must
+# keep matching the Swift literals). Values in other languages stay: Spanish
+# and Italian "a Oxee" means "to Oxee".
+ARTICLE = re.compile(r"(?<![A-Za-z0-9_])([Aa]) " + NAME + r"(?![A-Za-z0-9_])")
+STRINGS_LINE = re.compile(r'^(\s*"(?:[^"\\]|\\.)*")(\s*=.*)$', re.M)
+
+
+def fix_english_articles(rel: str, text: str) -> str:
+    def article(t: str) -> str:
+        return ARTICLE.sub(lambda m: m.group(1) + "n " + NAME, t)
+
+    if rel.endswith((".dart", ".swift", ".kt")) or rel == "lib/l10n/app_en.arb" or "/en.lproj/" in rel:
+        return article(text)
+    if rel.endswith(".strings"):
+        return STRINGS_LINE.sub(lambda m: article(m.group(1)) + m.group(2), text)
+    return text
+
+
 def _whole(text: str, old: str, new: str) -> str:
     return re.sub(r"(?<![A-Za-z0-9_])" + re.escape(old) + r"(?![A-Za-z0-9_])", new, text)
 
@@ -434,6 +458,7 @@ def transform(path: Path, rewrites: list[Callable[[str], str]]) -> tuple[str, st
         text = rewrite(text)
     rel = path.relative_to(ROOT).as_posix()
     text = apply_locale_fixes(rel, text)
+    text = fix_english_articles(rel, text)
     text = apply_identity(rel, text)
     if crlf:
         text = text.replace("\n", "\r\n")

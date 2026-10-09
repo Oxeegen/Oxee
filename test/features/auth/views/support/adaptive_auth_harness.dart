@@ -1,16 +1,17 @@
+import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
 import 'package:conduit_core/models/backend_config.dart';
 import 'package:conduit_core/models/server_config.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
-import 'package:conduit/platform/conduit_platform_apis.g.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/providers/chat_entry_readiness_providers.dart';
 import 'package:conduit/shared/services/navigation_service.dart';
+import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/optimized_storage_service.dart';
 import 'package:conduit/features/auth/views/authentication_page.dart';
 import 'package:conduit/features/auth/views/backend_chooser_page.dart';
 import 'package:conduit/features/auth/views/server_connection_page.dart';
 import 'package:conduit/features/direct_connections/views/direct_connection_editor_page.dart';
-import 'package:conduit/features/direct_connections/controllers/direct_connection_editor_draft.dart';
+import 'package:conduit_core/features/direct_connections/controllers/direct_connection_editor_draft.dart';
 import 'package:conduit_core/features/direct_connections/providers/direct_connection_providers.dart';
 import 'package:conduit/features/direct_connections/services/apple_pcc_adapter.dart';
 import 'package:conduit/features/direct_connections/views/direct_connections_page.dart';
@@ -39,6 +40,7 @@ class AdaptiveAuthHarness {
     this.appleOnDeviceStatus,
     this.applePccStatus,
     this.accountlessBackendUsable = false,
+    this.authActions,
   }) {
     when(() => _storage.getSavedCredentials()).thenAnswer((_) async => null);
     when(() => _storage.getAuthTokenStrict()).thenAnswer((_) async => '');
@@ -47,6 +49,25 @@ class AdaptiveAuthHarness {
     when(() => _storage.saveLocalUser(null)).thenAnswer((_) async {});
     when(() => _storage.saveLocalUserAvatar(null)).thenAnswer((_) async {});
     when(() => _storage.getReviewerMode()).thenAnswer((_) async => false);
+    if (authActions != null) {
+      // A sign-in attempt first saves the server it was opened for.
+      registerFallbackValue(server);
+      when(
+        () => _storage.selectUnauthenticatedServerConfig(
+          any(),
+          canCommit: any(named: 'canCommit'),
+          onRollbackUncertain: any(named: 'onRollbackUncertain'),
+          publish: any(named: 'publish'),
+        ),
+      ).thenAnswer((_) async => true);
+      registerFallbackValue(const BackendConfig());
+      when(() => _storage.getLocalBackendConfig())
+          .thenAnswer((_) async => null);
+      when(() => _storage.saveLocalBackendConfig(any()))
+          .thenAnswer((_) async {});
+      when(() => _storage.saveLocalTransportOptions(any()))
+          .thenAnswer((_) async {});
+    }
   }
 
   final ServerConfig server;
@@ -60,10 +81,17 @@ class AdaptiveAuthHarness {
   /// Whether an Apple, Direct, or Hermes backend already works, as when Open
   /// WebUI is added from settings rather than during first-time setup.
   final bool accountlessBackendUsable;
+
+  /// Replaces the sign-in actions, so a test controls the outcome of an attempt.
+  final AuthActions? authActions;
   final _MockOptimizedStorageService _storage = _MockOptimizedStorageService();
   final ErrorWidgetBuilder _previousErrorWidgetBuilder = ErrorWidget.builder;
   final void Function(FlutterErrorDetails)? _previousFlutterOnError =
       FlutterError.onError;
+
+  /// When set, the route rebuilds the page as the app's router does when the
+  /// route's `extra` is gone: with no server or backend config.
+  final routeExtraLost = ValueNotifier<bool>(false);
 
   late GoRouter router;
   bool _disposed = false;
@@ -76,9 +104,14 @@ class AdaptiveAuthHarness {
         GoRoute(
           path: Routes.authentication,
           name: RouteNames.authentication,
-          builder: (_, _) => AuthenticationPage(
-            serverConfig: server,
-            backendConfig: backendConfig,
+          builder: (_, _) => ValueListenableBuilder<bool>(
+            valueListenable: routeExtraLost,
+            builder: (_, extraLost, _) => extraLost
+                ? const AuthenticationPage()
+                : AuthenticationPage(
+                    serverConfig: server,
+                    backendConfig: backendConfig,
+                  ),
           ),
         ),
         GoRoute(
@@ -100,6 +133,12 @@ class AdaptiveAuthHarness {
     );
     return ProviderScope(
       overrides: [
+        if (authActions != null) ...[
+          authActionsProvider.overrideWithValue(authActions!),
+          // A sign-in attempt first waits for the API client of the selected
+          // server.
+          apiServiceProvider.overrideWithValue(_selectedServerApi()),
+        ],
         accountlessPrimaryBackendUsableProvider.overrideWithValue(
           accountlessBackendUsable,
         ),
@@ -128,6 +167,13 @@ class AdaptiveAuthHarness {
     );
   }
 
+  ApiService _selectedServerApi() {
+    final api = _MockApiService();
+    when(() => api.authToken).thenReturn(null);
+    when(() => api.serverConfig).thenReturn(server);
+    return api;
+  }
+
   Future<void> unmount(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
     dispose();
@@ -138,6 +184,7 @@ class AdaptiveAuthHarness {
     _disposed = true;
     PlatformUiCapabilities.debugPlatformOverride = null;
     router.dispose();
+    routeExtraLost.dispose();
     ErrorWidget.builder = _previousErrorWidgetBuilder;
     FlutterError.onError = _previousFlutterOnError;
   }
@@ -203,7 +250,7 @@ class BackendOnboardingHarness {
         // onboarding coverage still exercises them.
         applePccPlatformSupportedProvider.overrideWithValue(true),
         applePccAdapterProvider.overrideWithValue(
-          ApplePccAdapter(hostApi: _AvailablePccHost()),
+          ApplePccAdapter(host: _AvailablePccHost()),
         ),
         appleOnDeviceStatusProvider.overrideWith(
           (_) async => _unavailableAppleStatus(),
@@ -236,7 +283,7 @@ class BackendOnboardingHarness {
 
 /// Answers status probes instantly so Apple discovery never leaves a pending
 /// platform-channel timer behind in widget tests.
-final class _AvailablePccHost extends PccHostApi {
+final class _AvailablePccHost extends UnavailableApplePccHost {
   @override
   Future<PlatformPccStatus> getStatus(PlatformAppleModel model) async =>
       PlatformPccStatus(
@@ -260,6 +307,8 @@ void usePhoneViewport(WidgetTester tester) {
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 }
+
+class _MockApiService extends Mock implements ApiService {}
 
 class _MockOptimizedStorageService extends Mock
     implements OptimizedStorageService {}

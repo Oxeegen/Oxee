@@ -9,6 +9,7 @@ import '../../../l10n/app_localizations.dart';
 import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/utils/adaptive_glass.dart';
 import 'chat_voice_mode_controller.dart';
+import 'voice_mode_error_text.dart';
 
 class ChatVoiceModeOverlay extends ConsumerWidget {
   const ChatVoiceModeOverlay({super.key, required this.bottomOffset});
@@ -132,7 +133,7 @@ class _ExpandedVoicePanel extends ConsumerWidget {
                   ),
                 ),
                 _AdaptiveVoiceAction(
-                  tooltip: 'Minimize',
+                  tooltip: l10n.voiceCallMinimize,
                   onPressed: controller.collapse,
                   icon: Platform.isIOS
                       ? CupertinoIcons.chevron_down
@@ -146,7 +147,12 @@ class _ExpandedVoicePanel extends ConsumerWidget {
             if (snapshot.errorMessage != null) ...[
               const SizedBox(height: Spacing.xs),
               Text(
-                snapshot.errorMessage!,
+                voiceModeErrorText(
+                      l10n,
+                      kind: snapshot.errorKind,
+                      message: snapshot.errorMessage,
+                    ) ??
+                    snapshot.errorMessage!,
                 style: AppTypography.small.copyWith(
                   color: Theme.of(context).colorScheme.error,
                 ),
@@ -260,7 +266,7 @@ class _CollapsedVoicePill extends ConsumerWidget {
                 ),
                 const SizedBox(width: Spacing.sm),
                 _AdaptiveVoiceAction(
-                  tooltip: 'Expand',
+                  tooltip: l10n.voiceCallExpand,
                   onPressed: controller.expand,
                   icon: Platform.isIOS
                       ? CupertinoIcons.chevron_up
@@ -297,8 +303,8 @@ class _StatusDot extends StatelessWidget {
     final color = switch (snapshot.phase) {
       ChatVoiceModePhase.listening => context.conduitTheme.success,
       ChatVoiceModePhase.speaking => context.conduitTheme.buttonPrimary,
-      ChatVoiceModePhase.paused || ChatVoiceModePhase.muted =>
-        context.conduitTheme.warning,
+      ChatVoiceModePhase.paused ||
+      ChatVoiceModePhase.muted => context.conduitTheme.warning,
       ChatVoiceModePhase.error => Theme.of(context).colorScheme.error,
       _ => context.conduitTheme.textSecondary,
     };

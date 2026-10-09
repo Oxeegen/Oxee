@@ -40,7 +40,7 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
         ["event.id == oxeeRegionNativeSheetItemId"],
         ["ReleaseNotesCoordinator("],
     ),
-    "lib/core/services/native_sheet_hydration_service.dart": (
+    "lib/core/utils/native_sheet_utils.dart": (
         [],
         ["id: NativeSheetRoutes.releaseNotesManual", "github.com/cogwheel0"],
     ),

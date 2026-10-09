@@ -5,7 +5,12 @@ import 'package:conduit_core/conduit_core.dart';
 import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart'
-    show LicenseEntryWithLineBreaks, LicenseRegistry;
+    show
+        LicenseEntryWithLineBreaks,
+        LicenseRegistry,
+        TargetPlatform,
+        defaultTargetPlatform,
+        kIsWeb;
 import 'package:flutter_driver/driver_extension.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
@@ -36,6 +41,9 @@ import 'platform/flutter_key_value_store.dart';
 import 'platform/flutter_log_sink.dart';
 import 'platform/flutter_worker_port.dart';
 import 'platform/flutter_database_opener.dart';
+import 'platform/geolocator_location_port.dart';
+import 'platform/go_router_navigator.dart';
+import 'platform/wakelock_plus_port.dart';
 
 import 'package:conduit_core/providers/app_providers.dart';
 
@@ -44,10 +52,11 @@ import 'package:conduit_core/providers/host_ports.dart';
 import 'package:conduit_core/network/conduit_user_agent.dart';
 
 import 'core/persistence/hive_bootstrap.dart';
+import 'core/utils/model_logos.dart';
 
 import 'package:conduit_core/persistence/hive_prefs_migrator.dart';
 
-import 'core/persistence/persistence_migrator.dart';
+import 'package:conduit_core/persistence/persistence_migrator.dart';
 
 import 'package:conduit_core/persistence/persistence_providers.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
@@ -55,10 +64,12 @@ import 'package:conduit_core/persistence/preferences_store.dart';
 import 'core/router/app_router.dart';
 import 'core/services/native_sheet_bridge.dart';
 import 'core/services/native_sheet_hydration_service.dart';
+import 'shared/services/flutter_ui_requests.dart';
 import 'shared/services/navigation_service.dart';
 import 'brand/oxee_brand.dart'; // OXEE: region row in the native sheet
 import 'shared/services/raster_media_policy.dart';
 import 'platform/carplay_service.dart';
+import 'core/services/native_symbol_image_service.dart';
 
 import 'package:conduit_core/services/readiness_gated_secure_storage.dart';
 import 'package:conduit_core/services/settings_service.dart';
@@ -67,11 +78,18 @@ import 'package:conduit_core/sync/request_completion_runner_provider.dart';
 
 import 'core/utils/tts_voice_utils.dart';
 import 'core/utils/current_localizations.dart';
-import 'features/chat/services/request_completion_runner.dart';
+
+import 'package:conduit_core/features/chat/services/request_completion_runner.dart';
+
 import 'features/chat/providers/text_to_speech_provider.dart';
-import 'features/chat/providers/chat_providers.dart'
+import 'core/services/callkit_service.dart';
+import 'features/chat/services/voice_input_service.dart';
+import 'features/chat/voice_mode/chat_voice_audio_session_coordinator.dart';
+import 'features/chat/voice_mode/chat_voice_mode_controller.dart';
+
+import 'package:conduit_core/features/chat/providers/chat_providers.dart'
     show chatWakelockCoordinatorProvider, restoreDefaultModel;
-import 'features/release_notes/release_notes_bootstrap.dart';
+import 'package:conduit_core/features/release_notes/release_notes_bootstrap.dart';
 import 'features/release_notes/data/release_notes_repository.dart';
 import 'features/release_notes/release_notes_presenter.dart';
 import 'l10n/conduit_localizations.dart';
@@ -98,6 +116,8 @@ import 'shared/theme/theme_extensions.dart';
 import 'shared/theme/theme_providers.dart';
 import 'platform/frame_profiler.dart';
 import 'features/direct_connections/providers/apple_pcc_providers.dart';
+import 'features/direct_connections/services/apple_pcc_adapter.dart'
+    show PigeonApplePccHost;
 
 import 'package:conduit_core/features/direct_connections/providers/direct_connection_providers.dart';
 
@@ -159,7 +179,11 @@ Future<void> _configureUserAgent() async {
 void _registerBundledLicenses() {
   LicenseRegistry.addLicense(() async* {
     final notice = await rootBundle.loadString('THIRD_PARTY_NOTICES.md');
-    yield LicenseEntryWithLineBreaks(const ['Open WebUI icon'], notice);
+    yield LicenseEntryWithLineBreaks(const [
+      'Open WebUI icon',
+      'ddgs',
+      'models.dev',
+    ], notice);
   });
 }
 
@@ -170,6 +194,11 @@ void main() {
   AudioPlaybackPort.hostFactory = JustAudioPlayback.new;
   BackgroundExecutionPort.hostDefault = const MobileBackgroundExecution();
   DisplayBoostPort.hostDefault = const IosDisplayBoost();
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+    NativeSymbolImageService.hostRenderer = renderNativeSymbolThroughChannel;
+  }
+  LocationPort.hostDefault = const GeolocatorLocationPort();
+  WakelockPort.hostDefault = const WakelockPlusPort();
   ShareStagingPort.hostDefault = IosShareStaging(
     stagingDirectoryName: shareStagingDirectoryName,
   );
@@ -197,6 +226,8 @@ void main() {
       unawaited(_configureUserAgent());
 
       _registerBundledLicenses();
+      // Read by the synchronous avatar resolver; awaited before runApp.
+      final modelLogosLoaded = ModelLogos.load();
       FrameProfiler.instance.attachFrameTimings();
       AndroidImeInsetResync.instance.install();
 
@@ -320,17 +351,34 @@ void main() {
           signOutResetTargetsProvider.overrideWithValue(
             themePreferenceResetTargets,
           ),
+          // The in-memory selection, so a language change applies to the
+          // next request before the preference write lands.
+          appLanguageTagProvider.overrideWith(
+            (ref) => ref.watch(appLocaleProvider)?.toLanguageTag(),
+          ),
+          // Apple Foundation Models through the Pigeon bridge
+          // (ios/Runner/PccBridge.swift); the adapter lives in conduit_core.
+          applePccHostProvider.overrideWith((ref) => PigeonApplePccHost()),
           hostDirectProviderAdaptersProvider.overrideWith(
             (ref) => [ref.watch(applePccAdapterProvider)],
           ),
+          // The CarPlay scene's channel (ConduitCarPlayBridge.swift); the
+          // coordinator in conduit_core stays idle without it.
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS)
+            carPlayBridgeProvider.overrideWithValue(
+              const MethodChannelCarPlayBridge(),
+            ),
           hostHermesDashboardBridgeFactoryProvider.overrideWith(
             (ref) =>
-                ({required root}) => HermesDashboardRestBridge(
-                  config: ref.read(hermesConfigProvider),
-                  root: root,
-                ),
+                ({required root, required accessHeaders}) =>
+                    HermesDashboardRestBridge(
+                      root: root,
+                      accessHeaders: accessHeaders,
+                    ),
           ),
           clipboardPortProvider.overrideWithValue(const FlutterClipboardPort()),
+          uiRequestPortProvider.overrideWithValue(const FlutterUiRequests()),
+          routeNavigatorProvider.overrideWithValue(const GoRouterNavigator()),
           openExternalUrlProvider.overrideWithValue(
             const UrlLauncherOpenExternalUrlPort(),
           ),
@@ -347,6 +395,26 @@ void main() {
           requestCompletionRunnerProvider.overrideWith(
             (ref) => ref.watch(chatRequestCompletionRunnerProvider),
           ),
+          // The voice-call controller lives in conduit_core; these are the
+          // host capabilities it drives (voice_mode_ports.dart).
+          voiceModeInputProvider.overrideWith(
+            (ref) => ref.watch(voiceInputServiceProvider),
+          ),
+          voiceModeSpeechProvider.overrideWith(
+            (ref) => ref.watch(textToSpeechServiceProvider),
+          ),
+          voiceCallKitProvider.overrideWith(
+            (ref) => ref.watch(callKitServiceProvider),
+          ),
+          voiceAudioSessionProvider.overrideWith(
+            (ref) => ref.watch(chatVoiceAudioSessionCoordinatorProvider),
+          ),
+          chatVoiceModeBackgroundCoordinatorProvider.overrideWithValue(
+            ChatVoiceModeBackgroundCoordinator(),
+          ),
+          voiceModePlatformProvider.overrideWithValue(
+            const FlutterVoiceModePlatform(),
+          ),
         ],
       );
       // CarPlay can cold-launch Conduit without a visible Flutter scene, so
@@ -355,6 +423,7 @@ void main() {
 
       installConduitErrorWidgetBuilder();
 
+      await modelLogosLoaded;
       runApp(
         UncontrolledProviderScope(
           container: providerContainer,
@@ -558,6 +627,14 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
         final context = NavigationService.context;
         if (context == null || !context.mounted) return;
         await _showManualReleaseNotes(context);
+        return;
+      }
+
+      if (event.id == NativeSheetRoutes.openSourceLicenses) {
+        await _dismissNativeSheetBeforeFollowUp();
+        final context = NavigationService.context;
+        if (context == null || !context.mounted) return;
+        showLicensePage(context: context, applicationName: 'Oxee');
         return;
       }
 

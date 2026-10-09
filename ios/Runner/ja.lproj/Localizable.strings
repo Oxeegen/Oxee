@@ -9,8 +9,8 @@
 "Send an image into Oxee for analysis." = "分析のために画像を Oxee に送信します。";
 "Send to Oxee" = "Oxee に送信";
 "Start Voice Call" = "音声通話を開始";
-"Start a Oxee chat with an optional prompt." = "任意のプロンプトで Oxee チャットを開始します。";
-"Start a Oxee chat with provided text." = "指定したテキストで Oxee チャットを開始します。";
+"Start an Oxee chat with an optional prompt." = "任意のプロンプトで Oxee チャットを開始します。";
+"Start an Oxee chat with provided text." = "指定したテキストで Oxee チャットを開始します。";
 "Start a live voice call with Oxee." = "Oxee とのライブ音声通話を開始します。";
 "Text" = "テキスト";
 "URL" = "URL";

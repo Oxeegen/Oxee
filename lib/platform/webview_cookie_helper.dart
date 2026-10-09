@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import 'package:conduit_core/auth/webview_cookie_identity.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
@@ -7,6 +8,9 @@ import 'package:conduit_core/persistence/persistence_keys.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
 
 import 'package:conduit_core/utils/debug_logger.dart';
+
+export 'package:conduit_core/auth/webview_cookie_identity.dart'
+    show webViewCookieBelongsToExactHost;
 
 final Set<WebsiteDataType> _appleWebsiteDataTypes = <WebsiteDataType>{
   WebsiteDataType.WKWebsiteDataTypeLocalStorage,
@@ -17,13 +21,6 @@ final Set<WebsiteDataType> _appleWebsiteDataTypes = <WebsiteDataType>{
   WebsiteDataType.WKWebsiteDataTypeFetchCache,
   WebsiteDataType.WKWebsiteDataTypeServiceWorkerRegistrations,
 };
-
-@visibleForTesting
-bool webViewCookieBelongsToExactHost(String? domain, String host) {
-  final raw = domain?.trim().toLowerCase();
-  final normalized = raw?.startsWith('.') == true ? raw!.substring(1) : raw;
-  return normalized == null || normalized.isEmpty || normalized == host;
-}
 
 /// Deletes cookies and verifies the empty-store postcondition when the
 /// platform reports `false`. Android uses `false` both for "nothing removed"
@@ -70,19 +67,27 @@ bool get isWebViewSupported =>
 /// This is isolated in its own file to prevent platform coupling issues
 /// when the WebView package isn't available.
 class WebViewCookieHelper {
-  static Future<void> _dataOperationTail = Future<void>.value();
+  // Released once drained so a completed chain does not keep its creating
+  // zone alive; later callers would be stranded if that zone stopped running,
+  // as a finished fake-async widget test does.
+  static Future<void>? _dataOperationTail;
   static bool _fullClearRequired = false;
   static int _fullClearGeneration = 0;
 
   static Future<T> _serializeDataOperation<T>(Future<T> Function() operation) {
-    final result = _dataOperationTail.then<T>((_) => operation());
+    final result = (_dataOperationTail ?? Future<void>.value()).then<T>(
+      (_) => operation(),
+    );
     // A failed platform operation must not strand later auth flows. Individual
     // callers still receive the original result/error while the shared barrier
     // advances after either outcome.
-    _dataOperationTail = result.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
+    late final Future<void> tail;
+    tail = result
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() {
+          if (identical(_dataOperationTail, tail)) _dataOperationTail = null;
+        });
+    _dataOperationTail = tail;
     return result;
   }
 
@@ -93,7 +98,8 @@ class WebViewCookieHelper {
   /// Waits until every cookie/storage mutation requested before this call has
   /// completed. Proxy auth uses this before constructing its WebView so a late
   /// logout purge cannot erase the new flow's cookies or local storage.
-  static Future<void> waitForPendingDataOperations() => _dataOperationTail;
+  static Future<void> waitForPendingDataOperations() =>
+      _dataOperationTail ?? Future<void>.value();
 
   /// True when a logout full-data purge failed in this process, or its durable
   /// incomplete-logout marker still requires recovery after a restart.
@@ -230,12 +236,14 @@ class WebViewCookieHelper {
       for (final cookie in cookies.where(
         (cookie) => identities.contains(cookieIdentity(cookie)),
       )) {
-        final deleted = await manager.deleteCookie(
-          url: url,
-          name: cookie.name,
-          path: cookie.path ?? '/',
-          domain: cookie.domain,
-        );
+        final deleted = Platform.isAndroid
+            ? await _expireAndroidCookie(manager, url, cookie)
+            : await manager.deleteCookie(
+                url: url,
+                name: cookie.name,
+                path: cookie.path ?? '/',
+                domain: cookie.domain,
+              );
         success = success && deleted;
       }
       final remaining = await manager.getCookies(url: url);
@@ -251,6 +259,37 @@ class WebViewCookieHelper {
       );
       return false;
     }
+  }
+
+  /// inappwebview's Android `deleteCookie` writes `Domain=` whenever the
+  /// cookie reports one and never `Secure`, so Chromium refuses to expire a
+  /// `__Host-`/`__Secure-` cookie (the Hermes dashboard session) and a
+  /// host-only one stays. Expire it under every identity core's rule lists;
+  /// the caller re-reads the store to confirm.
+  static Future<bool> _expireAndroidCookie(
+    CookieManager manager,
+    WebUri url,
+    Cookie cookie,
+  ) async {
+    var any = false;
+    for (final expiry in androidWebViewCookieExpiries(
+      url: url.uriValue,
+      name: cookie.name,
+      path: cookie.path,
+      domain: cookie.domain,
+    )) {
+      final written = await manager.setCookie(
+        url: url,
+        name: cookie.name,
+        value: '',
+        path: expiry.path,
+        domain: expiry.domain,
+        maxAge: 0,
+        isSecure: expiry.secure,
+      );
+      any = any || written;
+    }
+    return any;
   }
 
   static Future<Set<String>> cookieIdentitiesForOrigin(String origin) async {
@@ -289,7 +328,7 @@ class WebViewCookieHelper {
     required String name,
     String? path,
     String? domain,
-  }) => '$name\u0000${path ?? '/'}\u0000${domain ?? ''}';
+  }) => webViewCookieIdentity(name: name, path: path, domain: domain);
 
   /// Clears all WebView data including cookies, localStorage, and cache.
   ///
@@ -430,7 +469,7 @@ bool get webViewFullClearRequiredForTesting =>
 @visibleForTesting
 Future<void> resetWebViewCookieHelperForTesting() async {
   await WebViewCookieHelper._dataOperationTail;
-  WebViewCookieHelper._dataOperationTail = Future<void>.value();
+  WebViewCookieHelper._dataOperationTail = null;
   WebViewCookieHelper._fullClearRequired = false;
   WebViewCookieHelper._fullClearGeneration = 0;
 }

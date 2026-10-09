@@ -28,8 +28,18 @@ dependencies:
   socket_io_client: ^3.1.2
   synchronized: ^3.4.1
   web_socket: ^1.0.1
+  # Pure-Dart PNG encoding for profile avatars (utils/profile_avatar.dart)
+  # and the workspace model avatar bounding
+  # (features/workspace/services/workspace_model_avatar_bounds.dart), so the
+  # core needs no widget raster path.
+  image: ^4.9.0
   conduit_markdown:
     path: ../conduit_markdown
+  # On-device web search for Direct models (vendored `ddgs`, see its
+  # VENDORED.md) and the HTML parser its page reader shares.
+  conduit_ddgs:
+    path: ../conduit_ddgs
+  html: ^0.15.6
   crypto: ^3.0.3
   # The core raises and classifies API errors, and `ApiError` is built from a
   # `DioException`. dio is pure Dart, so this costs the package nothing in
@@ -49,6 +59,8 @@ dependencies:
   riverpod: ^3.4.3
   riverpod_annotation: ^4.0.7
   uuid: ^4.6.0
+  # Chat tool servers may publish their OpenAPI spec as YAML.
+  yaml: ^3.1.2
 
 dev_dependencies:
   build_runner: ^2.15.1

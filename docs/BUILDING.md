@@ -87,10 +87,12 @@ python brand/tools/check_brand.py
 python brand/tools/flutter_test.py
 ```
 
-`brand/tools/flutter_test.py` runs `flutter test` on every test file except
-the few listed in `brand/upstream-tests-replaced.txt`. CI
-(`.github/workflows/ci.yml`) runs the same gates on every push to `main` and
-on pull requests.
+`brand/tools/flutter_test.py` runs the whole suite through
+`tool/run_test_shards.dart`, which groups the test files into a few combined
+entrypoints (much faster than plain `flutter test`), leaving out the few files
+listed in `brand/upstream-tests-replaced.txt`. Use `flutter test <file>` for a
+single file. CI (`.github/workflows/ci.yml`) runs the same gates on every push
+to `main` and on pull requests.
 
 Tests use `flutter_test` with `package:checks` for assertions and `mocktail` for
 mocks. Lints come from `flutter_lints` plus `riverpod_lint`.

@@ -13,17 +13,24 @@ import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/socket_service.dart';
 import 'package:conduit_core/services/worker_manager.dart';
-import 'package:conduit/features/chat/providers/chat_providers.dart';
+import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/hermes/services/hermes_run_transport.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:conduit_core/ports/app_lifecycle.dart';
+import 'package:conduit_core/ports/secure_key_value_store.dart';
 import 'package:conduit_core/providers/host_ports.dart';
 import 'package:conduit_core/testing.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:conduit/platform/flutter_secure_key_value_store.dart';
 
-import '../../../support/openwebui_storage_test_overrides.dart';
+/// Discovery with nothing to report. Run for real, it would prune the
+/// registry to the current direct profiles, which these tests do not model.
+final class _IdleDirectDiscovery extends DirectModelDiscoveryController {
+  @override
+  Future<DirectModelDiscoveryState> build() async =>
+      DirectModelDiscoveryState();
+}
 
 class _TestActiveConversationNotifier extends ActiveConversationNotifier {
   @override
@@ -295,7 +302,8 @@ ProviderContainer _modelRebindContainer({
   required List<Model> models,
 }) => ProviderContainer(
   overrides: [
-    secureStorageProvider.overrideWithValue(FlutterSecureKeyValueStore()),
+    // Its own store: the plugin's mock store is shared with earlier tests.
+    secureStorageProvider.overrideWithValue(InMemorySecureKeyValueStore()),
     ...openWebUiStorageOpenOverrides(),
     activeConversationProvider.overrideWith(
       _TestActiveConversationNotifier.new,
@@ -303,6 +311,7 @@ ProviderContainer _modelRebindContainer({
     apiServiceProvider.overrideWithValue(null),
     socketServiceProvider.overrideWithValue(null),
     directModelRegistryProvider.overrideWithValue(registry),
+    directModelDiscoveryProvider.overrideWith(_IdleDirectDiscovery.new),
     modelsProvider.overrideWith(() => _FixedModels(models)),
   ],
 );

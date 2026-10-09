@@ -1,6 +1,6 @@
 name: conduit
 description: Open-source mobile client for Open-WebUI
-version: 4.1.8+149
+version: 4.1.9+150
 publish_to: 'none'
 
 environment:
@@ -16,6 +16,7 @@ environment:
 # pub fails loudly if only one side is updated.
 workspace:
   - packages/conduit_core
+  - packages/conduit_ddgs
   - packages/conduit_markdown
   - packages/conduit_theme
 
@@ -96,6 +97,7 @@ dependencies:
   path_provider: ^2.1.4
   
   # Utilities
+  clock: ^1.1.2
   collection: ^1.19.1
   meta: ^1.16.0
   path: ^1.9.0
@@ -183,6 +185,7 @@ flutter:
   assets:
     - THIRD_PARTY_NOTICES.md
     - assets/icons/
+    - assets/model_logos/
     - assets/release_notes/
     - assets/chartjs.min.js
     - assets/flutter_tex.js
