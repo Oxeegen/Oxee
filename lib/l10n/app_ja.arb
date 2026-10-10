@@ -1181,6 +1181,7 @@
     "description": "Error shown when a picked certificate or key file cannot be read as text."
   },
   "mutualTlsHandshakeFailed": "サーバーが mTLS 認証情報を拒否しました。証明書、秘密鍵、パスワードが正しいことを確認してください。",
+  "mutualTlsConnectionClosed": "サーバーが応答する前に接続を閉じました。クライアント証明書が必要な場合は、証明書、秘密鍵、パスワードが正しいことを確認してください。",
   "@mutualTlsHandshakeFailed": {
     "description": "Connection error shown when the TLS handshake fails while mTLS credentials are configured."
   },
@@ -3189,7 +3190,7 @@
   "settingsAppearance": "外観",
   "settingsAppearanceSubtitle": "テーマ、カラーパレット、言語",
   "settingsChatSubtitle": "チャットの動作、クイックアクション、高度なプロンプト",
-  "workspaceTitle": "Workspace",
+  "workspaceTitle": "ワークスペース",
   "workspaceSubtitle": "Manage server resources and access.",
   "workspaceModels": "Models",
   "workspaceKnowledge": "Knowledge",
@@ -4296,7 +4297,7 @@
   "reviewerModeEnabled": "Reviewer mode enabled. You can open the demo without a server.",
   "reviewerModeDisabled": "Reviewer mode disabled.",
   "openSourceLicenses": "Open source licenses",
-  "directConnectionsTitle": "Direct Connections",
+  "directConnectionsTitle": "ダイレクト接続",
   "directConnectionsSubtitle": "Connect to OpenAI-compatible APIs and Ollama",
   "directConnectionsDescription": "Connect to model providers without Open WebUI. Credentials are stored securely on this device and sent to the provider with requests.",
   "directConnectionsCombinedDescription": "Open WebUIと同期した接続、またはこのデバイスにのみ保存した接続を使って、モデルプロバイダーに直接接続します。",
@@ -4663,5 +4664,43 @@
   "chatTaskPending": "未着手",
   "chatTaskInProgress": "進行中",
   "chatTaskCompleted": "完了",
-  "chatTaskCancelled": "キャンセル済み"
+  "chatTaskCancelled": "キャンセル済み",
+  "webSearchSettingsFooterAuto": "独自の Web 検索を持たない Direct モデルで使用されます。検索はこのデバイスから行われ、クエリは DuckDuckGo に送信されます。応答がない場合は Brave、Bing、Mojeek、Wikipedia のいずれかに送信されます。モデルが読むページもこのデバイスから取得されます。",
+  "webSearchSettingsFooterEngine": "独自の Web 検索を持たない Direct モデルで使用されます。検索はこのデバイスから行われ、クエリは {engine} にのみ送信されます。モデルが読むページもこのデバイスから取得されます。",
+  "@webSearchSettingsFooterEngine": {"placeholders": {"engine": {"type": "String", "example": "DuckDuckGo"}}},
+  "webSearchEngineLabel": "検索エンジン",
+  "webSearchEngineAuto": "自動",
+  "webSearchSafeSearchLabel": "セーフサーチ",
+  "webSearchSafeSearchStrict": "厳しい",
+  "webSearchSafeSearchModerate": "中程度",
+  "webSearchSafeSearchOff": "オフ",
+  "webSearchRegionLabel": "地域",
+  "webSearchRegionAuto": "デバイスに合わせる",
+  "webSearchRegionWorldwide": "全世界",
+  "directModelToolsUnsupported": "このモデルはツールを使用できないため、Web 検索を実行できません。Web 検索とツールをすべてオフにしてから、もう一度お試しください。",
+  "directContextCompactionModelCount": "{count, plural, other{{count} 個のモデル}}",
+  "@directContextCompactionModelCount": {"placeholders": {"count": {"type": "int", "example": "42"}}},
+  "imageViewerPosition": "{current} / {total}",
+  "@imageViewerPosition": {"placeholders": {"current": {"type": "int", "example": "2"}, "total": {"type": "int", "example": "5"}}},
+  "saveImage": "画像を保存",
+  "imageSaved": "画像を保存しました",
+  "imageSaveFailed": "画像を保存できませんでした。",
+  "settingsTitle": "設定",
+  "profileTitle": "プロフィール",
+  "aiAndMemoryTitle": "AIとメモリ",
+  "voiceCallMinimize": "最小化",
+  "@voiceCallMinimize": {
+    "description": "Accessibility label for the button that shrinks the voice call panel to a small pill."
+  },
+  "voiceCallExpand": "展開",
+  "@voiceCallExpand": {
+    "description": "Accessibility label for the button that opens the minimized voice call pill back into the full panel."
+  },
+  "askConduitAction": "Oxee に質問",
+  "voiceCallStartTimeout": "音声通話の開始に時間がかかりすぎました。もう一度お試しください。",
+  "@voiceCallStartTimeout": {"description": "Error shown when starting a voice call takes too long."},
+  "voiceCallNoSpeech": "音声が検出されませんでした。",
+  "@voiceCallNoSpeech": {"description": "Message shown when the voice call heard no speech for several tries."},
+  "voiceCallFailed": "音声通話を続行できませんでした。",
+  "@voiceCallFailed": {"description": "Generic error shown when a voice call fails for a reason with no specific message."}
 }

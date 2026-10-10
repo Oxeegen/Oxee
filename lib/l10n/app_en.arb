@@ -1417,6 +1417,10 @@
   "@mutualTlsHandshakeFailed": {
     "description": "Connection error shown when the TLS handshake fails while mTLS credentials are configured."
   },
+  "mutualTlsConnectionClosed": "The server closed the connection before replying. If it requires a client certificate, confirm that the certificate, private key, and password are correct.",
+  "@mutualTlsConnectionClosed": {
+    "description": "Connection error shown when the server closes an HTTPS connection before replying while mTLS credentials are configured, which a refused client certificate also causes."
+  },
   "headerNameTooLong": "Header name too long (max 64 characters)",
   "@headerNameTooLong": {
     "description": "Validation message for header name length."
@@ -6108,5 +6112,61 @@
   "chatTaskCancelled": "Cancelled",
   "@chatTaskCancelled": {
     "description": "Task checklist status for a cancelled task."
-  }
+  },
+  "webSearchSettingsFooterAuto": "Used by Direct models that don't have their own web search. Searches run from this device: queries go to DuckDuckGo, then to Brave, Bing, Mojeek or Wikipedia if it doesn't answer. Pages the model reads are also fetched from this device.",
+  "@webSearchSettingsFooterAuto": {"description": "Footer under the on-device web search settings when the engine is Auto; explains where queries and page fetches go."},
+  "webSearchSettingsFooterEngine": "Used by Direct models that don't have their own web search. Searches run from this device, and queries go only to {engine}. Pages the model reads are also fetched from this device.",
+  "@webSearchSettingsFooterEngine": {"description": "Footer under the on-device web search settings when one engine is chosen; {engine} is a brand name such as DuckDuckGo.", "placeholders": {"engine": {"type": "String", "example": "DuckDuckGo"}}},
+  "webSearchEngineLabel": "Search engine",
+  "@webSearchEngineLabel": {"description": "Row label for choosing the on-device web search engine."},
+  "webSearchEngineAuto": "Auto",
+  "@webSearchEngineAuto": {"description": "Engine option that tries several search engines in order."},
+  "webSearchSafeSearchLabel": "Safe search",
+  "@webSearchSafeSearchLabel": {"description": "Row label for the adult-content filter used by on-device web search."},
+  "webSearchSafeSearchStrict": "Strict",
+  "@webSearchSafeSearchStrict": {"description": "Safe search level: filter all adult content."},
+  "webSearchSafeSearchModerate": "Moderate",
+  "@webSearchSafeSearchModerate": {"description": "Safe search level: filter explicit images and video."},
+  "webSearchSafeSearchOff": "Off",
+  "@webSearchSafeSearchOff": {"description": "Safe search level: no filtering."},
+  "webSearchRegionLabel": "Region",
+  "@webSearchRegionLabel": {"description": "Row label for the region on-device web search results are biased toward."},
+  "webSearchRegionAuto": "Match device",
+  "@webSearchRegionAuto": {"description": "Region option that follows the device language and country."},
+  "webSearchRegionWorldwide": "Worldwide",
+  "@webSearchRegionWorldwide": {"description": "Region option with no regional bias."},
+  "directModelToolsUnsupported": "This model can't use tools, so it can't search the web. Turn off web search and any tools, then try again.",
+  "@directModelToolsUnsupported": {"description": "Error shown when a Direct model rejects tool definitions, which web search needs."},
+  "directContextCompactionModelCount": "{count, plural, =1{1 model} other{{count} models}}",
+  "@directContextCompactionModelCount": {"description": "Row value on Direct Connections that opens the list of models needing a context limit.", "placeholders": {"count": {"type": "int", "example": "42"}}},
+  "imageViewerPosition": "{current} of {total}",
+  "@imageViewerPosition": {"description": "Position of the visible image in the full-screen image viewer.", "placeholders": {"current": {"type": "int", "example": "2"}, "total": {"type": "int", "example": "5"}}},
+  "saveImage": "Save image",
+  "@saveImage": {"description": "Button in the full-screen image viewer that saves the image to the device gallery."},
+  "imageSaved": "Image saved",
+  "@imageSaved": {"description": "Confirmation after an image is saved to the device gallery."},
+  "imageSaveFailed": "Couldn't save the image.",
+  "@imageSaveFailed": {"description": "Error shown when an image cannot be saved to the device gallery."},
+  "settingsTitle": "Settings",
+  "@settingsTitle": {"description": "Title of the native Settings sheet."},
+  "profileTitle": "Profile",
+  "@profileTitle": {"description": "Title of the native Profile page in Settings."},
+  "aiAndMemoryTitle": "AI and Memory",
+  "@aiAndMemoryTitle": {"description": "Title of the native AI and Memory page in Settings."},
+  "voiceCallMinimize": "Minimize",
+  "@voiceCallMinimize": {
+    "description": "Accessibility label for the button that shrinks the voice call panel to a small pill."
+  },
+  "voiceCallExpand": "Expand",
+  "@voiceCallExpand": {
+    "description": "Accessibility label for the button that opens the minimized voice call pill back into the full panel."
+  },
+  "askConduitAction": "Ask Oxee",
+  "@askConduitAction": {"description":"Long-press menu action that puts the selected answer text into the chat composer to ask about it."},
+  "voiceCallStartTimeout": "Starting the voice call took too long. Try again.",
+  "@voiceCallStartTimeout": {"description": "Error shown when starting a voice call takes too long."},
+  "voiceCallNoSpeech": "No speech detected.",
+  "@voiceCallNoSpeech": {"description": "Message shown when the voice call heard no speech for several tries."},
+  "voiceCallFailed": "The voice call couldn't continue.",
+  "@voiceCallFailed": {"description": "Generic error shown when a voice call fails for a reason with no specific message."}
 }

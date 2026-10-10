@@ -47,13 +47,17 @@ import 'package:conduit_core/features/direct_connections/services/direct_chat_br
 import 'package:conduit_core/features/direct_connections/services/direct_model_registry.dart';
 
 import '../../direct_connections/widgets/direct_mcp_message_interactions.dart';
-import '../providers/chat_providers.dart';
-import '../providers/openwebui_chat_prompt_provider.dart';
+
+import 'package:conduit_core/features/chat/providers/chat_providers.dart';
+import 'package:conduit_core/features/chat/composer/openwebui_prompt_answers.dart';
+import 'package:conduit_core/features/chat/providers/openwebui_chat_prompt_provider.dart';
+import 'package:conduit_core/features/chat/providers/openwebui_prompt_resolution.dart';
+import 'package:conduit_core/features/chat/providers/temporary_chat_save.dart';
 
 import 'package:conduit_core/features/hermes/models/hermes_model.dart';
-import 'package:conduit_core/features/hermes/models/hermes_bot.dart';
 import 'package:conduit_core/features/hermes/models/hermes_config.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
+import 'package:conduit_core/features/hermes/services/hermes_bot_chat.dart';
 import 'package:conduit_core/features/hermes/services/hermes_decision_projection.dart';
 import 'package:conduit_core/features/hermes/services/hermes_desktop_api_service.dart';
 import 'package:conduit_core/features/hermes/services/hermes_local_document_trust_store.dart';
@@ -65,8 +69,6 @@ import '../../hermes/widgets/hermes_bot_avatar.dart';
 import '../../hermes/widgets/hermes_message_interactions.dart';
 
 import 'package:conduit_core/utils/debug_logger.dart';
-
-import 'package:conduit_core/utils/message_tree_utils.dart' as message_tree;
 
 import 'package:conduit_core/utils/user_display_name.dart';
 
@@ -85,10 +87,13 @@ import '../widgets/context_attachment_widget.dart';
 import '../widgets/server_file_picker_sheet.dart';
 import '../services/clipboard_attachment_service.dart';
 import '../services/file_attachment_service.dart';
-import '../services/chat_transport_dispatch.dart';
-import '../services/historical_message_regeneration.dart';
+
+import 'package:conduit_core/features/chat/services/chat_message_actions.dart';
+import 'package:conduit_core/features/chat/services/historical_message_regeneration.dart';
+
 import '../voice_mode/chat_voice_mode_controller.dart';
 import '../voice_mode/chat_voice_mode_overlay.dart';
+import '../voice_mode/voice_mode_error_text.dart';
 import '../voice_call/presentation/voice_call_launcher.dart';
 import '../../../core/services/media_upload_controller.dart';
 
@@ -102,7 +107,8 @@ import 'package:conduit_core/models/folder.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:conduit_core/models/openwebui_chat_prompt.dart';
 
-import '../providers/context_attachments_provider.dart';
+import 'package:conduit_core/features/chat/providers/context_attachments_provider.dart';
+
 import '../../../shared/utils/adaptive_glass.dart';
 import '../../../shared/widgets/themed_dialogs.dart';
 import '../../../shared/widgets/themed_sheets.dart';
@@ -112,9 +118,11 @@ import '../../../shared/widgets/adaptive_toolbar_components.dart';
 import '../../../shared/widgets/chrome_gradient_fade.dart';
 import '../../../shared/widgets/markdown/markdown_loading_skeleton.dart';
 import '../../../shared/utils/conversation_context_menu.dart';
-import 'chat_bottom_anchor_controller.dart';
-import 'chat_timeline_render_model.dart';
-import 'chat_turn_render_state.dart';
+
+import 'package:conduit_core/features/chat/views/chat_bottom_anchor_controller.dart';
+import 'package:conduit_core/features/chat/views/chat_timeline_render_model.dart';
+import 'package:conduit_core/features/chat/views/chat_turn_render_state.dart';
+
 import '../widgets/streaming_turn_footer.dart';
 import '../widgets/openwebui_prompt_overlay.dart';
 import '../widgets/openwebui_task_list.dart';
@@ -229,42 +237,12 @@ String? chatHermesBotTitle(Conversation? conversation) {
   return chatHermesBotPresentation(conversation)?.title;
 }
 
-typedef HermesBotChatPresentation = ({
-  String title,
-  String? avatar,
-  String shape,
-  String color,
-  String? imageKind,
-});
-
 @visibleForTesting
 Widget debugBuildHermesBotToolbarTitleForTesting({
   required HermesBotChatPresentation bot,
   required double maxWidth,
   bool active = false,
 }) => _HermesBotToolbarTitle(bot: bot, maxWidth: maxWidth, active: active);
-
-@visibleForTesting
-HermesBotChatPresentation? chatHermesBotPresentation(
-  Conversation? conversation,
-) {
-  if (!isNativeHermesConversation(conversation)) return null;
-  final title = conversation!.metadata[kHermesBotTitleMetadataKey];
-  if (title is! String || title.trim().isEmpty) return null;
-  final avatar = conversation.metadata[kHermesBotAvatarMetadataKey];
-  final shape = conversation.metadata[kHermesBotShapeMetadataKey];
-  final color = conversation.metadata[kHermesBotColorMetadataKey];
-  final imageKind = conversation.metadata[kHermesBotImageKindMetadataKey];
-  return (
-    title: title.trim(),
-    avatar: avatar is String && avatar.startsWith('data:image/')
-        ? avatar
-        : null,
-    shape: shape is String ? shape : 'squircle',
-    color: color is String ? color : '#8b5cf6',
-    imageKind: imageKind is String ? imageKind : null,
-  );
-}
 
 class _HermesBotToolbarTitle extends StatelessWidget {
   const _HermesBotToolbarTitle({
@@ -728,103 +706,42 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   bool _isSavingTemporary = false;
 
   /// Persists a temporary chat to the server, transitioning it
-  /// into a permanent conversation.
+  /// into a permanent conversation (conduit_core's saveTemporaryChat).
   Future<void> _saveTemporaryChat() async {
     if (_isSavingTemporary) return;
     if (_messageSendAdmission.isHeld || ref.read(isChatStreamingProvider)) {
       return;
     }
-    final sourceConversation = ref.read(activeConversationProvider);
-    final sourceApi = ref.read(apiServiceProvider);
-    if (sourceConversation == null || sourceApi == null) return;
-    final sourceConversationId = conversationScopedId(sourceConversation);
+    if (ref.read(activeConversationProvider) == null ||
+        ref.read(apiServiceProvider) == null) {
+      return;
+    }
     final sourceConversationGeneration = _conversationOwnerGeneration;
-    final sourceAuthSessionEpoch = ref.read(openWebUiAuthSessionEpochProvider);
     setState(() {
       _isSavingTemporary = true;
     });
     try {
-      final messages = (await readCompleteActiveChatHistory(ref)).messages;
-      if (messages.isEmpty) return;
-      if (!_ownsDeferredConversationMutation(
-        api: sourceApi,
-        authSessionEpoch: sourceAuthSessionEpoch,
-        conversationId: sourceConversationId,
-        conversationGeneration: sourceConversationGeneration,
-      )) {
-        return;
-      }
-
-      // Generate title from first user message
-      final firstUserMsg = messages.firstWhere(
-        (m) => m.role == 'user',
-        orElse: () => messages.first,
+      final outcome = await saveTemporaryChat(
+        ref,
+        isCurrentOwner: () =>
+            mounted &&
+            _conversationOwnerGeneration == sourceConversationGeneration,
       );
-      final title = firstUserMsg.content.length > 50
-          ? '${firstUserMsg.content.substring(0, 50)}...'
-          : firstUserMsg.content.isEmpty
-          ? 'New Chat'
-          : firstUserMsg.content;
-
-      final selectedModel = ref.read(selectedModelProvider);
-      final serverConversation = await sourceApi.createConversation(
-        title: title,
-        messages: messages,
-        model: selectedModel?.id ?? '',
-        systemPrompt: sourceConversation.systemPrompt,
-        folderId: sourceConversation.folderId,
-      );
-      if (!_ownsDeferredConversationMutation(
-        api: sourceApi,
-        authSessionEpoch: sourceAuthSessionEpoch,
-        conversationId: sourceConversationId,
-        conversationGeneration: sourceConversationGeneration,
-      )) {
-        return;
-      }
-
-      // Transition to permanent chat
-      final updatedConversation = serverConversation.copyWith(
-        messages: messages,
-      );
-      ref.read(activeConversationProvider.notifier).set(updatedConversation);
-      ref
-          .read(conversationsProvider.notifier)
-          .upsertConversation(
-            updatedConversation.copyWith(
-              messages: const [],
-              updatedAt: DateTime.now(),
-            ),
-            trustFolderConversation:
-                updatedConversation.folderId != null &&
-                updatedConversation.folderId!.isNotEmpty,
+      if (!mounted) return;
+      switch (outcome) {
+        case TemporaryChatSaveOutcome.saved:
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            SnackBar(content: Text(AppLocalizations.of(context)!.chatSaved)),
           );
-      ref.read(temporaryChatEnabledProvider.notifier).set(false);
-      refreshConversationsCache(ref);
-
-      if (mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context)!.chatSaved)),
-        );
+        case TemporaryChatSaveOutcome.failed:
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            SnackBar(
+              content: Text(AppLocalizations.of(context)!.chatSaveFailed),
+            ),
+          );
+        case TemporaryChatSaveOutcome.skipped:
+          break;
       }
-    } catch (e, stackTrace) {
-      if (mounted &&
-          _ownsDeferredConversationMutation(
-            api: sourceApi,
-            authSessionEpoch: sourceAuthSessionEpoch,
-            conversationId: sourceConversationId,
-            conversationGeneration: sourceConversationGeneration,
-          )) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context)!.chatSaveFailed)),
-        );
-      }
-      DebugLogger.error(
-        'temporary-chat-save-failed',
-        scope: 'chat/page',
-        error: e,
-        stackTrace: stackTrace,
-      );
     } finally {
       if (mounted) {
         setState(() {
@@ -835,30 +752,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         _isSavingTemporary = false;
       }
     }
-  }
-
-  bool _ownsDeferredConversationMutation({
-    required ApiService api,
-    required Object authSessionEpoch,
-    required String conversationId,
-    required int conversationGeneration,
-  }) {
-    if (!mounted) return false;
-    final activeConversation = ref.read(activeConversationProvider);
-    return debugShouldApplyDeferredConversationMutationForTesting(
-          isMounted: true,
-          scheduledConversationId: conversationId,
-          activeConversationId: activeConversation == null
-              ? null
-              : conversationScopedId(activeConversation),
-          scheduledGeneration: conversationGeneration,
-          activeGeneration: _conversationOwnerGeneration,
-        ) &&
-        identical(ref.read(apiServiceProvider), api) &&
-        identical(
-          ref.read(openWebUiAuthSessionEpochProvider),
-          authSessionEpoch,
-        );
   }
 
   Future<void> _checkAndAutoSelectModel() async {
@@ -2065,9 +1958,12 @@ class _ChatPageState extends ConsumerState<ChatPage> {
         stackTrace: stackTrace,
       );
       if (!mounted) return;
-      final message = error is StateError
+      final l10n = AppLocalizations.of(context)!;
+      final message = error is VoiceCallStartException
+          ? voiceModeErrorText(l10n, kind: error.kind, message: error.message)!
+          : error is StateError
           ? error.message.toString()
-          : AppLocalizations.of(context)!.errorMessage;
+          : l10n.errorMessage;
       ScaffoldMessenger.maybeOf(context)
           ?.showSnackBar(SnackBar(content: Text(message)));
     }
@@ -2129,11 +2025,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   int _renderedTranscriptCount(
     List<ChatMessage> completeMessages,
     ChatTranscriptPagingState paging,
-  ) {
-    return paging.loadedCount == 0 && completeMessages.isNotEmpty
-        ? math.min(kChatTranscriptPageSize, completeMessages.length)
-        : math.min(paging.loadedCount, completeMessages.length);
-  }
+  ) => renderedTranscriptCount(
+    total: completeMessages.length,
+    loadedCount: paging.loadedCount,
+  );
 
   List<ChatMessage> _renderedTranscriptWindow(
     List<ChatMessage> completeMessages,
@@ -3570,100 +3465,31 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Future<void> _deleteMessageGroup(List<String> messageIds) async {
     if (messageIds.isEmpty) return;
     final l10n = AppLocalizations.of(context)!;
-    final currentMessages = ref.read(chatMessagesProvider);
-    final initialRemovedIds = <String>{
-      for (final id in messageIds) ..._messageIdsToDelete(currentMessages, id),
-    };
-    if (initialRemovedIds.isEmpty) return;
+    final removedCount = chatMessageIdsRemovedByDelete(
+      ref.read(chatMessagesProvider),
+      messageIds,
+    ).length;
+    if (removedCount == 0) return;
     final confirmed = await ThemedDialogs.confirm(
       context,
       title: l10n.deleteMessagesTitle,
-      message: l10n.deleteMessagesMessage(initialRemovedIds.length),
+      message: l10n.deleteMessagesMessage(removedCount),
       confirmText: l10n.delete,
       cancelText: l10n.cancel,
       isDestructive: true,
     );
     if (!confirmed || !mounted) return;
 
-    final latestMessages = ref.read(chatMessagesProvider);
-    final orderedIds = messageIds.reversed.toList(growable: false);
-    final removedIds = <String>{};
-    var updatedMessages = latestMessages;
-    for (final id in orderedIds) {
-      removedIds.addAll(_messageIdsToDelete(updatedMessages, id));
-      updatedMessages = message_tree.deleteOpenWebUiMessageFromChatMessages(
-        updatedMessages,
-        id,
-      );
-    }
-
-    final removedStreamingMessage = latestMessages
-        .where((candidate) => removedIds.contains(candidate.id))
-        .where((candidate) => candidate.isStreaming)
-        .firstOrNull;
-    if (removedStreamingMessage != null) {
-      stopActiveTransport(
-        removedStreamingMessage,
-        ref.read(apiServiceProvider),
-      );
-      ref.read(chatMessagesProvider.notifier).cancelActiveMessageStream();
-    }
-    ref.read(chatMessagesProvider.notifier).setMessages(updatedMessages);
-
-    final activeConversation = ref.read(activeConversationProvider);
-    if (activeConversation != null) {
-      final updatedConversation = inheritNativeHermesConversationProvenance(
-        activeConversation,
-        activeConversation.copyWith(
-          messages: updatedMessages,
-          updatedAt: DateTime.now(),
-        ),
-      );
-      ref.read(activeConversationProvider.notifier).set(updatedConversation);
-      ref
-          .read(conversationsProvider.notifier)
-          .updateConversation(
-            updatedConversation.id,
-            (_) => updatedConversation,
-          );
-
-      final api = ref.read(apiServiceProvider);
-      if (api != null && !isTemporaryChat(updatedConversation.id)) {
-        try {
-          for (final id in orderedIds) {
-            await api.deleteConversationMessage(updatedConversation.id, id);
-          }
-          ref
-              .read(conversationsProvider.notifier)
-              .trustConversation(updatedConversation.id);
-        } catch (error, stackTrace) {
-          DebugLogger.error(
-            'delete-message-persist-failed',
-            scope: 'chat/page',
-            error: error,
-            stackTrace: stackTrace,
-          );
-          if (!mounted) return;
-          ref.read(chatMessagesProvider.notifier).setMessages(currentMessages);
-          ref.read(activeConversationProvider.notifier).set(activeConversation);
-          ref
-              .read(conversationsProvider.notifier)
-              .updateConversation(
-                activeConversation.id,
-                (_) => activeConversation,
-              );
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(AppLocalizations.of(context)!.errorMessage)),
-          );
-        }
-      }
-    }
+    final outcome = await deleteChatMessageGroup(
+      ref,
+      messageIds,
+      isStillCurrent: () => mounted,
+    );
+    if (outcome != ChatMessageDeleteOutcome.persistFailed || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context)!.errorMessage)),
+    );
   }
-
-  Set<String> _messageIdsToDelete(
-    List<ChatMessage> messages,
-    String messageId,
-  ) => message_tree.openWebUiDeletedMessageIds(messages, messageId);
 
   void _regenerateMessage(String assistantMessageId) async {
     try {
@@ -3951,12 +3777,10 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                           _resolvePersistedOpenWebUiPrompt(
                             activeConversationId!,
                             persistedPrompt,
-                            persistedPrompt.prompt.kind ==
-                                    OpenWebUiComposerPromptKind.askUser
-                                ? OpenWebUiToolCallAction.reject
-                                : approved
-                                ? OpenWebUiToolCallAction.approve
-                                : OpenWebUiToolCallAction.reject,
+                            openWebUiDecisionAction(
+                              persistedPrompt.prompt,
+                              approved,
+                            ),
                           ),
                     );
                   } else if (matchingLivePrompt != null) {
@@ -4086,45 +3910,14 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     OpenWebUiPendingToolPrompt pending,
     OpenWebUiToolCallAction action, {
     Map<String, dynamic>? answers,
-  }) async {
-    final api = ref.read(apiServiceProvider);
-    final conversation = ref.read(activeConversationProvider);
-    if (api == null ||
-        conversation == null ||
-        !debugCanUsePersistedOpenWebUiPromptForTesting(
-          isLoadingConversation: ref.read(isLoadingConversationProvider),
-          ownerConversationId: ownerConversationId,
-          activeConversationId: conversation.id,
-        ) ||
-        !conversationUsesOpenWebUiStorage(conversation) ||
-        isTemporaryChat(conversation.id)) {
-      throw StateError('Open WebUI chat is unavailable.');
-    }
-    final chatId = ownerConversationId;
-    final authEpoch = ref.read(openWebUiAuthSessionEpochProvider);
-    final taskIds = await api.resolveChatMessageToolCall(
-      chatId: chatId,
-      messageId: pending.messageId,
-      callId: pending.callId,
-      action: action,
-      answers: answers,
-    );
-    if (!mounted ||
-        !identical(api, ref.read(apiServiceProvider)) ||
-        !identical(authEpoch, ref.read(openWebUiAuthSessionEpochProvider)) ||
-        ref.read(activeConversationProvider)?.id != chatId) {
-      return;
-    }
-    await ref
-        .read(chatMessagesProvider.notifier)
-        .resumeAfterOpenWebUiToolCall(
-          messageId: pending.messageId,
-          callId: pending.callId,
-          action: action,
-          taskIds: taskIds,
-          answers: answers,
-        );
-  }
+  }) => resolvePersistedOpenWebUiPrompt(
+    ref,
+    ownerConversationId: ownerConversationId,
+    pending: pending,
+    action: action,
+    answers: answers,
+    isMounted: () => mounted,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -5473,8 +5266,12 @@ bool debugShouldLoadOlderPageForTesting({
   required bool hasOlder,
   required bool isLoadingOlder,
   required bool anyOldestLoadedRowVisible,
-}) =>
-    hasUserScrolled && hasOlder && !isLoadingOlder && anyOldestLoadedRowVisible;
+}) => shouldLoadOlderTranscriptPage(
+  hasUserScrolled: hasUserScrolled,
+  hasOlder: hasOlder,
+  isLoadingOlder: isLoadingOlder,
+  oldestLoadedRowVisible: anyOldestLoadedRowVisible,
+);
 
 @visibleForTesting
 bool debugCanSubmitChatMessageForTesting({
@@ -5492,11 +5289,11 @@ bool debugCanUsePersistedOpenWebUiPromptForTesting({
   required bool isLoadingConversation,
   required String? ownerConversationId,
   required String? activeConversationId,
-}) {
-  return !isLoadingConversation &&
-      ownerConversationId != null &&
-      ownerConversationId == activeConversationId;
-}
+}) => canUsePersistedOpenWebUiPrompt(
+  isLoadingConversation: isLoadingConversation,
+  ownerConversationId: ownerConversationId,
+  activeConversationId: activeConversationId,
+);
 
 @visibleForTesting
 bool debugShouldConsumeScreenContextForTesting({
@@ -5779,19 +5576,6 @@ bool debugShouldKeepConversationBottomAnchoredOnInsetChangeForTesting({
   return _shouldKeepConversationBottomAnchoredOnInsetChange(
     previousBottomInset: previousBottomInset,
     nextBottomInset: nextBottomInset,
-    isAnchoredToBottom: isAnchoredToBottom,
-    isUserInteractingWithScroll: isUserInteractingWithScroll,
-    wantsPinToTop: wantsPinToTop,
-  );
-}
-
-@visibleForTesting
-bool debugShouldKeepConversationBottomAnchoredOnContentSizeChangeForTesting({
-  required bool isAnchoredToBottom,
-  required bool isUserInteractingWithScroll,
-  required bool wantsPinToTop,
-}) {
-  return shouldKeepConversationBottomAnchoredOnContentSizeChange(
     isAnchoredToBottom: isAnchoredToBottom,
     isUserInteractingWithScroll: isUserInteractingWithScroll,
     wantsPinToTop: wantsPinToTop,

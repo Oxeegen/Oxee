@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:riverpod/riverpod.dart';
 
+import 'package:conduit_core/features/chat/voice_mode/voice_mode_ports.dart';
 import 'package:conduit_core/utils/debug_logger.dart';
 
 /// What a route change got from the platform: whether it took, and whether
@@ -18,7 +19,7 @@ import 'package:conduit_core/utils/debug_logger.dart';
 /// read-back is null when the platform could not be asked.
 typedef _RouteOutcome = ({bool applied, bool? loudspeaker});
 
-class ChatVoiceAudioSessionCoordinator {
+class ChatVoiceAudioSessionCoordinator implements VoiceAudioSessionPort {
   static const Duration _iosSpeakingRouteSettleDelay = Duration(
     milliseconds: 160,
   );
@@ -49,7 +50,9 @@ class ChatVoiceAudioSessionCoordinator {
   // audio_session's Darwin setCategory uses a concurrent native queue. Share
   // this queue across coordinators so an old idle restore cannot finish after
   // the replacement call's configuration, even when teardown already began.
-  static Future<void> _sessionConfigurationSerial = Future<void>.value();
+  // Released once drained so a completed chain does not keep its creating zone
+  // alive (see WebViewCookieHelper).
+  static Future<void>? _sessionConfigurationSerial;
 
   /// The coordinator whose call the Android route belongs to. A replacement
   /// call can configure while the previous one is still putting the route
@@ -165,8 +168,10 @@ class ChatVoiceAudioSessionCoordinator {
   /// own, and when the platform moves the route itself. Callers use it to keep
   /// the speaker control showing the route people actually hear. The answer to
   /// a manual toggle comes back from [setSpeakerphoneEnabled] instead.
+  @override
   Stream<bool> get speakerphoneRouteChanges =>
       _speakerphoneRouteController.stream;
+  @override
   Stream<Object> get responseCaptureFailures =>
       _responseCaptureFailureController.stream;
 
@@ -199,15 +204,18 @@ class ChatVoiceAudioSessionCoordinator {
     return created;
   }
 
+  @override
   Future<void> configureForListening() =>
       _configureCallPhase(AVAudioSessionMode.voiceChat, phase: 'listening');
 
+  @override
   Future<void> configureForSpeaking() => _configureCallPhase(
     AVAudioSessionMode.spokenAudio,
     phase: 'speaking',
     settleIosRoute: true,
   );
 
+  @override
   Future<void> configureForBargeInSpeaking() => _configureCallPhase(
     AVAudioSessionMode.voiceChat,
     phase: 'barge-in-speaking',
@@ -303,6 +311,7 @@ class ChatVoiceAudioSessionCoordinator {
     }
   }
 
+  @override
   Future<void> setActiveCallKitCallId(String callId) async {
     if (!Platform.isIOS) return;
     final accepted = await _iosVoiceAudioRouteChannel.invokeMethod<bool>(
@@ -314,6 +323,7 @@ class ChatVoiceAudioSessionCoordinator {
     }
   }
 
+  @override
   Future<void> beginResponseWaitCapture({String? callKitCallId}) async {
     if (!Platform.isIOS) return;
     final accepted = await _iosVoiceAudioRouteChannel.invokeMethod<bool>(
@@ -325,6 +335,7 @@ class ChatVoiceAudioSessionCoordinator {
     }
   }
 
+  @override
   Future<void> endResponseWaitCapture() async {
     if (!Platform.isIOS) return;
     try {
@@ -383,6 +394,7 @@ class ChatVoiceAudioSessionCoordinator {
     });
   }
 
+  @override
   Future<void> deactivate() => _tearDownRoute(phase: 'deactivate');
 
   Future<void> dispose() async {
@@ -499,6 +511,7 @@ class ChatVoiceAudioSessionCoordinator {
   /// follows applies it, and [speakerphoneRouteChanges] carries the answer once
   /// it has. Call this before the first pass of a call, not after a manual
   /// toggle, or it would overwrite the user's choice.
+  @override
   Future<void> applyDefaultSpeakerphoneRoute() async {
     if (!_isAndroid && !Platform.isIOS) {
       return;
@@ -792,6 +805,7 @@ class ChatVoiceAudioSessionCoordinator {
 
   /// Moves the call to [enabled] on the user's instruction and reports whether
   /// the platform took it.
+  @override
   Future<bool> setSpeakerphoneEnabled(bool enabled) {
     if (_routeChangesStopped) {
       // The call is being torn down. Honouring a last-moment button press would
@@ -1404,7 +1418,8 @@ class ChatVoiceAudioSessionCoordinator {
     AudioSessionConfiguration configuration,
     String phase,
   ) async {
-    final operation = _sessionConfigurationSerial.then((_) async {
+    final previous = _sessionConfigurationSerial ?? Future<void>.value();
+    final operation = previous.then((_) async {
       try {
         await session.configure(configuration);
       } catch (error, stackTrace) {
@@ -1422,10 +1437,15 @@ class ChatVoiceAudioSessionCoordinator {
       }
     });
     // Report failure to this caller without poisoning the next call's setup.
-    _sessionConfigurationSerial = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
+    late final Future<void> tail;
+    tail = operation
+        .then<void>((_) {}, onError: (Object _, StackTrace _) {})
+        .whenComplete(() {
+          if (identical(_sessionConfigurationSerial, tail)) {
+            _sessionConfigurationSerial = null;
+          }
+        });
+    _sessionConfigurationSerial = tail;
     await operation;
   }
 

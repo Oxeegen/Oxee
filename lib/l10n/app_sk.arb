@@ -1181,6 +1181,7 @@
     "description": "Error shown when a picked certificate or key file cannot be read as text."
   },
   "mutualTlsHandshakeFailed": "Server odmietol prihlasovacie údaje mTLS. Overte, že certifikát, súkromný kľúč a heslo sú správne.",
+  "mutualTlsConnectionClosed": "Server ukončil spojenie pred odpoveďou. Ak vyžaduje klientsky certifikát, overte, že certifikát, súkromný kľúč a heslo sú správne.",
   "@mutualTlsHandshakeFailed": {
     "description": "Connection error shown when the TLS handshake fails while mTLS credentials are configured."
   },
@@ -3504,7 +3505,7 @@
   "settingsAppearance": "Vzhľad",
   "settingsAppearanceSubtitle": "Motív, paleta farieb a jazyk",
   "settingsChatSubtitle": "Správanie chatu, rýchle akcie a pokročilé prompty",
-  "workspaceTitle": "Workspace",
+  "workspaceTitle": "Pracovný priestor",
   "workspaceSubtitle": "Manage server resources and access.",
   "workspaceModels": "Models",
   "workspaceKnowledge": "Knowledge",
@@ -4611,7 +4612,7 @@
   "reviewerModeEnabled": "Reviewer mode enabled. You can open the demo without a server.",
   "reviewerModeDisabled": "Reviewer mode disabled.",
   "openSourceLicenses": "Open source licenses",
-  "directConnectionsTitle": "Direct Connections",
+  "directConnectionsTitle": "Priame pripojenia",
   "directConnectionsSubtitle": "Connect to OpenAI-compatible APIs and Ollama",
   "directConnectionsDescription": "Connect to model providers without Open WebUI. Credentials are stored securely on this device and sent to the provider with requests.",
   "directConnectionsCombinedDescription": "Pripojte sa priamo k poskytovateľom modelov pomocou pripojení synchronizovaných z Open WebUI alebo uložených iba v tomto zariadení.",
@@ -4978,5 +4979,43 @@
   "chatTaskPending": "Čaká",
   "chatTaskInProgress": "Prebieha",
   "chatTaskCompleted": "Dokončené",
-  "chatTaskCancelled": "Zrušené"
+  "chatTaskCancelled": "Zrušené",
+  "webSearchSettingsFooterAuto": "Používajú modely Direct bez vlastného vyhľadávania na webe. Vyhľadávanie prebieha z tohto zariadenia: dopyty idú do DuckDuckGo, a ak neodpovie, do Brave, Bing, Mojeek alebo Wikipédie. Stránky, ktoré model číta, sa tiež načítavajú z tohto zariadenia.",
+  "webSearchSettingsFooterEngine": "Používajú modely Direct bez vlastného vyhľadávania na webe. Vyhľadávanie prebieha z tohto zariadenia a dopyty idú iba do {engine}. Stránky, ktoré model číta, sa tiež načítavajú z tohto zariadenia.",
+  "@webSearchSettingsFooterEngine": {"placeholders": {"engine": {"type": "String", "example": "DuckDuckGo"}}},
+  "webSearchEngineLabel": "Vyhľadávač",
+  "webSearchEngineAuto": "Automaticky",
+  "webSearchSafeSearchLabel": "Bezpečné vyhľadávanie",
+  "webSearchSafeSearchStrict": "Prísne",
+  "webSearchSafeSearchModerate": "Stredné",
+  "webSearchSafeSearchOff": "Vypnuté",
+  "webSearchRegionLabel": "Oblasť",
+  "webSearchRegionAuto": "Podľa zariadenia",
+  "webSearchRegionWorldwide": "Celosvetovo",
+  "directModelToolsUnsupported": "Tento model nevie používať nástroje, a preto nemôže vyhľadávať na webe. Vypnite vyhľadávanie na webe a všetky nástroje a skúste to znova.",
+  "directContextCompactionModelCount": "{count, plural, one{{count} model} few{{count} modely} many{{count} modelu} other{{count} modelov}}",
+  "@directContextCompactionModelCount": {"placeholders": {"count": {"type": "int", "example": "42"}}},
+  "imageViewerPosition": "{current} z {total}",
+  "@imageViewerPosition": {"placeholders": {"current": {"type": "int", "example": "2"}, "total": {"type": "int", "example": "5"}}},
+  "saveImage": "Uložiť obrázok",
+  "imageSaved": "Obrázok bol uložený",
+  "imageSaveFailed": "Obrázok sa nepodarilo uložiť.",
+  "settingsTitle": "Nastavenia",
+  "profileTitle": "Profil",
+  "aiAndMemoryTitle": "AI a pamäť",
+  "voiceCallMinimize": "Minimalizovať",
+  "@voiceCallMinimize": {
+    "description": "Accessibility label for the button that shrinks the voice call panel to a small pill."
+  },
+  "voiceCallExpand": "Rozbaliť",
+  "@voiceCallExpand": {
+    "description": "Accessibility label for the button that opens the minimized voice call pill back into the full panel."
+  },
+  "askConduitAction": "Opýtať sa Oxee",
+  "voiceCallStartTimeout": "Spustenie hlasového hovoru trvalo príliš dlho. Skúste to znova.",
+  "@voiceCallStartTimeout": {"description": "Error shown when starting a voice call takes too long."},
+  "voiceCallNoSpeech": "Nebola zistená žiadna reč.",
+  "@voiceCallNoSpeech": {"description": "Message shown when the voice call heard no speech for several tries."},
+  "voiceCallFailed": "Hlasový hovor nemohol pokračovať.",
+  "@voiceCallFailed": {"description": "Generic error shown when a voice call fails for a reason with no specific message."}
 }

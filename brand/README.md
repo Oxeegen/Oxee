@@ -55,7 +55,7 @@ one (and the absence of what it removed).
 | `lib/features/profile/views/profile_page.dart` | Region row replaces the Hermes, Direct connections and "Connect Open WebUI" rows; donation section and its links removed. |
 | `lib/features/navigation/widgets/sidebar_user_pill.dart` | Same for the iOS 26 native settings sheet; support section removed. |
 | `lib/main.dart` | Routes the native-sheet region row to `showOxeeRegionSwitcher`; no `ReleaseNotesCoordinator` (upstream's "What's new" popup). |
-| `lib/core/services/native_sheet_hydration_service.dart` | No release-notes row in the native About sheet (repo link via `rebrand.py`). |
+| `lib/core/utils/native_sheet_utils.dart` | `buildNativeAboutItems`: no release-notes row in the native About sheet (repo link via `rebrand.py`). |
 | `lib/features/profile/views/about_page.dart` | No release-notes row (repo link via `rebrand.py`). |
 | `.github/workflows/release.yml` | Guarded to `cogwheel0/conduit`: upstream's release never runs here. |
 | `.github/workflows/l10n.yml` | Guarded the same way; `ci.yml`'s Localization job runs its ARB checks. |

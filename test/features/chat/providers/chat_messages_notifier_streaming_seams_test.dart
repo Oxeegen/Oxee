@@ -21,8 +21,8 @@ import 'package:conduit_core/services/streaming_response_controller.dart';
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:conduit_core/sync/chat_locks.dart';
 import 'package:conduit_core/utils/message_tree_utils.dart' as message_tree;
-import 'package:conduit/features/chat/providers/chat_providers.dart';
-import 'package:conduit/features/chat/providers/context_attachments_provider.dart';
+import 'package:conduit_core/features/chat/providers/chat_providers.dart';
+import 'package:conduit_core/features/chat/providers/context_attachments_provider.dart';
 import 'package:conduit/features/chat/services/file_attachment_service.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/hermes/models/hermes_capabilities.dart';
@@ -45,6 +45,8 @@ import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:conduit/platform/flutter_key_value_store.dart';
+
+import '../../../support/fake_time.dart';
 
 class _TestActiveConversationNotifier extends ActiveConversationNotifier {
   @override
@@ -5337,7 +5339,7 @@ void main() {
       },
     );
 
-    test(
+    fakeTimeTest(
       'periodic cleanup progress cannot extend the absolute deadline',
       () async {
         final service = _PreflightHermesApi(trickleDelete: true);

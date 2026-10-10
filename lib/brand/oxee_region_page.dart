@@ -78,6 +78,8 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
           break;
         case HealthCheckResult.unhealthy:
           throw Exception(l10n.serverErrorUnavailable);
+        case HealthCheckResult.notOpenWebUI:
+          throw Exception(l10n.serverNotOpenWebUI);
         case HealthCheckResult.proxyAuthRequired ||
             HealthCheckResult.unreachable:
           throw Exception(strings.unreachable(region));

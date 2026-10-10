@@ -1,5 +1,5 @@
 import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
-import 'package:conduit/platform/conduit_platform_apis.g.dart';
+import 'package:conduit_core/features/direct_connections/services/apple_pcc_host.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:checks/checks.dart';
 import 'package:conduit_core/features/direct_connections/providers/direct_connection_providers.dart';
@@ -322,6 +322,52 @@ void main() {
     expect(changedContextLength, 8192);
   });
 
+  testWidgets('a long context fallback list moves to its own page', (
+    tester,
+  ) async {
+    final models = <Model>[
+      for (var i = 0; i < kDirectContextCompactionInlineLimit + 1; i++)
+        Model(
+          id: DirectModelId.encode('gateway', 'model-$i'),
+          name: 'Model $i',
+        ),
+    ];
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          directModelDiscoveryProvider.overrideWith(
+            () => _FixedDiscovery(models),
+          ),
+        ],
+        child: MaterialApp(
+          localizationsDelegates: conduitLocalizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: DirectConnectionsContent(
+            profiles: const [],
+            modelsWithoutContextLimit: models,
+            syncWithOpenWebUi: false,
+            isOnboarding: false,
+            onContextLengthChanged: (_, _) {},
+            onSyncChanged: (_) {},
+            onAdd: () {},
+            onEdit: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // One row instead of a row per model.
+    expect(find.text('Model 0'), findsNothing);
+    await tester.tap(find.text('6 models'));
+    await tester.pumpAndSettle();
+
+    for (final model in models) {
+      expect(find.text(model.name), findsOneWidget);
+    }
+  });
+
   testWidgets('separate connection groups fit a 320px-wide layout', (
     tester,
   ) async {
@@ -482,4 +528,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(remoteController.reloadCount, 2);
   });
+}
+
+final class _FixedDiscovery extends DirectModelDiscoveryController {
+  _FixedDiscovery(this.models);
+
+  final List<Model> models;
+
+  @override
+  Future<DirectModelDiscoveryState> build() async =>
+      DirectModelDiscoveryState(models: models);
 }

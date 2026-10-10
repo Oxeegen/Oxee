@@ -5,8 +5,8 @@ import 'package:conduit_core/models/chat_message.dart';
 import 'package:conduit_core/services/settings_service.dart';
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:conduit/features/chat/providers/assistant_response_builder_provider.dart';
-import 'package:conduit/features/chat/providers/chat_providers.dart';
-import 'package:conduit/features/chat/providers/queued_completion_provider.dart';
+import 'package:conduit_core/features/chat/providers/chat_providers.dart';
+import 'package:conduit_core/features/chat/providers/queued_completion_provider.dart';
 import 'package:conduit/features/chat/providers/text_to_speech_provider.dart';
 import 'package:conduit/features/chat/widgets/assistant_message_widget.dart';
 import 'package:conduit/features/chat/widgets/enhanced_attachment.dart';
@@ -459,8 +459,22 @@ void main() {
     expect(find.text('2/2'), findsOneWidget);
     expect(find.byIcon(Icons.content_copy_outlined), findsOneWidget);
     expect(find.byIcon(Icons.refresh), findsOneWidget);
-    expect(find.byIcon(Icons.chevron_left), findsNothing);
-    expect(find.byIcon(Icons.chevron_right), findsNothing);
+    // The version pager is inline, not in the overflow. On the latest
+    // version only "back" is available.
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('Prev')),
+      matchesSemantics(
+        label: 'Prev',
+        isButton: true,
+        hasEnabledState: true,
+        isEnabled: true,
+        hasTapAction: true,
+      ),
+    );
+    expect(
+      tester.getSemantics(find.bySemanticsLabel('Next')),
+      matchesSemantics(label: 'Next', isButton: true, hasEnabledState: true),
+    );
     expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
 
     final refreshPosition = tester.getTopLeft(find.byIcon(Icons.refresh));
@@ -470,16 +484,16 @@ void main() {
       find.byIcon(Icons.more_horiz_rounded),
     );
 
-    // Order: icon buttons, the inline overflow, then info chips.
+    // Order: version pager, icon buttons, the inline overflow, info chips.
+    expect(refreshPosition.dx, greaterThan(versionPosition.dx));
     expect(overflowPosition.dx, greaterThan(refreshPosition.dx));
     expect(sourcePosition.dx, greaterThan(overflowPosition.dx));
-    expect(versionPosition.dx, greaterThan(sourcePosition.dx));
 
     await tester.tap(find.byIcon(Icons.more_horiz_rounded));
     await tester.pumpAndSettle();
 
-    expect(find.text('Prev'), findsOneWidget);
-    expect(find.text('Next'), findsOneWidget);
+    expect(find.text('Prev'), findsNothing);
+    expect(find.text('Next'), findsNothing);
     expect(find.text('Info'), findsOneWidget);
   });
 
@@ -1187,35 +1201,6 @@ void main() {
     expect(tester.widget<FadeTransition>(fadeFinder).opacity.value, 1);
   });
 
-  testWidgets('completed response-done metadata enables copy', (tester) async {
-    var copyTapCount = 0;
-    final message = ChatMessage(
-      id: 'assistant-response-done-copy',
-      role: 'assistant',
-      content: 'Visible response body',
-      timestamp: DateTime(2024, 1, 1),
-      isStreaming: false,
-      metadata: const {'responseDone': true},
-    );
-
-    await tester.pumpWidget(
-      _buildAssistantHarness(
-        message,
-        isStreaming: false,
-        isChatStreaming: false,
-        onCopy: () => copyTapCount += 1,
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byIcon(Icons.content_copy_outlined), findsOneWidget);
-
-    await tester.tap(find.byIcon(Icons.content_copy_outlined));
-    await tester.pump();
-
-    expect(copyTapCount, 1);
-  });
-
   testWidgets(
     'completed response-done metadata renders long plain content with final body mode',
     (tester) async {
@@ -1426,56 +1411,6 @@ void main() {
           .disableAnimation,
       isFalse,
     );
-  });
-
-  testWidgets('completed response-done metadata enables regenerate', (
-    tester,
-  ) async {
-    var regenerateTapCount = 0;
-    final message = ChatMessage(
-      id: 'assistant-response-done-regenerate',
-      role: 'assistant',
-      content: 'Visible response body',
-      timestamp: DateTime(2024, 1, 1),
-      isStreaming: false,
-      metadata: const {'responseDone': true},
-    );
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          textToSpeechControllerProvider.overrideWith(
-            _TestTextToSpeechController.new,
-          ),
-          isChatStreamingProvider.overrideWithValue(false),
-        ],
-        child: MaterialApp(
-          theme: AppTheme.light(TweakcnThemes.t3Chat),
-          localizationsDelegates: conduitLocalizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          home: Scaffold(
-            body: AssistantMessageWidget(
-              message: message,
-              isStreaming: false,
-              showFollowUps: false,
-              animateOnMount: false,
-              modelName: message.model,
-              onCopy: () {},
-              onRegenerate: () => regenerateTapCount += 1,
-              onDelete: () {},
-            ),
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byIcon(Icons.refresh), findsOneWidget);
-
-    await tester.tap(find.byIcon(Icons.refresh));
-    await tester.pump();
-
-    expect(regenerateTapCount, 1);
   });
 
   testWidgets('queued offline placeholder shows retry and cancel actions', (

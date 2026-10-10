@@ -1115,7 +1115,7 @@ func applyNativeSheetModelUpdateSynchronouslyOnMain(
     }
 }
 
-final class NativeSheetBridge: NativeSheetHostApi {
+final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
     static let shared = NativeSheetBridge()
 
     private enum ActiveSheetMode {
@@ -1145,9 +1145,13 @@ final class NativeSheetBridge: NativeSheetHostApi {
     private weak var activeModelSelectorController: NativeModelSelectorTableViewController?
     private var activeModelSelectorPresentationId: String?
 
+    private var host: ConduitBridgeHost?
+
     private init() {}
 
-    func configure(messenger: FlutterBinaryMessenger) {
+    func attach(to host: ConduitBridgeHost) {
+        self.host = host
+        let messenger = host.messenger
         flutterApi = NativeSheetFlutterApi(binaryMessenger: messenger)
         NativeSheetHostApiSetup.setUp(
             binaryMessenger: messenger,
@@ -1203,10 +1207,7 @@ final class NativeSheetBridge: NativeSheetHostApi {
     func requestAppStoreReview() throws -> Bool {
         let request = {
             MainActor.assumeIsolated {
-                guard let scene = UIApplication.shared.connectedScenes
-                    .compactMap({ $0 as? UIWindowScene })
-                    .first(where: { $0.activationState == .foregroundActive })
-                else {
+                guard let scene = self.host?.activeWindowScene else {
                     return false
                 }
 
@@ -2217,13 +2218,7 @@ final class NativeSheetBridge: NativeSheetHostApi {
     }
 
     private func topViewController() -> UIViewController? {
-        let root = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first { $0.isKeyWindow }?
-            .rootViewController
-
-        return topViewController(from: root)
+        topViewController(from: host?.presentingViewController)
     }
 
     private func topViewController(from root: UIViewController?) -> UIViewController? {
@@ -4781,7 +4776,10 @@ private final class NativeModelSelectorTableViewController: UITableViewControlle
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
         case 0: featuredModels.count
-        case 1: 1
+        // Like the Flutter sheet, offer the row only when the selected model
+        // has an effort to choose; a disabled row looks tappable but does
+        // nothing. A late hydration update reloads this section.
+        case 1: effortSelectionEnabled ? 1 : 0
         case 2: moreModels.isEmpty ? 0 : 1
         default: 0
         }
@@ -4812,12 +4810,7 @@ private final class NativeModelSelectorTableViewController: UITableViewControlle
             content.image = UIImage(systemName: "clock")
             content.text = configuration.reasoningEffortTitle
             content.secondaryText = effortLabel(reasoningEffortValue)
-            cell.isUserInteractionEnabled = effortSelectionEnabled
-            cell.accessoryType = effortSelectionEnabled ? .disclosureIndicator : .none
-            if !effortSelectionEnabled {
-                content.textProperties.color = NativeSheetTheme.shared.secondaryForeground
-                content.secondaryTextProperties.color = NativeSheetTheme.shared.secondaryForeground
-            }
+            cell.accessoryType = .disclosureIndicator
         } else {
             content.image = UIImage(systemName: "ellipsis")
             content.text = configuration.moreModelsTitle

@@ -9,8 +9,8 @@
 "Send an image into Oxee for analysis." = "분석을 위해 이미지를 Oxee로 보냅니다.";
 "Send to Oxee" = "Oxee로 보내기";
 "Start Voice Call" = "음성 통화 시작";
-"Start a Oxee chat with an optional prompt." = "선택적 프롬프트로 Oxee 채팅을 시작합니다.";
-"Start a Oxee chat with provided text." = "제공된 텍스트로 Oxee 채팅을 시작합니다.";
+"Start an Oxee chat with an optional prompt." = "선택적 프롬프트로 Oxee 채팅을 시작합니다.";
+"Start an Oxee chat with provided text." = "제공된 텍스트로 Oxee 채팅을 시작합니다.";
 "Start a live voice call with Oxee." = "Oxee와 실시간 음성 통화를 시작합니다.";
 "Text" = "텍스트";
 "URL" = "URL";

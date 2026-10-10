@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -325,7 +326,11 @@ IDENTITY: dict[str, list[tuple[str, str]]] = {
         ("'https://github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"] + "'"),
         ("'github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"].split("://", 1)[1] + "'"),
     ],
-    "lib/core/services/native_sheet_hydration_service.dart": [
+    # Wikipedia's API asks clients to name a contact in the User-Agent.
+    "packages/conduit_ddgs/lib/src/engines/wikipedia.dart": [
+        ("(https://github.com/cogwheel0/conduit) conduit_ddgs", "(" + BRAND["repoUrl"] + ") conduit_ddgs"),
+    ],
+    "lib/core/utils/native_sheet_utils.dart": [
         ("url: 'https://github.com/cogwheel0/conduit',", "url: '" + BRAND["repoUrl"] + "',"),
     ],
     "lib/features/release_notes/data/release_links.dart": [
@@ -381,8 +386,21 @@ RULES = [
 ]
 
 
+def source_files() -> set[str] | None:
+    """Files git tracks, plus new ones it does not ignore. Generated output
+    (gen-l10n's app_localizations_*.dart, build_runner's *.g.dart, ...) is
+    git-ignored, so it is never rewritten or reported. None outside git."""
+    try:
+        listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                                cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return set(listed.splitlines())
+
+
 def selected_files() -> dict[Path, list[Callable[[str], str]]]:
     files: dict[Path, list[Callable[[str], str]]] = {}
+    in_git = source_files()
     for rule in RULES:
         for pattern in rule.globs:
             for path in ROOT.glob(pattern):
@@ -390,6 +408,8 @@ def selected_files() -> dict[Path, list[Callable[[str], str]]]:
                 if not path.is_file() or EXCLUDED_PARTS.intersection(rel_parts):
                     continue
                 if path.name.endswith(EXCLUDED_SUFFIXES):
+                    continue
+                if in_git is not None and path.relative_to(ROOT).as_posix() not in in_git:
                     continue
                 files.setdefault(path, [])
                 if rule.rewrite not in files[path]:
@@ -420,6 +440,26 @@ def apply_locale_fixes(rel: str, text: str) -> str:
     return text
 
 
+# English article: "Conduit" took "a", "Oxee" takes "an". Only English text:
+# code literals (English source strings), the English ARB and en.lproj, and
+# the keys of every .strings file (they are the English source text, and must
+# keep matching the Swift literals). Values in other languages stay: Spanish
+# and Italian "a Oxee" means "to Oxee".
+ARTICLE = re.compile(r"(?<![A-Za-z0-9_])([Aa]) " + NAME + r"(?![A-Za-z0-9_])")
+STRINGS_LINE = re.compile(r'^(\s*"(?:[^"\\]|\\.)*")(\s*=.*)$', re.M)
+
+
+def fix_english_articles(rel: str, text: str) -> str:
+    def article(t: str) -> str:
+        return ARTICLE.sub(lambda m: m.group(1) + "n " + NAME, t)
+
+    if rel.endswith((".dart", ".swift", ".kt")) or rel == "lib/l10n/app_en.arb" or "/en.lproj/" in rel:
+        return article(text)
+    if rel.endswith(".strings"):
+        return STRINGS_LINE.sub(lambda m: article(m.group(1)) + m.group(2), text)
+    return text
+
+
 def _whole(text: str, old: str, new: str) -> str:
     return re.sub(r"(?<![A-Za-z0-9_])" + re.escape(old) + r"(?![A-Za-z0-9_])", new, text)
 
@@ -434,6 +474,7 @@ def transform(path: Path, rewrites: list[Callable[[str], str]]) -> tuple[str, st
         text = rewrite(text)
     rel = path.relative_to(ROOT).as_posix()
     text = apply_locale_fixes(rel, text)
+    text = fix_english_articles(rel, text)
     text = apply_identity(rel, text)
     if crlf:
         text = text.replace("\n", "\r\n")

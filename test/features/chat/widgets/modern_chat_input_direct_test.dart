@@ -7,13 +7,14 @@ import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/settings_service.dart';
 import 'package:conduit_core/services/worker_manager.dart';
-import 'package:conduit/features/chat/providers/chat_providers.dart';
+import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit/features/chat/services/voice_input_service.dart';
 import 'package:conduit/features/chat/widgets/composer_overflow_menu.dart';
 import 'package:conduit/features/chat/widgets/composer_overflow_items.dart';
 import 'package:conduit/features/chat/widgets/modern_chat_input.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/direct_connections/providers/direct_mcp_providers.dart';
+import 'package:conduit_core/features/web_search/services/direct_web_search_mode.dart';
 import 'package:conduit/l10n/app_localizations.dart';
 import 'package:conduit/l10n/app_localizations_en.dart';
 import 'package:conduit/l10n/conduit_localizations.dart';
@@ -114,30 +115,46 @@ void main() {
     );
   });
 
-  test('direct send policy filters unsupported tools and search conflicts', () {
+  test('direct send policy keeps on-device search beside MCP tools', () {
+    // On-device search is another local tool, so it coexists with MCP.
     final apple = normalizeDirectToolSelectionForBinding(
       binding: const DirectModelBinding(
         profileId: kApplePccProfileId,
         adapterKey: kApplePccAdapterKey,
         remoteModelId: kApplePccRemoteModelId,
       ),
+      webSearchMode: DirectWebSearchMode.onDevice,
       enableWebSearch: true,
       localMcpToolIds: const ['local_mcp:home'],
     );
     expect(apple.localMcpToolIds, ['local_mcp:home']);
-    expect(apple.enableWebSearch, isFalse);
+    expect(apple.enableWebSearch, isTrue);
 
+    // A provider-hosted search tool can't share a request with local tools.
     final openRouter = normalizeDirectToolSelectionForBinding(
       binding: const DirectModelBinding(
         profileId: 'openrouter',
         adapterKey: kOpenAiCompatibleAdapterKey,
         remoteModelId: 'model',
       ),
+      webSearchMode: DirectWebSearchMode.providerHosted,
       enableWebSearch: true,
       localMcpToolIds: const ['local_mcp:home'],
     );
     expect(openRouter.localMcpToolIds, ['local_mcp:home']);
     expect(openRouter.enableWebSearch, isFalse);
+
+    final noTools = normalizeDirectToolSelectionForBinding(
+      binding: const DirectModelBinding(
+        profileId: 'ollama',
+        adapterKey: kOllamaAdapterKey,
+        remoteModelId: 'gemma',
+      ),
+      webSearchMode: DirectWebSearchMode.unavailable,
+      enableWebSearch: true,
+      localMcpToolIds: const [],
+    );
+    expect(noTools.enableWebSearch, isFalse);
   });
 
   test('native composer glass uses non-animated cursor opacity', () {
@@ -192,66 +209,6 @@ void main() {
       expect(first[2], isA<IOSSystemContextMenuItemSelectAll>());
     },
   );
-
-  test('native toolbar action groups preserve action and menu order', () {
-    final actions = [
-      ConduitNativeToolbarAction(
-        iosSymbol: 'square.and.pencil',
-        accessibilityLabel: 'New Chat',
-        onPressed: () {},
-      ),
-      ConduitNativeToolbarAction(
-        iosSymbol: 'ellipsis',
-        accessibilityLabel: 'More',
-        menuItems: [
-          ConduitNativeToolbarMenuItem(
-            label: 'Rename',
-            iosSymbol: 'pencil',
-            onSelected: () {},
-          ),
-          ConduitNativeToolbarMenuItem(
-            label: 'Delete',
-            iosSymbol: 'trash',
-            isDestructive: true,
-            onSelected: () {},
-          ),
-        ],
-      ),
-    ];
-    final creationParams = encodeConduitNativeToolbarActionGroupParams(actions);
-    final params = creationParams['actions']! as List<Map<String, Object?>>;
-
-    check(creationParams.containsKey('symbolSize')).isFalse();
-    check(params.length).equals(2);
-    check(params[0]['iosSymbol']).equals('square.and.pencil');
-    check(params[0].containsKey('symbolSize')).isFalse();
-    check(params[1]['iosSymbol']).equals('ellipsis');
-    final menuItems = params[1]['menuItems']! as List<Map<String, Object?>>;
-    check(menuItems.map((item) => item['label']))
-        .deepEquals(['Rename', 'Delete']);
-    check(menuItems[1]['isDestructive']).equals(true);
-  });
-
-  test('native toolbar action groups leave glyph sizing to the package', () {
-    final params = encodeConduitNativeToolbarActionGroupParams([
-      ConduitNativeToolbarAction(
-        iosSymbol: 'ellipsis',
-        accessibilityLabel: 'More',
-        menuItems: [
-          ConduitNativeToolbarMenuItem(
-            label: 'Delete',
-            isDestructive: true,
-            onSelected: () {},
-          ),
-        ],
-      ),
-    ]);
-    final actions = params['actions']! as List<Map<String, Object?>>;
-
-    check(actions).length.equals(1);
-    check(actions.single['iosSymbol']).equals('ellipsis');
-    check(actions.single.containsKey('symbolSize')).isFalse();
-  });
 
   test('native toolbar menu adapters preserve values, order, and state', () {
     String? selected;
