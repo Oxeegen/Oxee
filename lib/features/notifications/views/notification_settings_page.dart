@@ -11,14 +11,16 @@ import 'package:conduit_core/services/settings_service.dart';
 import 'package:conduit_core/utils/debug_logger.dart';
 
 import '../../../l10n/app_localizations.dart';
-import '../../../shared/theme/theme_extensions.dart';
 import '../../profile/widgets/settings_page_scaffold.dart';
 import '../../../shared/widgets/utility_components.dart';
 import '../services/local_notification_service.dart';
+import '../widgets/notification_targets_section.dart';
 
 /// Notification preferences. The master toggle requests OS permission on
 /// opt-in. The three Open WebUI-aligned prefs (master / sound / sound-always)
 /// are mirrored to the server for cross-device parity; the rest are local-only.
+/// With Advanced on, a permitted account also manages its server-owned webhook
+/// destinations here.
 class NotificationSettingsPage extends ConsumerWidget {
   const NotificationSettingsPage({super.key});
 
@@ -41,8 +43,8 @@ class NotificationSettingsPage extends ConsumerWidget {
         enabled: interactive,
         title: title,
         subtitle: subtitle,
-        semanticLabel:
-            '$title. ${value ? l10n.enabled : l10n.disabled}. $subtitle',
+        // Read as a switch with its state, so the label carries no value.
+        toggled: value,
         trailing: AdaptiveSwitch(
           value: value,
           onChanged: interactive ? onChanged : null,
@@ -100,7 +102,7 @@ class NotificationSettingsPage extends ConsumerWidget {
             ),
           ],
         ),
-        const SizedBox(height: Spacing.lg),
+        settingsSectionGap,
         InsetGroupedList(
           children: [
             tile(
@@ -117,6 +119,7 @@ class NotificationSettingsPage extends ConsumerWidget {
             ),
           ],
         ),
+        const NotificationTargetsSection(),
       ],
     );
   }

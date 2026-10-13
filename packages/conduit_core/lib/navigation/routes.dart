@@ -10,6 +10,9 @@ class Routes {
   static const String login = '/login';
   static const String backendChooser = '/backend-chooser';
   static const String serverConnection = '/server-connection';
+
+  /// Adding another Open WebUI account while signed in to one.
+  static const String addServer = '/add-server';
   static const String connectionIssue = '/connection-issue';
   static const String authentication = '/authentication';
   static const String ssoAuth = '/sso-auth';
@@ -17,17 +20,35 @@ class Routes {
   static const String profile = '/profile';
   static const String personalization = '/profile/personalization';
   static const String audioSettings = '/profile/audio';
+  static const String voiceProviderSettings = '/profile/audio/voice-provider';
   static const String accountSettings = '/profile/account';
+  static const String accounts = '/profile/accounts';
+  static const String serverAddresses = '/profile/accounts/addresses';
+  static const String serverAddressEditor = '/profile/accounts/address';
   static const String notificationSettings = '/profile/notifications';
   static const String appearanceSettings = '/profile/appearance';
   static const String chatSettings = '/profile/chat';
   static const String dataConnectionSettings = '/profile/data-connection';
+  static const String personalConnections = '/profile/personal-connections';
+  static const String personalConnectionEditor =
+      '/profile/personal-connections/:kind/:identity';
+  static const String chatDataControls = '/profile/chat-data-controls';
+  static const String scheduledTasks = '/profile/scheduled-tasks';
+  static const String scheduledTaskNew = '/profile/scheduled-tasks/new';
+  static const String scheduledTaskDetail = '/profile/scheduled-tasks/:id';
+  static const String scheduledTaskEdit = '/profile/scheduled-tasks/:id/edit';
+  static const String calendar = '/profile/calendar';
   static const String directConnections = '/profile/direct-connections';
   static const String directConnectionEditor =
       '/profile/direct-connections/:id';
   static const String directMcpServerEditor =
       '/profile/direct-connections/mcp/:id';
   static const String hermesSettings = '/profile/hermes';
+
+  /// Editor for one saved Hermes connection; [hermesNewConnectionId] adds one.
+  static const String hermesConnectionEditor =
+      '/profile/hermes/connections/:id';
+  static const String hermesNewConnectionId = 'new';
   static const String hermesJobs = '/profile/hermes/jobs';
   static const String hermesMcp = '/profile/hermes/mcp';
   static const String about = '/profile/about';
@@ -41,6 +62,8 @@ class Routes {
       '/profile/direct-connections/${Uri.encodeComponent(id)}';
   static String directMcpServerEditorPath(String id) =>
       '/profile/direct-connections/mcp/${Uri.encodeComponent(id)}';
+  static String hermesConnectionEditorPath(String id) =>
+      '/profile/hermes/connections/${Uri.encodeComponent(id)}';
 }
 
 /// Friendly names for GoRouter routes to support context.pushNamed.
@@ -51,6 +74,7 @@ class RouteNames {
   static const String login = 'login';
   static const String backendChooser = 'backend-chooser';
   static const String serverConnection = 'server-connection';
+  static const String addServer = 'add-server';
   static const String connectionIssue = 'connection-issue';
   static const String authentication = 'authentication';
   static const String ssoAuth = 'sso-auth';
@@ -58,15 +82,28 @@ class RouteNames {
   static const String profile = 'profile';
   static const String personalization = 'personalization';
   static const String audioSettings = 'audio-settings';
+  static const String voiceProviderSettings = 'voice-provider-settings';
   static const String accountSettings = 'account-settings';
+  static const String accounts = 'accounts';
+  static const String serverAddresses = 'server-addresses';
+  static const String serverAddressEditor = 'server-address-editor';
   static const String notificationSettings = 'notification-settings';
   static const String appearanceSettings = 'appearance-settings';
   static const String chatSettings = 'chat-settings';
   static const String dataConnectionSettings = 'data-connection-settings';
+  static const String personalConnections = 'personal-connections';
+  static const String chatDataControls = 'chat-data-controls';
+  static const String scheduledTasks = 'scheduled-tasks';
+  static const String scheduledTaskNew = 'scheduled-task-new';
+  static const String scheduledTaskDetail = 'scheduled-task-detail';
+  static const String scheduledTaskEdit = 'scheduled-task-edit';
+  static const String calendar = 'calendar';
+  static const String personalConnectionEditor = 'personal-connection-editor';
   static const String directConnections = 'direct-connections';
   static const String directConnectionEditor = 'direct-connection-editor';
   static const String directMcpServerEditor = 'direct-mcp-server-editor';
   static const String hermesSettings = 'hermes-settings';
+  static const String hermesConnectionEditor = 'hermes-connection-editor';
   static const String hermesJobs = 'hermes-jobs';
   static const String hermesMcp = 'hermes-mcp';
   static const String about = 'about';

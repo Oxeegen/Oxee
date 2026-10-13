@@ -1,6 +1,6 @@
 name: conduit
 description: Open-source mobile client for Open-WebUI
-version: 4.1.9+150
+version: 4.2.0+151
 publish_to: 'none'
 
 environment:
@@ -138,6 +138,7 @@ dependencies:
   fleather: ^1.27.0
   # Document model + markdown/HTML codecs backing the Fleather note editor.
   parchment: ^1.27.0
+  flutter_webrtc: ^1.6.2+hotfix.4
 
 # Required while mermaid_flutter declares mermaid_core from the hosted source:
 # Pub cannot combine that source with Conduit's unpublished path package, even
@@ -157,6 +158,7 @@ dependency_overrides:
   objective_c: 9.6.0
 
 dev_dependencies:
+  analyzer: ^13.3.0
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0

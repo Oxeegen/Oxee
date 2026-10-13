@@ -363,6 +363,66 @@ void main() {
       check(fetched.single.orderIndex).equals(0);
     });
 
+    test('keeps the meta Open WebUI stored on the message', () async {
+      // The server replaces each message whole on the next push, so a local
+      // echo without `meta` would erase a call's spoken transcripts there.
+      await db.chatsDao.upsertEnvelopeStub(
+        id: 'chat-meta',
+        title: 'Meta',
+        createdAt: 1,
+        updatedAt: 1,
+      );
+      await db.messagesDao.upsertLocalEcho(
+        echo(
+          chatId: 'chat-meta',
+          id: 'a-1',
+          payload: {
+            'id': 'a-1',
+            'role': 'assistant',
+            'content': 'answer',
+            'meta': {
+              'voice': {'call_id': 'web-call'},
+              'other': 1,
+            },
+          },
+        ),
+      );
+
+      await db.messagesDao.upsertLocalEcho(
+        echo(chatId: 'chat-meta', id: 'a-1', content: 'answer, settled'),
+      );
+      var payload = jsonDecode(
+        (await db.messagesDao.getMessage('chat-meta', 'a-1'))!.payload,
+      );
+      check(payload['content']).equals('answer, settled');
+      check(payload['meta']).isA<Map<String, dynamic>>().deepEquals({
+        'voice': {'call_id': 'web-call'},
+        'other': 1,
+      });
+
+      await db.messagesDao.upsertLocalEcho(
+        echo(
+          chatId: 'chat-meta',
+          id: 'a-1',
+          payload: {
+            'id': 'a-1',
+            'role': 'assistant',
+            'content': 'answer',
+            'meta': {
+              'voice': {'call_id': 'app-call'},
+            },
+          },
+        ),
+      );
+      payload = jsonDecode(
+        (await db.messagesDao.getMessage('chat-meta', 'a-1'))!.payload,
+      );
+      check(payload['meta']).isA<Map<String, dynamic>>().deepEquals({
+        'voice': {'call_id': 'app-call'},
+        'other': 1,
+      });
+    });
+
     test('updates existing rows in place, keeping their orderIndex', () async {
       await db.chatsDao.upsertEnvelopeStub(
         id: 'chat-up',
@@ -598,5 +658,22 @@ void main() {
         check(row.dirty).isFalse();
       },
     );
+  });
+
+  group('payloadLengthForChat', () {
+    test('sums one chat\'s stored message JSON and nothing else', () async {
+      await db.chatsDao.upsertServerChat(
+        rows: buildLinearChatRows(chatId: 'sized', count: 3),
+      );
+      await db.chatsDao.upsertServerChat(
+        rows: buildLinearChatRows(chatId: 'other', count: 5),
+      );
+      final rows = await db.messagesDao.getForChat('sized');
+
+      check(
+        await db.messagesDao.payloadLengthForChat('sized'),
+      ).equals(rows.fold<int>(0, (total, row) => total + row.payload.length));
+      check(await db.messagesDao.payloadLengthForChat('missing')).equals(0);
+    });
   });
 }

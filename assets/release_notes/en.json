@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "What's new",
+      "intro": "Hi! You can keep several Open WebUI accounts signed in and switch between them, and save several Hermes connections. Calls can talk with a realtime voice you can interrupt. Open WebUI 0.12 works, including two-step sign-in, and more Open WebUI features no longer need Advanced.",
+      "bullets": [
+        {
+          "text": "Accounts: keep several Open WebUI accounts signed in, on one server or several, and switch from your profile or the new Accounts page at the top of Settings. Add any account or connection from one sheet. A server can have several addresses, such as LAN, Tailscale and a public proxy; the app uses the first one that answers.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: save several named connections, such as Home and Research, and switch between them from the sidebar, settings or Accounts. A chat whose session belongs to another connection offers to switch to it.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Realtime calls: on Open WebUI 0.12, Direct and the Hermes Desktop Gateway, calls can talk with an OpenAI realtime voice, and speaking over it stops it. Choose a Voice provider in Audio settings for Direct and Apple chats. Server speech to text and text to speech follow each chat's own backend.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: the app works without a compatibility warning. Two-step verification at sign-in works, including setup and recovery codes. Skill export, folder sharing, enforced temporary chats and tool approvals follow 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI features: the draft queue, code interpreter, branches, chat audience, project folders, sharing, channel members and calendar no longer need Advanced. Advanced adds model comparison, scheduled tasks, webhooks and data controls. Large chats no longer download again on every open, and the reasoning effort you choose sticks.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

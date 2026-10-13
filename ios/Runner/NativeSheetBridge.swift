@@ -73,6 +73,26 @@ private struct NativeSheetProfile {
     let savedProfileImageUrl: String?
 }
 
+private extension NativeSheetProfile {
+    init(payload profilePayload: [String: Any]) {
+        self.init(
+            displayName: (profilePayload["displayName"] as? String)
+                ?? nativeLocalized("native.user", "User"),
+            email: (profilePayload["email"] as? String)
+                ?? nativeLocalized("native.noEmail", "No email"),
+            initials: (profilePayload["initials"] as? String) ?? "U",
+            avatarUrl: profilePayload["avatarUrl"] as? String,
+            avatarData: (profilePayload["avatarBytes"] as? FlutterStandardTypedData)?.data,
+            avatarIsTemplate: (profilePayload["avatarIsTemplate"] as? Bool) ?? false,
+            avatarHeaders: (profilePayload["avatarHeaders"] as? [String: String]) ?? [:],
+            bio: (profilePayload["bio"] as? String) ?? "",
+            gender: (profilePayload["gender"] as? String) ?? "",
+            dateOfBirth: profilePayload["dateOfBirth"] as? String,
+            savedProfileImageUrl: profilePayload["profileImageUrl"] as? String
+        )
+    }
+}
+
 private struct NativeEditProfileSheetCopy {
     let title: String
     let saveLabel: String
@@ -188,6 +208,16 @@ private struct NativeSheetItem {
     let sliderMin: Double?
     let sliderMax: Double?
     let sliderDivisions: Int?
+    /// A round picture in place of the symbol: these bytes, else the initials
+    /// of `avatarName`.
+    let avatarName: String?
+    let avatarData: Data?
+    /// Marks the row in use with a check.
+    let checked: Bool
+    /// Draws the row in the accent color, as an action.
+    let accent: Bool
+    /// Draws the row as the sheet's profile summary.
+    let usesProfileAvatar: Bool
 
     init?(_ payload: [String: Any]) {
         guard
@@ -240,6 +270,12 @@ private struct NativeSheetItem {
         } else {
             sliderDivisions = nil
         }
+        avatarName = payload["avatarName"] as? String
+        avatarData = (payload["avatarBytes"] as? FlutterStandardTypedData)?.data
+            ?? payload["avatarBytes"] as? Data
+        checked = payload["checked"] as? Bool ?? false
+        accent = payload["accent"] as? Bool ?? false
+        usesProfileAvatar = payload["usesProfileAvatar"] as? Bool ?? false
     }
 
     private static func optionalDouble(_ value: Any?) -> Double? {
@@ -651,6 +687,9 @@ private struct NativeSheetDetail {
     let confirmActionLabel: String?
     /// When set (0...1], sheet uses a single custom detent at this fraction of `maximumDetentValue`.
     let maxHeightFraction: CGFloat?
+    /// A bar button that closes the sheet and then sends this action.
+    let trailingActionId: String?
+    let trailingActionSfSymbol: String?
 
     init(
         id: String,
@@ -660,7 +699,9 @@ private struct NativeSheetDetail {
         sections: [NativeSheetSection] = [],
         confirmActionId: String? = nil,
         confirmActionLabel: String? = nil,
-        maxHeightFraction: CGFloat? = nil
+        maxHeightFraction: CGFloat? = nil,
+        trailingActionId: String? = nil,
+        trailingActionSfSymbol: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -670,6 +711,8 @@ private struct NativeSheetDetail {
         self.confirmActionId = confirmActionId
         self.confirmActionLabel = confirmActionLabel
         self.maxHeightFraction = maxHeightFraction
+        self.trailingActionId = trailingActionId
+        self.trailingActionSfSymbol = trailingActionSfSymbol
     }
 
     init?(_ payload: [String: Any]) {
@@ -692,6 +735,8 @@ private struct NativeSheetDetail {
         sections = (payload["sections"] as? [[String: Any]] ?? [])
             .compactMap(NativeSheetSection.init)
         maxHeightFraction = NativeSheetDetail.parseMaxHeightFraction(payload["maxHeightFraction"])
+        trailingActionId = payload["trailingActionId"] as? String
+        trailingActionSfSymbol = payload["trailingActionSfSymbol"] as? String
     }
 
     private static func parseMaxHeightFraction(_ value: Any?) -> CGFloat? {
@@ -739,16 +784,19 @@ private struct NativeSheetSection {
 }
 
 private struct NativeSheetConfiguration {
-    let profile: NativeSheetProfile
-    let profileMenuTitle: String
+    /// Replaced when Flutter finishes refreshing the account profile after
+    /// the sheet opened, so the editors start from the stored values.
+    var profile: NativeSheetProfile
+    var profileMenuTitle: String
     let editProfileLabel: String
     let editProfileSheet: NativeEditProfileSheetCopy
     let supportTitle: String?
     let supportSubtitle: String?
     let menuItems: [NativeSheetItem]
     let supportItems: [NativeSheetItem]
-    let sections: [NativeSheetSection]
-    let details: [String: NativeSheetDetail]
+    /// Replaced by a root patch when a setting the root depends on changes.
+    var sections: [NativeSheetSection]
+    var details: [String: NativeSheetDetail]
 
     init?(_ arguments: Any?) {
         guard let payload = arguments as? [String: Any],
@@ -756,26 +804,7 @@ private struct NativeSheetConfiguration {
             return nil
         }
 
-        let displayName = (profilePayload["displayName"] as? String) ?? nativeLocalized("native.user", "User")
-        let email = (profilePayload["email"] as? String) ?? nativeLocalized("native.noEmail", "No email")
-        let initials = (profilePayload["initials"] as? String) ?? "U"
-        let bio = (profilePayload["bio"] as? String) ?? ""
-        let gender = (profilePayload["gender"] as? String) ?? ""
-        let dateOfBirth = profilePayload["dateOfBirth"] as? String
-        let savedUrl = profilePayload["profileImageUrl"] as? String
-        profile = NativeSheetProfile(
-            displayName: displayName,
-            email: email,
-            initials: initials,
-            avatarUrl: profilePayload["avatarUrl"] as? String,
-            avatarData: (profilePayload["avatarBytes"] as? FlutterStandardTypedData)?.data,
-            avatarIsTemplate: (profilePayload["avatarIsTemplate"] as? Bool) ?? false,
-            avatarHeaders: (profilePayload["avatarHeaders"] as? [String: String]) ?? [:],
-            bio: bio,
-            gender: gender,
-            dateOfBirth: dateOfBirth,
-            savedProfileImageUrl: savedUrl
-        )
+        profile = NativeSheetProfile(payload: profilePayload)
         editProfileLabel = (payload["editProfileLabel"] as? String)
             ?? nativeLocalized("native.editProfile", "Edit Profile")
         profileMenuTitle = (payload["profileMenuTitle"] as? String)
@@ -891,6 +920,8 @@ private extension PlatformNativeSheetDetail {
         payload["confirmActionId"] = confirmActionId
         payload["confirmActionLabel"] = confirmActionLabel
         payload["maxHeightFraction"] = maxHeightFraction
+        payload["trailingActionId"] = trailingActionId
+        payload["trailingActionSfSymbol"] = trailingActionSfSymbol
         return payload
     }
 }
@@ -926,6 +957,11 @@ private extension PlatformNativeSheetItem {
         payload["min"] = min
         payload["max"] = max
         if let divisions { payload["divisions"] = Int(divisions) }
+        payload["avatarName"] = avatarName
+        payload["avatarBytes"] = avatarBytes
+        payload["checked"] = checked
+        payload["accent"] = accent
+        payload["usesProfileAvatar"] = usesProfileAvatar
         return payload
     }
 }
@@ -1115,8 +1151,25 @@ func applyNativeSheetModelUpdateSynchronouslyOnMain(
     }
 }
 
+/// Detail id a patch uses to replace the rows of the Settings root itself.
+let nativeSheetProfileMenuDetailId = "profile-menu"
+
+/// Whether a row that closes the sheet waits for it to finish leaving before
+/// telling Flutter. Rows that open a Flutter page send at once, so the page is
+/// already underneath as the sheet slides away. The memory editor waits: it
+/// opens a Flutter sheet that takes keyboard focus, which must not be asked
+/// for while this sheet still holds it.
+func nativeSheetSelectionWaitsForDismiss(actionId: String) -> Bool {
+    actionId == "memory-editor-new" || actionId.hasPrefix("memory-editor:")
+        // Switching, adding or signing out of an account can ask a question
+        // in a sheet of its own, which cannot present over this one.
+        || actionId == "account-switch" || actionId == "account-add"
+        || actionId == "account-sign-out" || actionId == "account-direct-edit"
+}
+
 final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
     static let shared = NativeSheetBridge()
+    static let profileChannelName = "app.cogwheel.conduit/native_sheet"
 
     private enum ActiveSheetMode {
         case profileMenu
@@ -1132,6 +1185,8 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
     private var configuration: NativeSheetConfiguration?
     private var detailPayloads: [String: NativeSheetDetail] = [:]
     private weak var activeDetailTableController: NativeDetailTableViewController?
+    private weak var activeProfileMenuController: NativeProfileMenuTableViewController?
+    private var profileChannel: FlutterMethodChannel?
     private var activeSheetMode: ActiveSheetMode = .profileMenu
     private var pendingModelSelectorResult: PendingStringResult?
     private var pendingOptionsSelectorResult: PendingStringResult?
@@ -1157,6 +1212,63 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
             binaryMessenger: messenger,
             api: self
         )
+        profileChannel?.setMethodCallHandler(nil)
+        let channel = FlutterMethodChannel(
+            name: NativeSheetBridge.profileChannelName,
+            binaryMessenger: messenger
+        )
+        channel.setMethodCallHandler { [weak self] call, result in
+            guard call.method == "updateProfile" else {
+                result(FlutterMethodNotImplemented)
+                return
+            }
+            guard let payload = call.arguments as? [String: Any] else {
+                result(false)
+                return
+            }
+            DispatchQueue.main.async {
+                result(self?.updateProfile(payload) ?? false)
+            }
+        }
+        profileChannel = channel
+    }
+
+    /// Hands the open Settings sheet the account profile Flutter just read,
+    /// so its rows and editors stop showing the copy it opened with.
+    private func updateProfile(_ payload: [String: Any]) -> Bool {
+        guard activeSheetMode == .profileMenu,
+              var configuration,
+              let controller = activeProfileMenuController
+        else { return false }
+        configuration.profile = NativeSheetProfile(payload: payload)
+        self.configuration = configuration
+        controller.applyUpdatedConfiguration(configuration)
+        return true
+    }
+
+    /// Replaces the rows of the open Settings root, for a setting it depends
+    /// on (Advanced, the language) that changed while it was up.
+    private func applyProfileMenuPatch(
+        title: String?,
+        sections: [NativeSheetSection],
+        relatedDetails: [NativeSheetDetail]
+    ) -> Bool {
+        guard activeSheetMode == .profileMenu,
+              var configuration,
+              let controller = activeProfileMenuController,
+              !sections.isEmpty
+        else { return false }
+        configuration.sections = sections
+        if let title, !title.isEmpty {
+            configuration.profileMenuTitle = title
+        }
+        for detail in relatedDetails {
+            configuration.details[detail.id] = detail
+            detailPayloads[detail.id] = detail
+        }
+        self.configuration = configuration
+        controller.applyUpdatedConfiguration(configuration)
+        return true
     }
 
     func setTheme(theme: PlatformNativeSheetTheme) throws {
@@ -1375,6 +1487,13 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
             let relatedDetails = (request.detailSheets ?? [])
                 .map { $0.asPayload() }
                 .compactMap(NativeSheetDetail.init)
+            if detailId == nativeSheetProfileMenuDetailId {
+                return self.applyProfileMenuPatch(
+                    title: request.title,
+                    sections: sections,
+                    relatedDetails: relatedDetails
+                )
+            }
             guard let existing = self.detailPayloads[detailId] else {
                 return false
             }
@@ -1391,7 +1510,9 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
                 sections: sections,
                 confirmActionId: existing.confirmActionId,
                 confirmActionLabel: existing.confirmActionLabel,
-                maxHeightFraction: existing.maxHeightFraction
+                maxHeightFraction: existing.maxHeightFraction,
+                trailingActionId: existing.trailingActionId,
+                trailingActionSfSymbol: existing.trailingActionSfSymbol
             )
             self.detailPayloads[detailId] = patched
             if self.activeDetailTableController?.detailId == detailId {
@@ -1415,7 +1536,11 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
             onClose: { [weak self] in self?.dismissActive() }
         )
         let navigation = NativeSheetNavigationController(rootViewController: controller)
-        return present(navigation, initialDetent: .large)
+        let presented = present(navigation, initialDetent: .large)
+        if presented {
+            activeProfileMenuController = controller
+        }
+        return presented
     }
 
     private func sendControlChanged(id: String, value: Any?) {
@@ -1769,6 +1894,7 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
                 self?.presentationDelegate = nil
                 self?.activeTextEditorController = nil
                 self?.activeDetailTableController = nil
+                self?.activeProfileMenuController = nil
                 self?.activeModelSelectorController = nil
                 self?.activeModelSelectorPresentationId = nil
                 self?.detailPayloads = [:]
@@ -2056,8 +2182,15 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         if item.dismissOnSelect {
             let actionId = (item.actionId?.isEmpty == false ? item.actionId : nil) ?? item.id
             let actionValue = item.actionValue ?? item.value ?? true
-            dismissActive { [weak self] in
-                self?.sendControlChanged(id: actionId, value: actionValue)
+            if nativeSheetSelectionWaitsForDismiss(actionId: actionId) {
+                dismissActive { [weak self] in
+                    self?.sendControlChanged(id: actionId, value: actionValue)
+                }
+            } else {
+                // The Flutter page opens under the sheet as it slides away,
+                // instead of appearing only after the sheet has gone.
+                dismissActive()
+                sendControlChanged(id: actionId, value: actionValue)
             }
             return
         }
@@ -2185,6 +2318,7 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         activeController = nil
         presentationDelegate = nil
         activeDetailTableController = nil
+        activeProfileMenuController = nil
         activeModelSelectorController = nil
         activeModelSelectorPresentationId = nil
         detailPayloads = [:]
@@ -3153,7 +3287,7 @@ private final class NativeSignOutOptionsViewController: UITableViewController {
 }
 
 private final class NativeProfileMenuTableViewController: UITableViewController {
-    private let configuration: NativeSheetConfiguration
+    private var configuration: NativeSheetConfiguration
     private let onSelect: (NativeSheetItem) -> Void
     private let onClose: () -> Void
 
@@ -3197,6 +3331,15 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    /// Shows rows rebuilt by Flutter while the sheet is open. A pushed page
+    /// stays where it is; the root is current when the user goes back.
+    func applyUpdatedConfiguration(_ newConfiguration: NativeSheetConfiguration) {
+        configuration = newConfiguration
+        title = newConfiguration.profileMenuTitle
+        guard isViewLoaded else { return }
+        tableView.reloadData()
     }
 
     override func viewDidLoad() {
@@ -3254,9 +3397,9 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
         cellForRowAt indexPath: IndexPath
     ) -> UITableViewCell {
         let item = item(at: indexPath)
-        if item.id == "profile" {
+        if item.usesProfileAvatar {
             let cell = tableView.dequeueReusableCell(withIdentifier: "profileCell", for: indexPath)
-            configureProfileSummaryCell(cell)
+            configureProfileSummaryCell(cell, item: item)
             return cell
         }
 
@@ -3279,10 +3422,12 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
     }
 
     private func shouldShowDisclosure(for item: NativeSheetItem) -> Bool {
-        item.url != nil || item.dismissOnSelect || configuration.details[item.id] != nil
+        // A row that closes the sheet without opening anything says so.
+        item.showsDisclosure
+            ?? (item.url != nil || item.dismissOnSelect || configuration.details[item.id] != nil)
     }
 
-    private func configureProfileSummaryCell(_ cell: UITableViewCell) {
+    private func configureProfileSummaryCell(_ cell: UITableViewCell, item: NativeSheetItem) {
         cell.accessoryType = .disclosureIndicator
         cell.selectionStyle = .default
         NativeSheetSettingsStyle.applyCellStyle(cell)
@@ -3290,14 +3435,15 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
         let avatar = NativeAvatarView(profile: configuration.profile, diameter: 56)
 
         let titleLabel = UILabel()
-        titleLabel.text = configuration.profile.displayName
+        titleLabel.text = item.title
         titleLabel.font = .preferredFont(forTextStyle: .body)
         titleLabel.textColor = NativeSheetTheme.shared.foreground
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.numberOfLines = 1
 
         let subtitleLabel = UILabel()
-        subtitleLabel.text = configuration.profile.email
+        subtitleLabel.text = item.subtitle
+        subtitleLabel.isHidden = item.subtitle?.isEmpty ?? true
         subtitleLabel.font = .preferredFont(forTextStyle: .footnote)
         subtitleLabel.textColor = NativeSheetTheme.shared.secondaryForeground
         subtitleLabel.adjustsFontForContentSizeCategory = true
@@ -4552,7 +4698,13 @@ private final class NativeDetailTableViewController: UITableViewController {
             commitPendingTextChanges()
             if item.destructive {
                 NativeSheetHaptics.mediumImpact()
-            } else if item.url == nil && !canNavigate(item) {
+            } else if item.url == nil
+                && !(item.dismissOnSelect && item.showsDisclosure != false)
+                && !canNavigate(item) {
+                // A row that leaves (a link, a page, or one that closes the
+                // sheet to open a page) moves on instead; only an in-place
+                // action ticks. Closing rows that open nothing, such as a
+                // confirmation's buttons, say so with showsDisclosure false.
                 NativeSheetHaptics.selection()
             }
             onSelect(item)
@@ -4587,11 +4739,13 @@ private final class NativeDetailTableViewController: UITableViewController {
             configureNavigationCell(cell, item: item, showsDisclosure: true)
 
         default:
+            // Rows that close the sheet to open a page get a chevron, as on
+            // the root.
             configureNavigationCell(
                 cell,
                 item: item,
                 showsDisclosure: item.showsDisclosure
-                    ?? (item.url != nil || canNavigate(item))
+                    ?? (item.url != nil || item.dismissOnSelect || canNavigate(item))
             )
         }
     }
@@ -4627,6 +4781,21 @@ private final class NativeDetailTableViewController: UITableViewController {
         }
 
         if pendingTextValues.isEmpty {
+            if let trailingActionId = detail.trailingActionId, !trailingActionId.isEmpty,
+               let action = NativeSheetItem([
+                   "id": trailingActionId,
+                   "title": trailingActionId,
+                   "dismissOnSelect": true,
+                   "actionId": trailingActionId,
+                   "actionValue": true,
+               ]) {
+                // Handled as a row that closes the sheet to send it.
+                navigationItem.rightBarButtonItem = iconBarButton(
+                    systemName: detail.trailingActionSfSymbol ?? "plus",
+                    action: UIAction { [weak self] _ in self?.onSelect(action) }
+                )
+                return
+            }
             // A pushed detail already has a Back button. Showing Close as
             // well creates two competing exit actions, so reserve Close for
             // the root controller of a presented sheet.
@@ -6763,7 +6932,10 @@ private func configureNavigationCell(
     content.secondaryText = item.kind == "searchablePicker"
         ? (item.selectedOptionLabel ?? item.subtitle)
         : item.subtitle
-    if let iconAsset = item.iconAsset {
+    let avatar = nativeRowAvatarImage(for: item)
+    if let avatar {
+        content.image = avatar
+    } else if let iconAsset = item.iconAsset {
         content.image = loadFlutterAssetImage(iconAsset)?
             .withRenderingMode(.alwaysTemplate)
             ?? UIImage(systemName: item.sfSymbol)
@@ -6771,7 +6943,18 @@ private func configureNavigationCell(
         content.image = UIImage(systemName: item.sfSymbol)
     }
     NativeSheetSettingsStyle.applyContentStyle(&content)
-    if item.iconAsset != nil {
+    if avatar != nil {
+        // A picture keeps its own colors, at the size a symbol takes.
+        content.imageProperties.tintColor = nil
+        content.imageProperties.maximumSize = CGSize(
+            width: nativeRowAvatarDiameter,
+            height: nativeRowAvatarDiameter
+        )
+        content.imageProperties.reservedLayoutSize = CGSize(
+            width: nativeRowAvatarDiameter,
+            height: nativeRowAvatarDiameter
+        )
+    } else if item.iconAsset != nil {
         let assetSize = item.iconSize ?? NativeSheetSettingsStyle.iconSize
         content.imageProperties.maximumSize = CGSize(
             width: assetSize,
@@ -6781,6 +6964,9 @@ private func configureNavigationCell(
     if item.destructive {
         content.textProperties.color = NativeSheetTheme.shared.destructive
         content.imageProperties.tintColor = NativeSheetTheme.shared.destructive
+    } else if item.accent {
+        content.textProperties.color = NativeSheetTheme.shared.accent
+        content.imageProperties.tintColor = NativeSheetTheme.shared.accent
     }
     content.textProperties.font = .preferredFont(forTextStyle: .body)
     if item.kind == "info" && !showsDisclosure {
@@ -6791,8 +6977,43 @@ private func configureNavigationCell(
     }
     cell.contentConfiguration = content
     applyTextAccessibilityLabel(to: cell, from: content)
-    cell.accessoryType = showsDisclosure ? .disclosureIndicator : .none
+    if item.checked {
+        // The check takes the accent the sheet tints its views with.
+        cell.accessoryType = .checkmark
+        cell.accessibilityTraits.insert(.selected)
+    } else {
+        cell.accessoryType = showsDisclosure ? .disclosureIndicator : .none
+        cell.accessibilityTraits.remove(.selected)
+    }
     NativeSheetSettingsStyle.applyCellStyle(cell)
+}
+
+private let nativeRowAvatarDiameter: CGFloat = 32
+
+/// A row's round picture: its bytes, cut to a circle, else its name's
+/// initials; nil for a row that has neither.
+private func nativeRowAvatarImage(for item: NativeSheetItem) -> UIImage? {
+    let size = CGSize(width: nativeRowAvatarDiameter, height: nativeRowAvatarDiameter)
+    if let data = item.avatarData, let picture = UIImage(data: data) {
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let rect = CGRect(origin: .zero, size: size)
+            UIBezierPath(ovalIn: rect).addClip()
+            let scale = max(size.width / picture.size.width, size.height / picture.size.height)
+            let drawn = CGSize(
+                width: picture.size.width * scale,
+                height: picture.size.height * scale
+            )
+            picture.draw(in: CGRect(
+                x: (size.width - drawn.width) / 2,
+                y: (size.height - drawn.height) / 2,
+                width: drawn.width,
+                height: drawn.height
+            ))
+        }.withRenderingMode(.alwaysOriginal)
+    }
+    guard let name = item.avatarName else { return nil }
+    return nativeInitialsAvatarUIImage(name: name, diameter: nativeRowAvatarDiameter)?
+        .withRenderingMode(.alwaysOriginal)
 }
 
 /// VoiceOver otherwise leads with the SF Symbol's generated description

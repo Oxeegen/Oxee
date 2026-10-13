@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Neuigkeiten",
+      "intro": "Hallo! Du kannst mehrere Open WebUI-Konten angemeldet lassen und zwischen ihnen wechseln sowie mehrere Hermes-Verbindungen speichern. Anrufe können mit einer Echtzeitstimme sprechen, die du unterbrechen kannst. Open WebUI 0.12 funktioniert, auch mit zweistufiger Anmeldung, und weitere Open WebUI-Funktionen brauchen „Erweitert“ nicht mehr.",
+      "bullets": [
+        {
+          "text": "Konten: Lass mehrere Open WebUI-Konten angemeldet, auf einem oder mehreren Servern, und wechsle über dein Profil oder die neue Seite „Konten“ oben in den Einstellungen. Jedes Konto und jede Verbindung fügst du über ein Blatt hinzu. Ein Server kann mehrere Adressen haben, etwa LAN, Tailscale und einen öffentlichen Proxy; die App nutzt die erste, die antwortet.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: Speichere mehrere benannte Verbindungen, etwa „Zuhause“ und „Recherche“, und wechsle über die Seitenleiste, die Einstellungen oder „Konten“. Gehört die Sitzung eines Chats zu einer anderen Verbindung, bietet er an, zu ihr zu wechseln.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Echtzeitanrufe: Mit Open WebUI 0.12, Direct und dem Hermes Desktop Gateway können Anrufe mit einer OpenAI-Echtzeitstimme sprechen, und wenn du dazwischen sprichst, verstummt sie. Für Direct- und Apple-Chats wählst du in den Audioeinstellungen einen Sprachanbieter. Sprache-zu-Text und Text-zu-Sprache über den Server folgen dem Backend des jeweiligen Chats.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: Die App funktioniert ohne Kompatibilitätswarnung. Die Zwei-Faktor-Verifizierung bei der Anmeldung funktioniert, inklusive Einrichtung und Wiederherstellungscodes. Skill-Export, Ordnerfreigabe, erzwungene temporäre Chats und Werkzeugfreigaben folgen 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI-Funktionen: Entwurfswarteschlange, Code-Interpreter, Verzweigungen, Chat-Publikum, Projektordner, Freigaben, Kanalmitglieder und Kalender brauchen „Erweitert“ nicht mehr. „Erweitert“ bietet Modellvergleich, geplante Aufgaben, Webhooks und Datenverwaltung. Große Chats werden nicht mehr bei jedem Öffnen neu geladen, und der gewählte Denkaufwand bleibt erhalten.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

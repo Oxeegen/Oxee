@@ -4,12 +4,39 @@ part of 'app_providers.dart';
 @Riverpod(keepAlive: true)
 Future<Model?> defaultModel(Ref ref) async {
   Model? resolved;
+  var ownerRetries = 0;
   while (true) {
     final reviewerAtStart = ref.read(reviewerModeProvider);
     final selectedAtStart = ref.read(selectedModelProvider);
     final manualAtStart = ref.read(isManualModelSelectionProvider);
+    final apiAtStart = ref.read(apiServiceProvider);
+    final ownerAtStart = apiAtStart == null
+        ? null
+        : captureOpenWebUiCacheOwnership(
+            ref,
+            api: apiAtStart,
+            requireAuthenticated: false,
+          );
     final candidate = await _resolveDefaultModel(ref);
     if (!ref.mounted) return null;
+
+    // A session that settled while this ran -- the same account and token,
+    // its database certified meanwhile -- makes the resolver drop its result
+    // as another owner's, and nothing asks again. Resolve once more for it,
+    // unless the selection moved meanwhile. A different session is left to
+    // its own resolution.
+    if (ownerAtStart != null &&
+        ownerRetries < 2 &&
+        !openWebUiCacheOwnershipIsCurrent(ref, ownerAtStart) &&
+        ref.read(isAuthenticatedProvider2) &&
+        ref.read(authTokenProvider3) == ownerAtStart.authToken &&
+        ref.read(activeServerProvider).value?.id ==
+            ownerAtStart.activeServerId &&
+        identical(ref.read(selectedModelProvider), selectedAtStart) &&
+        !ref.read(isManualModelSelectionProvider)) {
+      ownerRetries++;
+      continue;
+    }
 
     if (ref.read(reviewerModeProvider) != reviewerAtStart) {
       final latestSelected = ref.read(selectedModelProvider);
@@ -53,10 +80,10 @@ Future<Model?> _resolveDefaultModel(Ref ref) async {
   // owns reconciliation, and the post-await checks below reject stale
   // snapshots.
   final preferredBackend = ref.read(preferredBackendProvider);
-  final hermesConfig = ref.read(hermesConfigProvider);
   final reviewerMode = ref.read(reviewerModeProvider);
   final selectedAtResolutionStart = ref.read(selectedModelProvider);
   final manualAtResolutionStart = ref.read(isManualModelSelectionProvider);
+  final restoreOwnerIsCurrent = ref.read(defaultModelRestoreGuardProvider);
 
   bool isGenuinelyNewManualSelection(
     Model? latestSelected,
@@ -177,11 +204,14 @@ Future<Model?> _resolveDefaultModel(Ref ref) async {
         ? null
         : ref.read(appSettingsProvider).defaultModel;
     final Model? standalone;
+    // Read again: the active connection may have changed during the auth wait,
+    // and the synthetic model carries its name.
+    final hermesAtSelection = ref.read(hermesConfigProvider);
     if (preferredBackend == PreferredBackend.hermes) {
-      standalone = hermesConfig.isUsable
+      standalone = hermesAtSelection.isUsable
           ? (currentSelected != null && isHermesModel(currentSelected)
                 ? currentSelected
-                : hermesSyntheticModel())
+                : hermesSyntheticModel(name: hermesAtSelection.name))
           : null;
     } else if (preferredBackend == PreferredBackend.direct) {
       final discovery = await ref.read(directModelDiscoveryProvider.future);
@@ -227,9 +257,9 @@ Future<Model?> _resolveDefaultModel(Ref ref) async {
       preferredBackend: preferredBackend,
       hasApiService: ref.read(apiServiceProvider) != null,
     );
+    final latestHermes = ref.read(hermesConfigProvider);
     final hermesSnapshotIsCurrent =
-        preferredBackend != PreferredBackend.hermes ||
-        ref.read(hermesConfigProvider).isUsable;
+        preferredBackend != PreferredBackend.hermes || latestHermes.isUsable;
     final directBindingIsCurrent =
         standalone == null ||
         !isLocallyMintedDirectModel(standalone) ||
@@ -240,6 +270,13 @@ Future<Model?> _resolveDefaultModel(Ref ref) async {
         !directBindingIsCurrent ||
         !identical(latestSelected, currentSelected)) {
       return latestSelected;
+    }
+    // Without a Hermes selection, SelectedModel has nothing to follow a
+    // switch or rename with; saving now would keep the old name.
+    if (preferredBackend == PreferredBackend.hermes &&
+        (latestHermes.connectionId != hermesAtSelection.connectionId ||
+            latestHermes.name != hermesAtSelection.name)) {
+      return _resolveDefaultModel(ref);
     }
     if (!identical(currentSelected, standalone)) {
       if (currentSelected?.id != standalone?.id) {
@@ -279,6 +316,7 @@ Future<Model?> _resolveDefaultModel(Ref ref) async {
               );
     return latestAuth.authenticated &&
         ownershipIsCurrent &&
+        (restoreOwnerIsCurrent?.call() ?? true) &&
         ref.read(authTokenProvider3) == authenticatedTokenSnapshot &&
         identical(ref.read(apiServiceProvider), apiSnapshot) &&
         ref.read(preferredBackendProvider) == preferredBackend &&

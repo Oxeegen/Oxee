@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Novità",
+      "intro": "Ciao! Puoi tenere connessi più account Open WebUI e passare dall’uno all’altro, e salvare più connessioni Hermes. Le chiamate possono parlare con una voce in tempo reale che puoi interrompere. Open WebUI 0.12 funziona, compreso l’accesso in due passaggi, e altre funzioni di Open WebUI non richiedono più Avanzate.",
+      "bullets": [
+        {
+          "text": "Account: tieni connessi più account Open WebUI, su uno o più server, e cambia dal tuo profilo o dalla nuova pagina Account in cima alle Impostazioni. Aggiungi qualsiasi account o connessione da un unico pannello. Un server può avere più indirizzi, come LAN, Tailscale e un proxy pubblico; l’app usa il primo che risponde.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: salva più connessioni con un nome, come Casa e Ricerca, e passa dall’una all’altra dalla barra laterale, dalle impostazioni o da Account. Una chat la cui sessione appartiene a un’altra connessione propone di passare a quella.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Chiamate in tempo reale: con Open WebUI 0.12, Direct e Hermes Desktop Gateway, le chiamate possono parlare con una voce in tempo reale di OpenAI, e se le parli sopra si ferma. Scegli un Provider vocale nelle impostazioni audio per le chat Direct e Apple. La trascrizione e la sintesi vocale del server seguono il backend di ogni chat.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: l’app funziona senza avvisi di compatibilità. La verifica in due passaggi all’accesso funziona, inclusi configurazione e codici di recupero. Esportazione delle skill, condivisione delle cartelle, chat temporanee obbligatorie e approvazione degli strumenti seguono la 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Funzioni di Open WebUI: coda delle bozze, interprete di codice, rami, pubblico della chat, cartelle progetto, condivisione, membri dei canali e calendario non richiedono più Avanzate. Avanzate aggiunge confronto tra modelli, attività pianificate, webhook e controlli dei dati. Le chat grandi non vengono più riscaricate a ogni apertura e il livello di ragionamento scelto resta impostato.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

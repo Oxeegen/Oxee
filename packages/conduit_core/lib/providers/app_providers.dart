@@ -18,6 +18,7 @@ import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:collection/collection.dart';
+import 'package:dio/dio.dart' show DioException;
 import 'package:meta/meta.dart';
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -26,9 +27,14 @@ import 'package:conduit_core/services/api_service.dart';
 
 import 'package:conduit_core/services/attachment_upload_queue.dart';
 
+import 'package:conduit_core/auth/api_auth_interceptor.dart'
+    show ApiAuthSnapshot;
+
 import 'package:conduit_core/auth/auth_state_manager.dart';
 
 import 'package:conduit_core/auth/openwebui_account_owner_marker.dart';
+import 'package:conduit_core/auth/openwebui_account_summaries.dart';
+import 'package:conduit_core/models/openwebui_registry.dart';
 
 import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
 
@@ -52,11 +58,14 @@ import 'package:conduit_core/services/settings_service.dart';
 import 'package:conduit_core/services/optimized_storage_service.dart';
 import 'package:conduit_core/services/secure_credential_storage.dart';
 import 'package:conduit_core/services/socket_service.dart';
+import 'package:conduit_core/features/integrations/personal_tool_execution.dart';
+import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart';
 
 import 'package:conduit_core/services/connectivity_service.dart';
 
 import 'package:conduit_core/services/conversation_parsing.dart';
 
+import 'package:conduit_core/persistence/account_scoped_preferences.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
 import 'package:conduit_core/persistence/persistence_keys.dart';
 

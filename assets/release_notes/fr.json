@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Nouveautés",
+      "intro": "Bonjour ! Vous pouvez garder plusieurs comptes Open WebUI connectés et passer de l’un à l’autre, et enregistrer plusieurs connexions Hermes. Les appels peuvent parler avec une voix en temps réel que vous pouvez interrompre. Open WebUI 0.12 fonctionne, y compris la connexion en deux étapes, et d’autres fonctions d’Open WebUI ne nécessitent plus Avancé.",
+      "bullets": [
+        {
+          "text": "Comptes : gardez plusieurs comptes Open WebUI connectés, sur un ou plusieurs serveurs, et changez depuis votre profil ou la nouvelle page Comptes en haut des Réglages. Ajoutez n’importe quel compte ou connexion depuis une seule feuille. Un serveur peut avoir plusieurs adresses, comme le réseau local, Tailscale et un proxy public ; l’app utilise la première qui répond.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes : enregistrez plusieurs connexions nommées, comme Maison et Recherche, et passez de l’une à l’autre depuis la barre latérale, les réglages ou Comptes. Une discussion dont la session appartient à une autre connexion propose d’y basculer.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Appels en temps réel : sur Open WebUI 0.12, Direct et le Hermes Desktop Gateway, les appels peuvent parler avec une voix en temps réel d’OpenAI, et parler par-dessus l’arrête. Choisissez un Fournisseur vocal dans les réglages audio pour les discussions Direct et Apple. La transcription et la synthèse vocale du serveur suivent le backend de chaque discussion.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12 : l’app fonctionne sans avertissement de compatibilité. La vérification en deux étapes à la connexion fonctionne, y compris la configuration et les codes de récupération. L’export des compétences, le partage de dossiers, les discussions temporaires imposées et l’approbation des outils suivent la version 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Fonctions d’Open WebUI : la file de brouillons, l’interpréteur de code, les branches, l’audience des discussions, les dossiers de projet, le partage, les membres des canaux et le calendrier ne nécessitent plus Avancé. Avancé ajoute la comparaison de modèles, les tâches planifiées, les webhooks et les contrôles des données. Les grandes discussions ne sont plus retéléchargées à chaque ouverture, et le niveau de raisonnement choisi est conservé.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

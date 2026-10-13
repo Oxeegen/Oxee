@@ -15,6 +15,7 @@ final class PreferenceKeys {
   static const String voiceHoldToTalk = 'voice_hold_to_talk';
   static const String voiceAutoSendFinal = 'voice_auto_send_final';
   static const String voiceBargeInEnabled = 'voice_barge_in_enabled';
+  static const String voiceCallMode = 'voice_call_mode';
   static const String voiceSttPreference = 'voice_stt_preference';
   static const String voiceSttLanguageCode = 'voice_stt_language_code';
   static const String socketTransportMode = 'socket_transport_mode';
@@ -26,8 +27,24 @@ final class PreferenceKeys {
   static const String webSearchEngine = 'web_search_engine_v1';
   static const String webSearchSafeSearch = 'web_search_safe_search_v1';
   static const String webSearchRegion = 'web_search_region_v1';
+  static const String directVoiceProvider = 'direct_voice_provider_v1';
   static const String sendOnEnterKey = 'send_on_enter';
+  /// Holds the active Open WebUI *account* id. The key predates accounts:
+  /// an account's id is the id its server config always had.
   static const String activeServerId = 'active_server_id';
+
+  /// Non-secret display details of saved Open WebUI accounts (name, email,
+  /// avatar, last use), so the account list renders without Keychain reads.
+  static const String openWebUiAccountSummaries =
+      'openwebui_account_summaries_v1';
+
+  /// Set once the device-wide model and chat defaults were copied into the
+  /// account that was active when per-account settings arrived.
+  static const String accountScopedSettingsMigrated =
+      'account_scoped_settings_migrated_v1';
+
+  /// Which route each saved Open WebUI server was last reached through.
+  static const String openWebUiEndpointHint = 'openwebui_endpoint_hint_v1';
 
   /// Fail-closed marker set before logout touches any remote or local state.
   /// It prevents bearer/credential restoration and proxy-cookie attachment
@@ -38,6 +55,21 @@ final class PreferenceKeys {
   /// surviving Direct profiles hidden and unusable across restarts until the
   /// logout fence is cleared.
   static const String incompleteAppDataClear = 'incomplete_app_data_clear_v1';
+
+  /// Set when a full sign-out could not delete every Open WebUI account
+  /// database. The next start deletes them before any can open.
+  static const String pendingAccountDatabaseWipe =
+      'pending_account_database_wipe_v1';
+
+  /// Accounts signed out of whose data could not all be removed. The next
+  /// start finishes removing what each left.
+  static const String pendingAccountPurges = 'pending_account_purges_v1';
+
+  /// Accounts still saved -- signed out of by the plain logout -- whose chats
+  /// are being deleted or could not all be. Until they are gone, an owner
+  /// marker of theirs certifies nothing, and the next start retries.
+  static const String pendingAccountDataPurges =
+      'pending_account_data_purges_v1';
   static const String appIntentInvocationLedger =
       'app_intent_invocation_ledger_v1';
   static const String themeMode = 'theme_mode';
@@ -62,6 +94,9 @@ final class PreferenceKeys {
   static const String voiceSilenceDuration = 'voice_silence_duration';
   static const String androidAssistantTrigger = 'android_assistant_trigger';
   static const String temporaryChatByDefault = 'temporary_chat_by_default';
+
+  /// Device-local disclosure switch for additional chat tools and settings.
+  static const String advancedFeaturesEnabled = 'advanced_features_enabled_v1';
   static const String pinnedModels = 'pinned_models';
 
   // Notifications. The first three mirror Open WebUI's user-settings fields and
@@ -77,7 +112,20 @@ final class PreferenceKeys {
 
   // Hermes Agent (direct second backend) — non-secret config. The API key and
   // long-term memory session key are secrets and live in SecureCredentialStorage.
+  /// Global master switch; applies to whichever saved connection is active.
   static const String hermesEnabled = 'hermes_enabled_v1';
+
+  /// Saved, named Hermes connections (`HermesConnectionsDocument`). Kept in
+  /// preferences rather than secure storage because the router reads it
+  /// synchronously; it holds no secrets.
+  static const String hermesConnections = 'hermes_connections_v1';
+
+  /// Id of the saved Hermes connection the runtime uses.
+  static const String hermesActiveConnectionId =
+      'hermes_active_connection_id_v1';
+
+  // Single-connection settings stored before saved connections existed. Only
+  // read to migrate them into [hermesConnections], then removed.
   static const String hermesBaseUrl = 'hermes_base_url_v1';
   static const String hermesBackendMode = 'hermes_backend_mode_v1';
   static const String hermesDesktopAuthKind = 'hermes_desktop_auth_kind_v1';
@@ -86,12 +134,17 @@ final class PreferenceKeys {
       'hermes_allow_self_signed_certificates_v1';
   static const String hermesLocalDocumentTrust =
       'hermes_local_document_trust_v1';
+
+  /// Legacy global trust principal; migrated into the first saved connection.
   static const String hermesLocalDocumentTrustPrincipal =
       'hermes_local_document_trust_principal_v1';
   static const String hermesMixedSessionBindingTrust =
       'hermes_mixed_session_binding_trust_v1';
   static const String hermesPendingDesktopDecisions =
       'hermes_pending_desktop_decisions_v1';
+
+  /// Keyed by origin, not by saved connection: the WebView cookie store is
+  /// process-global, so two connections on one origin share dashboard cookies.
   static const String hermesDashboardCookieIdentities =
       'hermes_dashboard_cookie_identities_v1';
 

@@ -621,6 +621,55 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(didApply)
   }
 
+  func testNativeSheetPageRowsSendAsTheSheetStartsLeaving() {
+    // Rows that open a Flutter page tell Flutter at once, so the page is
+    // already underneath while the sheet slides away.
+    for actionId in [
+      "open-personal-connections",
+      "open-scheduled-tasks",
+      "open-chat-data-controls",
+      "open-calendar",
+      "workspace-entry",
+      "notification-targets",
+      "release-notes-manual",
+      "open-source-licenses",
+      "add-owui-server",
+    ] {
+      XCTAssertFalse(
+        nativeSheetSelectionWaitsForDismiss(actionId: actionId),
+        actionId
+      )
+    }
+  }
+
+  func testNativeSheetMemoryEditorWaitsForTheSheetToLeave() {
+    // The memory editor takes keyboard focus, so it opens only once the
+    // sheet has gone.
+    XCTAssertTrue(nativeSheetSelectionWaitsForDismiss(actionId: "memory-editor-new"))
+    XCTAssertTrue(
+      nativeSheetSelectionWaitsForDismiss(actionId: "memory-editor:abc%20123")
+    )
+  }
+
+  func testNativeSheetAccountQuestionsWaitForTheSheetToLeave() {
+    // Switching, adding or signing out of an account may ask in a sheet of
+    // its own, and editing a Direct provider opens one; a server's page only
+    // opens under the sheet.
+    for actionId in [
+      "account-switch", "account-add", "account-sign-out", "account-direct-edit",
+    ] {
+      XCTAssertTrue(
+        nativeSheetSelectionWaitsForDismiss(actionId: actionId),
+        actionId
+      )
+    }
+    XCTAssertFalse(nativeSheetSelectionWaitsForDismiss(actionId: "account-server"))
+  }
+
+  func testNativeSheetRootPatchUsesTheReservedProfileMenuId() {
+    XCTAssertEqual(nativeSheetProfileMenuDetailId, "profile-menu")
+  }
+
   func testAppIntentReadinessIsAppliedBeforeUpdateReturns() {
     let readiness = AppIntentReadiness()
 

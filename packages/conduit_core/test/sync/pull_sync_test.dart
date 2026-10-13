@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:checks/checks.dart';
 import 'package:conduit_core/database/app_database.dart';
 import 'package:conduit_core/database/mappers/chat_blob_mapper.dart';
 import 'package:conduit_core/database/mappers/conversation_assembler.dart'
-    show kLocalConversationWorkerThreshold;
+    show
+        kLocalConversationWorkerPayloadThreshold,
+        kLocalConversationWorkerThreshold;
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:conduit_core/sync/chat_locks.dart';
 import 'package:conduit_core/sync/id_remapper.dart';
@@ -169,6 +172,55 @@ void main() {
       check((await db.messagesDao.getForChat('threshold')).length)
           .equals(kLocalConversationWorkerThreshold);
     });
+
+    test(
+      'a few messages carrying large inline data also use the worker',
+      () async {
+        var offloadCalls = 0;
+        final workerManager = WorkerManager();
+        addTearDown(workerManager.dispose);
+        pull = PullSync(
+          client: client,
+          db: db,
+          locks: locks,
+          rowsParseOffload: (response) {
+            offloadCalls++;
+            return workerManager.schedule(
+              parseChatRowsWorker,
+              response,
+              debugLabel: 'test.pull.normalizeChatRows',
+            );
+          },
+        );
+        final inline = blobFor('inline');
+        final messages =
+            (inline['history'] as Map<String, dynamic>)['messages']
+                as Map<String, dynamic>;
+        (messages['inline-m2'] as Map<String, dynamic>)['content'] =
+            'x' * (kLocalConversationWorkerPayloadThreshold + 1);
+        server.seedChat(
+          id: 'inline',
+          blob: inline,
+          createdAt: 100,
+          updatedAt: 200,
+        );
+        server.seedChat(
+          id: 'small',
+          blob: blobFor('small'),
+          createdAt: 50,
+          updatedAt: 100,
+        );
+
+        final result = await pull.run();
+
+        check(result.success).isTrue();
+        check(offloadCalls).equals(1);
+        final stored = await db.messagesDao.getForChat('inline');
+        check(stored.length).equals(2);
+        check(stored.last.content.length)
+            .equals(kLocalConversationWorkerPayloadThreshold + 1);
+      },
+    );
 
     test('first-run full pull (watermark 0) lands every chat', () async {
       server.seedChat(
@@ -706,6 +758,58 @@ void main() {
         await pull.pullChat('chat-1');
 
         check((await db.chatsDao.getChat('chat-1'))!.lastReadAt).equals(140);
+      },
+    );
+
+    test(
+      'a response storeIf rejects comes back from its one download unstored',
+      () async {
+        server.seedChat(
+          id: 'chat-1',
+          blob: blobFor('chat-1', messageCount: 3),
+          createdAt: 100,
+          updatedAt: 150,
+        );
+        final owners = <Object?>[];
+
+        final conversation = await pull.pullChat(
+          'chat-1',
+          storeIf: (response) {
+            owners.add(response['user_id']);
+            return false;
+          },
+        );
+
+        check(conversation).isNotNull();
+        check(conversation!.id).equals('chat-1');
+        check(conversation.messages.length).equals(3);
+        check(conversation.userId).equals(FakeOpenWebUiServer.userId);
+        check(owners).deepEquals([FakeOpenWebUiServer.userId]);
+        check(client.chatFetchStarts).deepEquals(['chat-1']);
+        check(await allChats()).isEmpty();
+        check(await allMessages()).isEmpty();
+      },
+    );
+
+    test(
+      'a response storeIf accepts is stored from its one download',
+      () async {
+        server.seedChat(
+          id: 'chat-1',
+          blob: blobFor('chat-1', messageCount: 3),
+          createdAt: 100,
+          updatedAt: 150,
+        );
+
+        final conversation = await pull.pullChat(
+          'chat-1',
+          storeIf: (_) => true,
+        );
+
+        check(conversation!.messages.length).equals(3);
+        check((await db.chatsDao.getChat('chat-1'))!.bodySynced).isTrue();
+        check(await allMessages()).length.equals(3);
+        check(client.chatFetchStarts).deepEquals(['chat-1']);
       },
     );
   });
@@ -1296,4 +1400,155 @@ void main() {
           .equals(fetchesBefore + 1);
     });
   });
+
+  group('an account-wide change that ends while a read is in flight', () {
+    // The server deletes the chat after the read was taken but before it is
+    // stored, so the read still describes a chat that no longer exists.
+    Future<void> deleteAllOnServer() => locks.runBarrier(() async {
+      server.deleteChat('x');
+    });
+
+    test('a chat read before it is not stored after it, and the cycle is '
+        'retried rather than called done', () async {
+      server.seedChat(
+        id: 'x',
+        blob: blobFor('x'),
+        createdAt: 100,
+        updatedAt: 200,
+      );
+      final late = _LateReadClient(server);
+      final latePull = PullSync(client: late, db: db, locks: locks);
+      final gate = Completer<void>();
+      late.readGate = gate.future;
+
+      final running = latePull.run();
+      await late.readTaken.future;
+      await deleteAllOnServer();
+      gate.complete();
+      final result = await running;
+
+      check(await db.chatsDao.getChat('x')).isNull();
+      check(result.success).isFalse();
+      check(result.failedFetches).equals(1);
+      // The watermark stays where it was, so the next cycle reads again.
+      check(await db.syncMetaDao.getPullWatermark()).equals(0);
+    });
+
+    test('an archived chat listed before it is not stubbed after it', () async {
+      server.seedChat(
+        id: 'x',
+        blob: blobFor('x'),
+        createdAt: 100,
+        updatedAt: 200,
+        archived: true,
+      );
+      final late = _LateReadClient(server);
+      final latePull = PullSync(client: late, db: db, locks: locks);
+      final gate = Completer<void>();
+      late.listGate = gate.future;
+
+      final running = latePull.run();
+      await late.listTaken.future;
+      await deleteAllOnServer();
+      gate.complete();
+      final result = await running;
+
+      check(await db.chatsDao.getChat('x')).isNull();
+      check(result.success).isFalse();
+      check(await db.syncMetaDao.getPullWatermark()).equals(0);
+    });
+
+    test('a chat opened by name before it comes back as absent', () async {
+      server.seedChat(
+        id: 'x',
+        blob: blobFor('x'),
+        createdAt: 100,
+        updatedAt: 200,
+      );
+      final late = _LateReadClient(server);
+      final latePull = PullSync(client: late, db: db, locks: locks);
+      final gate = Completer<void>();
+      late.readGate = gate.future;
+
+      final opening = latePull.pullChat('x');
+      await late.readTaken.future;
+      await deleteAllOnServer();
+      gate.complete();
+
+      check(await opening).isNull();
+      check(await db.chatsDao.getChat('x')).isNull();
+    });
+
+    test(
+      'a chat read before it comes back as absent even when not stored',
+      () async {
+        server.seedChat(
+          id: 'x',
+          blob: blobFor('x'),
+          createdAt: 100,
+          updatedAt: 200,
+        );
+        final late = _LateReadClient(server);
+        final latePull = PullSync(client: late, db: db, locks: locks);
+        final gate = Completer<void>();
+        late.readGate = gate.future;
+
+        final opening = latePull.pullChat('x', storeIf: (_) => false);
+        await late.readTaken.future;
+        await deleteAllOnServer();
+        gate.complete();
+
+        check(await opening).isNull();
+        check(await db.chatsDao.getChat('x')).isNull();
+      },
+    );
+
+    test('a read that begins after the change is stored as usual', () async {
+      server.seedChat(
+        id: 'y',
+        blob: blobFor('y'),
+        createdAt: 100,
+        updatedAt: 200,
+      );
+      await deleteAllOnServer();
+
+      final result = await pull.run();
+
+      check(result.success).isTrue();
+      check(await db.chatsDao.getChat('y')).isNotNull();
+    });
+  });
+}
+
+/// A client whose answers are taken at once and delivered late, as a slow
+/// network does: the snapshot reflects the server when the request began.
+class _LateReadClient extends FakeSyncApiClient {
+  _LateReadClient(super.server);
+
+  /// Holds each chat body after it has been read.
+  Future<void>? readGate;
+
+  /// Holds the archived list page after it has been read.
+  Future<void>? listGate;
+
+  /// Complete once a chat body / the archived list has been read, so a test can
+  /// change the server after that point and before the answer is delivered.
+  final readTaken = Completer<void>();
+  final listTaken = Completer<void>();
+
+  @override
+  Future<Map<String, dynamic>?> getChatRaw(String id) async {
+    final snapshot = await super.getChatRaw(id);
+    if (!readTaken.isCompleted) readTaken.complete();
+    await readGate;
+    return snapshot;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getArchivedChatListPage(int page) async {
+    final items = await super.getArchivedChatListPage(page);
+    if (!listTaken.isCompleted) listTaken.complete();
+    await listGate;
+    return items;
+  }
 }

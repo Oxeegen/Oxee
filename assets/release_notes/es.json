@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Novedades",
+      "intro": "¡Hola! Puedes mantener varias cuentas de Open WebUI con la sesión iniciada y cambiar entre ellas, y guardar varias conexiones de Hermes. Las llamadas pueden hablar con una voz en tiempo real que puedes interrumpir. Open WebUI 0.12 funciona, incluido el inicio de sesión en dos pasos, y más funciones de Open WebUI ya no necesitan Avanzado.",
+      "bullets": [
+        {
+          "text": "Cuentas: mantén varias cuentas de Open WebUI con la sesión iniciada, en uno o varios servidores, y cambia desde tu perfil o desde la nueva página Cuentas en la parte superior de Ajustes. Añade cualquier cuenta o conexión desde una sola hoja. Un servidor puede tener varias direcciones, como LAN, Tailscale y un proxy público; la app usa la primera que responde.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: guarda varias conexiones con nombre, como Casa e Investigación, y cambia entre ellas desde la barra lateral, los ajustes o Cuentas. Un chat cuya sesión pertenece a otra conexión ofrece cambiar a ella.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Llamadas en tiempo real: en Open WebUI 0.12, Direct y Hermes Desktop Gateway, las llamadas pueden hablar con una voz en tiempo real de OpenAI, y si hablas encima se detiene. Elige un Proveedor de voz en los ajustes de audio para los chats de Direct y Apple. La voz a texto y el texto a voz del servidor siguen el backend de cada chat.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: la app funciona sin aviso de compatibilidad. La verificación en dos pasos al iniciar sesión funciona, incluida la configuración y los códigos de recuperación. La exportación de habilidades, el uso compartido de carpetas, los chats temporales obligatorios y la aprobación de herramientas siguen a 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Funciones de Open WebUI: la cola de borradores, el intérprete de código, las ramas, la audiencia del chat, las carpetas de proyecto, el uso compartido, los miembros de canales y el calendario ya no necesitan Avanzado. Avanzado añade comparación de modelos, tareas programadas, webhooks y controles de datos. Los chats grandes ya no se descargan de nuevo cada vez que se abren, y el nivel de razonamiento elegido se mantiene.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

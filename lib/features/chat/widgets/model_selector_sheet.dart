@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:conduit/l10n/app_localizations.dart';
+import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
 import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -34,12 +35,34 @@ import 'package:conduit_core/features/hermes/models/hermes_model.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 
 import 'package:conduit_core/features/chat/models/model_selector_layout.dart';
+import 'package:conduit_core/features/chat/providers/chat_providers.dart'
+    show captureOpenWebUiReasoningPickTarget, selectReasoningEffortForModel;
 import 'package:conduit_core/features/chat/providers/reasoning_effort_provider.dart';
 
 class ModelSelectorSheet extends ConsumerStatefulWidget {
-  const ModelSelectorSheet({super.key, required this.models});
+  const ModelSelectorSheet({
+    super.key,
+    required this.models,
+    this.onPick,
+    this.title,
+    this.selectedModelId,
+  });
 
   final List<Model> models;
+
+  /// When set, tapping a model hands it to the caller instead of making it the
+  /// chat's model. The same list and search serve a comparison's slots; the
+  /// ordinary picker passes nothing and keeps its one-tap selection.
+  final ValueChanged<Model>? onPick;
+
+  /// The sheet's title in place of "Choose model", e.g. the comparison slot
+  /// the pick is for.
+  final String? title;
+
+  /// The model to mark as chosen when [onPick] is set. A pick is for the
+  /// caller's slot, so the chat's own model is not marked; null marks none.
+  /// The ordinary picker ignores this and marks the chat's model.
+  final String? selectedModelId;
 
   @override
   ConsumerState<ModelSelectorSheet> createState() => ModelSelectorSheetState();
@@ -65,6 +88,9 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
     final current = ref.read(reasoningEffortProvider);
     final policy = ref.read(reasoningEffortPolicyProvider);
     if (!policy.visible) return;
+    // The chat and account this pick is for, fixed now: the sheet and the
+    // preference write both outlive a chat or account switch.
+    final pickTarget = captureOpenWebUiReasoningPickTarget(ref);
     final allowsCustom = policy.allowsCustom;
     final options = policy.options;
     final customMarker = '__custom__';
@@ -108,15 +134,28 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
       effort = trimmed;
     }
     try {
-      await setReasoningEffort(ref.read, normalizeReasoningEffort(effort));
+      final model = ref.read(selectedModelProvider);
+      if (model == null) return;
+      await selectReasoningEffortForModel(
+        ref,
+        model,
+        normalizeReasoningEffort(effort),
+        target: pickTarget,
+      );
     } on FormatException catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.message)));
+      AdaptiveSnackBar.show(
+        context,
+        message: error.message,
+        type: AdaptiveSnackBarType.error,
+      );
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l10n.errorMessage)));
+      AdaptiveSnackBar.show(
+        context,
+        message: l10n.errorMessage,
+        type: AdaptiveSnackBarType.error,
+      );
     }
   }
 
@@ -133,11 +172,15 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
                   .defaultModelId ??
               localDefaultModelId
         : localDefaultModelId;
+    final chatModelId = ref.watch(selectedModelProvider)?.id;
+    final markedModelId = widget.onPick != null
+        ? widget.selectedModelId
+        : chatModelId;
     final layout = buildModelSelectorLayout(
       models: widget.models,
       pinnedModelIds: pinnedModelIds,
       defaultModelId: defaultModelId,
-      selectedModelId: ref.watch(selectedModelProvider)?.id,
+      selectedModelId: markedModelId,
     );
     final normalizedQuery = _searchQuery.trim().toLowerCase();
     final moreModels = layout.more
@@ -175,7 +218,9 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
             children: [
               const SheetHandle(),
               _SelectorHeader(
-                title: _showMore ? l10n.moreModels : l10n.chooseModel,
+                title: _showMore
+                    ? l10n.moreModels
+                    : widget.title ?? l10n.chooseModel,
                 isBack: _showMore,
                 onPressed: () {
                   if (_showMore) {
@@ -209,6 +254,8 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
                         models: moreModels,
                         onTogglePinnedModel: _togglePinnedModel,
                         scrollController: scrollController,
+                        selectedModelId: markedModelId,
+                        onPick: widget.onPick,
                       )
                     : ListView(
                         controller: scrollController,
@@ -216,9 +263,11 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
                           _ModelGroup(
                             models: layout.featured,
                             onTogglePinnedModel: _togglePinnedModel,
+                            selectedModelId: markedModelId,
+                            onPick: widget.onPick,
                           ),
                           const SizedBox(height: Spacing.md),
-                          if (effortPolicy.visible) ...[
+                          if (widget.onPick == null && effortPolicy.visible) ...[
                             _ActionCard(
                               icon: Platform.isIOS
                                   ? CupertinoIcons.timer
@@ -231,7 +280,7 @@ class ModelSelectorSheetState extends ConsumerState<ModelSelectorSheet> {
                               onTap: _showEffortSelector,
                             ),
                           ],
-                          if (supportsHermesFast) ...[
+                          if (widget.onPick == null && supportsHermesFast) ...[
                             const SizedBox(height: Spacing.md),
                             _ActionCard(
                               icon: Platform.isIOS
@@ -355,12 +404,16 @@ class _ModelGroup extends ConsumerWidget {
   const _ModelGroup({
     required this.models,
     required this.onTogglePinnedModel,
+    required this.selectedModelId,
     this.scrollController,
+    this.onPick,
   });
 
   final List<Model> models;
   final Future<void> Function(String modelId) onTogglePinnedModel;
+  final String? selectedModelId;
   final ScrollController? scrollController;
+  final ValueChanged<Model>? onPick;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -377,7 +430,6 @@ class _ModelGroup extends ConsumerWidget {
         ),
       );
     }
-    final selectedModelId = ref.watch(selectedModelProvider)?.id;
     final pinnedModelIds = ref.watch(effectivePinnedModelIdsProvider);
     final canToggle = ref.watch(canTogglePinnedModelsProvider);
     final api = ref.watch(apiServiceProvider);
@@ -395,6 +447,7 @@ class _ModelGroup extends ConsumerWidget {
       selectedModelId: selectedModelId,
       pinnedModelIds: pinnedModelIds,
       canToggle: canToggle,
+      onPick: onPick,
       api: api,
       directRegistry: directRegistry,
       profiles: profiles,
@@ -426,6 +479,7 @@ class _ModelGroup extends ConsumerWidget {
     required String? selectedModelId,
     required List<String> pinnedModelIds,
     required bool canToggle,
+    required ValueChanged<Model>? onPick,
     required ApiService? api,
     required DirectModelRegistry directRegistry,
     required List<DirectConnectionProfile> profiles,
@@ -487,7 +541,11 @@ class _ModelGroup extends ConsumerWidget {
                   )
                 : null,
             onTap: () {
-              ref.read(selectedModelProvider.notifier).set(model);
+              if (onPick != null) {
+                onPick(model);
+              } else {
+                ref.read(selectedModelProvider.notifier).set(model);
+              }
               Navigator.of(context).pop();
             },
           ),

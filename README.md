@@ -36,8 +36,9 @@ lives on the first time you open the app; you can switch later in
 | **Oxeegen US** | `ai.oxeegen.com` | Accounts hosted in the United States |
 | **Oxeegen FR** | `ia.oxeegen.fr` | Accounts hosted in France |
 
-Each region keeps its own accounts and chats. Switching region signs you out
-of one and into the other; nothing is copied between them.
+Each region keeps its own accounts and chats. You can stay signed in to
+both and switch between them in Settings; nothing is copied from one region
+to the other.
 
 ## What you get
 

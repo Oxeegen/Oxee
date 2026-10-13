@@ -1,30 +1,50 @@
-// Oxee brand layer: first-run and "change server" screen. Replaces both the
-// backend chooser and the free-form server address page, so every path that
-// used to ask for a server now asks for an Oxeegen Intelligence region.
+// Oxee brand layer: first-run, "change server" and "add account" screen.
+// Replaces the backend chooser and the free-form server address page, so
+// every path that used to ask for a server now asks for an Oxeegen
+// Intelligence region.
+//
+// Platform UI seam (tool/platform_ui_lint.dart): no material_ui or
+// cupertino_ui imports; controls come from the platform_ui facade.
+
+import 'dart:async';
 
 import 'package:conduit_core/models/server_config.dart';
+import 'package:conduit_core/providers/openwebui_accounts_controller.dart'
+    show accountAdditionOriginProvider, pendingSignInAbandonableProvider;
 import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:conduit_core/utils/debug_logger.dart';
-import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/services/haptic_service.dart';
+import '../features/profile/widgets/account_actions.dart'
+    show abandonAddedAccount;
 import '../l10n/app_localizations.dart';
 import '../shared/services/navigation_service.dart';
 import '../shared/theme/theme_extensions.dart';
+import '../shared/widgets/platform_ui/platform_ui.dart';
+import '../shared/widgets/platform_ui/vocabulary.dart';
 import '../shared/widgets/utility_components.dart';
 import 'oxee_brand.dart';
 
 class OxeeRegionPage extends ConsumerStatefulWidget {
-  const OxeeRegionPage({super.key, this.initialRegion});
+  const OxeeRegionPage({
+    super.key,
+    this.initialRegion,
+    this.addingAccount = false,
+  });
 
-  /// Connects to this region as soon as the page opens (region switch from
-  /// settings). Null shows the choice.
+  /// Connects to this region as soon as the page opens. Null shows the
+  /// choice.
   final OxeeRegion? initialRegion;
+
+  /// Adding an account next to the signed-in one (Settings' Add account, the
+  /// Region row): the addition began before this page opened, and this page
+  /// ends it when it goes, as upstream's server connection page does.
+  final bool addingAccount;
 
   @override
   ConsumerState<OxeeRegionPage> createState() => _OxeeRegionPageState();
@@ -33,10 +53,17 @@ class OxeeRegionPage extends ConsumerStatefulWidget {
 class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
   OxeeRegion? _connecting;
   String? _error;
+  bool _goingBack = false;
+  void Function()? _endAccountAddition;
 
   @override
   void initState() {
     super.initState();
+    if (widget.addingAccount) {
+      _endAccountAddition = ref
+          .read(accountAdditionOriginProvider.notifier)
+          .endLater();
+    }
     final initial = widget.initialRegion;
     if (initial != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -45,9 +72,21 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
     }
   }
 
+  @override
+  void dispose() {
+    final endAccountAddition = _endAccountAddition;
+    if (endAccountAddition != null) {
+      // Not while the tree unmounts: Riverpod forbids changing provider state
+      // from a widget lifecycle callback.
+      Future.microtask(endAccountAddition);
+    }
+    super.dispose();
+  }
+
   /// Same checks as upstream's server address page, for a fixed address:
   /// reachable, healthy, really Open WebUI. The server is saved only once
-  /// sign-in succeeds, on the authentication page.
+  /// sign-in succeeds, on the authentication page (which adds the account
+  /// when an addition is in progress).
   Future<void> _connect(OxeeRegion region) async {
     if (_connecting != null) return;
     final l10n = AppLocalizations.of(context)!;
@@ -90,11 +129,13 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
       if (!mounted) return;
 
       ConduitHaptics.success();
-      context.pushNamed(
-        RouteNames.authentication,
-        extra: AuthFlowConfig(
-          serverConfig: config,
-          backendConfig: backendConfig,
+      unawaited(
+        context.pushNamed(
+          RouteNames.authentication,
+          extra: AuthFlowConfig(
+            serverConfig: config,
+            backendConfig: backendConfig,
+          ),
         ),
       );
     } catch (e) {
@@ -113,21 +154,70 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
     }
   }
 
+  Future<void> _goBack() async {
+    if (_goingBack) return;
+    _goingBack = true;
+    try {
+      await _leave();
+    } finally {
+      _goingBack = false;
+    }
+  }
+
+  /// Back while adding an account, as upstream's page does it: an added
+  /// account whose sign-in never finished is dropped (the one it was added
+  /// from becomes active again); otherwise back to where adding began.
+  Future<void> _leave() async {
+    final l10n = AppLocalizations.of(context)!;
+    final bool abandonable;
+    try {
+      abandonable = await ref.read(pendingSignInAbandonableProvider.future);
+    } catch (_) {
+      // Not known whether the added account is still there, signed out:
+      // leaving could leave it active. Stay, say so, let Back be pressed again.
+      if (mounted) setState(() => _error = l10n.errorMessage);
+      return;
+    }
+    if (!mounted) return;
+    if (abandonable) {
+      if (!await abandonAddedAccount(context, ref) && mounted) {
+        setState(() => _error = l10n.errorMessage);
+      }
+      return;
+    }
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go(Routes.chat);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = context.conduitTheme;
+    final l10n = AppLocalizations.of(context)!;
     final strings = OxeeStrings.of(context);
     final current = oxeeActiveRegion(ref);
+    final adding = widget.addingAccount;
+    // Kept current for Back, which waits for it.
+    if (adding) ref.watch(pendingSignInAbandonableProvider);
 
-    return UtilityPageScaffold.auth(
-      title: strings.welcomeTitle,
+    final scaffold = UtilityPageScaffold.auth(
+      title: adding ? strings.addAccountTitle : strings.welcomeTitle,
+      backNavigation: adding
+          ? UtilityBackNavigation(
+              label: l10n.back,
+              buttonKey: const ValueKey<String>('oxee-region-back'),
+              onPressed: _goBack,
+            )
+          : null,
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: Spacing.xs),
             child: Text(
-              strings.chooseRegion,
+              adding ? strings.chooseRegionToAdd : strings.chooseRegion,
               style: AppTypography.bodyMediumStyle.copyWith(
                 color: theme.textSecondary,
               ),
@@ -144,12 +234,12 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
                   leading: _RegionFlag(region: region),
                   title: region.label,
                   subtitle: strings.regionSubtitle(region),
-                  selected: region == current,
+                  selected: !adding && region == current,
                   showSelectionIndicator: false,
                   trailing: _connecting == region
                       ? const SizedBox.square(
                           dimension: IconSize.medium,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: AdaptiveProgressIndicator(strokeWidth: 2),
                         )
                       : Icon(
                           context.usesCupertinoChrome
@@ -177,6 +267,17 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
           ],
         ],
       ),
+    );
+
+    if (!adding) return scaffold;
+    // Adding is the router's location, with nothing beneath it to pop to, so
+    // the system back does what Back does rather than leave the app.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _goBack();
+      },
+      child: scaffold,
     );
   }
 }

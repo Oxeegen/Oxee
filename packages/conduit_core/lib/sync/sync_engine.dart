@@ -551,19 +551,34 @@ class SyncEngine extends _$SyncEngine {
   }
 
   /// Immediate, not debounced; serialization comes from [ChatLocks].
-  Future<Conversation?> pullChatNow(String chatId) async {
+  Future<Conversation?> pullChatNow(String chatId) =>
+      _pullChatNow(chatId, reason: 'pullChatNow');
+
+  /// [pullChatNow] for a caller that may not keep the chat: one download,
+  /// stored only when [storeIf] accepts the raw response. Returns null when
+  /// the engine is unavailable, so callers keep their direct-fetch fallback.
+  Future<Conversation?> fetchChatNow(
+    String chatId, {
+    required bool Function(Map<String, dynamic> response) storeIf,
+  }) => _pullChatNow(chatId, reason: 'fetchChatNow', storeIf: storeIf);
+
+  Future<Conversation?> _pullChatNow(
+    String chatId, {
+    required String reason,
+    bool Function(Map<String, dynamic> response)? storeIf,
+  }) async {
     if (!_refreshBoundDependencies()) return null;
     if (_inert) {
       DebugLogger.log(
         'inert',
         scope: 'sync/engine',
-        data: {'reason': 'pullChatNow', 'chatId': chatId},
+        data: {'reason': reason, 'chatId': chatId},
       );
       return null;
     }
     final pull = _buildPullSync();
     if (pull == null) return null;
-    return pull.pullChat(chatId);
+    return pull.pullChat(chatId, storeIf: storeIf);
   }
 
   PullSync? _buildPullSync({SyncItemProgressCallback? onProgress}) {
@@ -639,11 +654,26 @@ class SyncEngine extends _$SyncEngine {
     final remapper = _ensureRemapper();
     if (remapper == null) return null;
     final boundSessionEpoch = sessionEpoch ?? _sessionEpoch;
+    // The server answers the account this pull was built for; once the session
+    // moves on, a late response is no evidence about the new account. The API
+    // client and database outlive a sign-in change on the same server, so the
+    // authentication session is fenced as well as the dependency epoch.
+    final readerId = ref.read(currentUserProvider2)?.id;
+    final authSession = ref.read(openWebUiAuthSessionEpochProvider);
     return NotePullSync(
       client: client,
       db: db,
       locks: noteLocks,
       remapper: remapper,
+      readerAccountId: () =>
+          ref.mounted &&
+              boundSessionEpoch == _sessionEpoch &&
+              identical(
+                ref.read(openWebUiAuthSessionEpochProvider),
+                authSession,
+              )
+          ? readerId
+          : null,
       onFeatureEnabled: (enabled) {
         if (!ref.mounted) return;
         if (boundSessionEpoch != _sessionEpoch) return;
@@ -666,6 +696,7 @@ class SyncEngine extends _$SyncEngine {
       db: db,
       noteLocks: noteLocks,
       remapper: remapper,
+      currentAccountId: () => ref.read(currentUserProvider2)?.id,
     );
   }
 
@@ -962,11 +993,28 @@ class SyncEngine extends _$SyncEngine {
     if (db == null || client == null || noteLocks == null || clock == null) {
       return null;
     }
+    // A refusal is evidence about the account signed in when the run is built.
+    // The API client and database outlive a sign-in change on the same server,
+    // so the epoch of the authentication session is fenced as well as the
+    // engine's own dependency epoch: a held probe or lock wait must not
+    // attribute its answer to whoever signed in meanwhile.
+    final boundSessionEpoch = _sessionEpoch;
+    final readerId = ref.read(currentUserProvider2)?.id;
+    final authSession = ref.read(openWebUiAuthSessionEpochProvider);
     return NoteDeletionReconcile(
       client: client,
       db: db,
       locks: noteLocks,
       clock: clock,
+      readerAccountId: () =>
+          ref.mounted &&
+              boundSessionEpoch == _sessionEpoch &&
+              identical(
+                ref.read(openWebUiAuthSessionEpochProvider),
+                authSession,
+              )
+          ? readerId
+          : null,
     );
   }
 

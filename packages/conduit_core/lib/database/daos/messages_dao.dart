@@ -30,6 +30,17 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
     return (_forChat(chatId)).get();
   }
 
+  /// Total characters of stored message JSON for [chatId], 0 when it has no
+  /// rows. Sizes a chat without decoding any message.
+  Future<int> payloadLengthForChat(String chatId) async {
+    final total = messages.payload.length.sum();
+    final query = selectOnly(messages)
+      ..addColumns([total])
+      ..where(messages.chatId.equals(chatId));
+    final row = await query.getSingle();
+    return row.read(total) ?? 0;
+  }
+
   Future<MessageRow?> getMessage(String chatId, String messageId) {
     return _messageById(chatId, messageId);
   }
@@ -191,6 +202,35 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
             ...metadata,
             'completionSubmitted': true,
             'responseDone': true,
+          };
+      },
+    );
+  }
+
+  /// Settles a placeholder whose request was refused before it was sent, so it
+  /// shows the reason and stops streaming like any failed turn.
+  ///
+  /// Unlike [markAssistantCompletionRecoveryFailed] this claims no submission:
+  /// nothing reached the server, so a retry of the same operation may still
+  /// send it. The refusal marker lets the outbox runner tell this row from a
+  /// completed one.
+  Future<bool> markAssistantCompletionRefused({
+    required String chatId,
+    required String messageId,
+    required String error,
+  }) {
+    return _updateAssistantPayload(
+      chatId: chatId,
+      messageId: messageId,
+      mutate: (payload) {
+        final metadata = _asJsonMap(payload['metadata']);
+        payload
+          ..['isStreaming'] = false
+          ..['done'] = true
+          ..['error'] = <String, dynamic>{'content': error}
+          ..['metadata'] = <String, dynamic>{
+            ...metadata,
+            'completionRefused': true,
           };
       },
     );
@@ -535,7 +575,9 @@ LIMIT ?
         model: Value(row.model),
         createdAt: row.createdAt,
         orderIndex: orderIndex,
-        payload: jsonEncode(row.payload),
+        payload: jsonEncode(
+          withStoredMessageMeta(row.payload, existing?.payload),
+        ),
         dirty: const Value(false),
       ),
     );

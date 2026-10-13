@@ -114,7 +114,13 @@ class BackendConfig {
     this.enableWebsocket,
     this.enableWebSearch,
     this.enableDirectConnections,
+    this.enableDirectIntegrations,
     this.enableMessageRating,
+    this.enableUserWebhooks,
+    this.enableCodeInterpreter,
+    this.codeInterpreterEngine,
+    this.enableAutomations,
+    this.enableCalendar,
     this.enableAudioInput,
     this.enableAudioOutput,
     this.sttProvider,
@@ -126,6 +132,9 @@ class BackendConfig {
     this.audioSampleRate,
     this.audioFrameSize,
     this.vadEnabled,
+    this.enableRealtimeCall,
+    this.realtimeCallModel,
+    this.realtimeCallVoice,
     this.oauthProviders = const OAuthProviders(),
     this.enableLdap = false,
     this.enableLoginForm = true,
@@ -151,9 +160,41 @@ class BackendConfig {
   /// Mirrors `features.enable_direct_connections` from OpenWebUI.
   final bool? enableDirectConnections;
 
+  /// Mirrors `features.enable_direct_integrations`: whether users may keep
+  /// personal tool servers and terminals in their own settings. Open WebUI's
+  /// client shows that screen only when this is exactly true, so null (a
+  /// server that does not report it) means unavailable.
+  final bool? enableDirectIntegrations;
+
   /// Mirrors `features.enable_message_rating`. Null means the server did not
   /// say, which Open WebUI's own client reads as enabled.
   final bool? enableMessageRating;
+
+  /// Mirrors `features.enable_user_webhooks`, which the server reports only to
+  /// a signed-in account. Null means the server did not say, and Open WebUI's
+  /// own client reads that as off, so callers treat only `true` as enabled.
+  final bool? enableUserWebhooks;
+
+  /// Mirrors `features.enable_code_interpreter`, reported only to a signed-in
+  /// account. Open WebUI's own client offers the interpreter only when this is
+  /// exactly true, so null (not reported) is not support.
+  final bool? enableCodeInterpreter;
+
+  /// Mirrors `code.interpreter_engine`, reported only to a signed-in account.
+  /// The server runs `jupyter` itself; with `pyodide` it asks the browser to
+  /// run the code, which this app does not do. Null means unknown.
+  final String? codeInterpreterEngine;
+
+  /// Mirrors `features.enable_automations`, which the server reports only to a
+  /// signed-in account. Null means the server did not say; Open WebUI's own
+  /// client reads that as off, so callers treat only `true` as enabled.
+  final bool? enableAutomations;
+
+  /// Mirrors `features.enable_calendar` (the server's `calendar.enable`),
+  /// which the server reports only to a signed-in account. Null means the
+  /// server did not say; Open WebUI's own client reads that as off, so callers
+  /// treat only `true` as enabled.
+  final bool? enableCalendar;
 
   final bool? enableAudioInput;
   final bool? enableAudioOutput;
@@ -166,6 +207,17 @@ class BackendConfig {
   final int? audioSampleRate;
   final int? audioFrameSize;
   final bool? vadEnabled;
+
+  /// Mirrors `audio.realtime.enabled`: whether calls go through the server's
+  /// realtime voice (Open WebUI 0.12). Reported only to a signed-in account;
+  /// servers without realtime calls never send it, so only `true` enables it.
+  final bool? enableRealtimeCall;
+
+  /// Mirrors `audio.realtime.model`: the voice model realtime calls use.
+  final String? realtimeCallModel;
+
+  /// Mirrors `audio.realtime.voice`: the server's default realtime voice.
+  final String? realtimeCallVoice;
 
   /// OAuth providers configured on the server.
   final OAuthProviders oauthProviders;
@@ -191,7 +243,13 @@ class BackendConfig {
     bool? enableWebsocket,
     bool? enableWebSearch,
     bool? enableDirectConnections,
+    bool? enableDirectIntegrations,
     bool? enableMessageRating,
+    bool? enableUserWebhooks,
+    bool? enableCodeInterpreter,
+    String? codeInterpreterEngine,
+    bool? enableAutomations,
+    bool? enableCalendar,
     bool? enableAudioInput,
     bool? enableAudioOutput,
     String? sttProvider,
@@ -203,6 +261,9 @@ class BackendConfig {
     int? audioSampleRate,
     int? audioFrameSize,
     bool? vadEnabled,
+    bool? enableRealtimeCall,
+    String? realtimeCallModel,
+    String? realtimeCallVoice,
     OAuthProviders? oauthProviders,
     bool? enableLdap,
     bool? enableLoginForm,
@@ -214,7 +275,16 @@ class BackendConfig {
       enableWebSearch: enableWebSearch ?? this.enableWebSearch,
       enableDirectConnections:
           enableDirectConnections ?? this.enableDirectConnections,
+      enableDirectIntegrations:
+          enableDirectIntegrations ?? this.enableDirectIntegrations,
       enableMessageRating: enableMessageRating ?? this.enableMessageRating,
+      enableUserWebhooks: enableUserWebhooks ?? this.enableUserWebhooks,
+      enableCodeInterpreter:
+          enableCodeInterpreter ?? this.enableCodeInterpreter,
+      codeInterpreterEngine:
+          codeInterpreterEngine ?? this.codeInterpreterEngine,
+      enableAutomations: enableAutomations ?? this.enableAutomations,
+      enableCalendar: enableCalendar ?? this.enableCalendar,
       enableAudioInput: enableAudioInput ?? this.enableAudioInput,
       enableAudioOutput: enableAudioOutput ?? this.enableAudioOutput,
       sttProvider: sttProvider ?? this.sttProvider,
@@ -226,6 +296,9 @@ class BackendConfig {
       audioSampleRate: audioSampleRate ?? this.audioSampleRate,
       audioFrameSize: audioFrameSize ?? this.audioFrameSize,
       vadEnabled: vadEnabled ?? this.vadEnabled,
+      enableRealtimeCall: enableRealtimeCall ?? this.enableRealtimeCall,
+      realtimeCallModel: realtimeCallModel ?? this.realtimeCallModel,
+      realtimeCallVoice: realtimeCallVoice ?? this.realtimeCallVoice,
       oauthProviders: oauthProviders ?? this.oauthProviders,
       enableLdap: enableLdap ?? this.enableLdap,
       enableLoginForm: enableLoginForm ?? this.enableLoginForm,
@@ -258,7 +331,13 @@ class BackendConfig {
       'enable_websocket': enableWebsocket,
       'enable_web_search': enableWebSearch,
       'enable_direct_connections': enableDirectConnections,
+      'enable_direct_integrations': enableDirectIntegrations,
       'enable_message_rating': enableMessageRating,
+      'enable_user_webhooks': enableUserWebhooks,
+      'enable_code_interpreter': enableCodeInterpreter,
+      'code_interpreter_engine': codeInterpreterEngine,
+      'enable_automations': enableAutomations,
+      'enable_calendar': enableCalendar,
       'enable_audio_input': enableAudioInput,
       'enable_audio_output': enableAudioOutput,
       'stt_provider': sttProvider,
@@ -270,6 +349,9 @@ class BackendConfig {
       'audio_sample_rate': audioSampleRate,
       'audio_frame_size': audioFrameSize,
       'vad_enabled': vadEnabled,
+      'enable_realtime_call': enableRealtimeCall,
+      'realtime_call_model': realtimeCallModel,
+      'realtime_call_voice': realtimeCallVoice,
       'oauth': {'providers': oauthProviders.toJson()},
       'enable_ldap': enableLdap,
       'enable_login_form': enableLoginForm,
@@ -282,7 +364,13 @@ class BackendConfig {
     bool? enableWebsocket;
     bool? enableWebSearch;
     bool? enableDirectConnections;
+    bool? enableDirectIntegrations;
     bool? enableMessageRating;
+    bool? enableUserWebhooks;
+    bool? enableCodeInterpreter;
+    String? codeInterpreterEngine;
+    bool? enableAutomations;
+    bool? enableCalendar;
     bool? enableAudioInput;
     bool? enableAudioOutput;
     String? sttProvider;
@@ -294,6 +382,9 @@ class BackendConfig {
     int? audioSampleRate;
     int? audioFrameSize;
     bool? vadEnabled;
+    bool? enableRealtimeCall;
+    String? realtimeCallModel;
+    String? realtimeCallVoice;
     OAuthProviders oauthProviders = const OAuthProviders();
     bool enableLdap = false;
     bool enableLoginForm = true;
@@ -321,9 +412,30 @@ class BackendConfig {
     if (directConnectionsValue is bool) {
       enableDirectConnections = directConnectionsValue;
     }
+    final directIntegrationsValue = json['enable_direct_integrations'];
+    if (directIntegrationsValue is bool) {
+      enableDirectIntegrations = directIntegrationsValue;
+    }
     final messageRatingValue = json['enable_message_rating'];
     if (messageRatingValue is bool) {
       enableMessageRating = messageRatingValue;
+    }
+    final userWebhooksValue = json['enable_user_webhooks'];
+    if (userWebhooksValue is bool) {
+      enableUserWebhooks = userWebhooksValue;
+    }
+    final codeInterpreterValue = json['enable_code_interpreter'];
+    if (codeInterpreterValue is bool) {
+      enableCodeInterpreter = codeInterpreterValue;
+    }
+    codeInterpreterEngine = _normalizeString(json['code_interpreter_engine']);
+    final automationsValue = json['enable_automations'];
+    if (automationsValue is bool) {
+      enableAutomations = automationsValue;
+    }
+    final calendarValue = json['enable_calendar'];
+    if (calendarValue is bool) {
+      enableCalendar = calendarValue;
     }
 
     final audioIn = json['enable_audio_input'];
@@ -361,6 +473,11 @@ class BackendConfig {
     final vad = json['vad_enabled'];
     if (vad is bool) vadEnabled = vad;
 
+    final realtimeCall = json['enable_realtime_call'];
+    if (realtimeCall is bool) enableRealtimeCall = realtimeCall;
+    realtimeCallModel = _normalizeString(json['realtime_call_model']);
+    realtimeCallVoice = _normalizeString(json['realtime_call_voice']);
+
     final audio = _coerceJsonMap(json['audio']);
     final audioTts = _coerceJsonMap(audio?['tts']);
     final audioStt = _coerceJsonMap(audio?['stt']);
@@ -372,6 +489,13 @@ class BackendConfig {
     ttsVoice ??= nestedTtsVoice;
     ttsSplitOn ??= nestedTtsSplitOn;
     sttProvider ??= nestedSttEngine;
+    final audioRealtime = _coerceJsonMap(audio?['realtime']);
+    final nestedRealtimeEnabled = audioRealtime?['enabled'];
+    if (nestedRealtimeEnabled is bool) {
+      enableRealtimeCall ??= nestedRealtimeEnabled;
+    }
+    realtimeCallModel ??= _normalizeString(audioRealtime?['model']);
+    realtimeCallVoice ??= _normalizeString(audioRealtime?['voice']);
 
     // Parse OAuth providers from top-level oauth.providers
     final oauth = _coerceJsonMap(json['oauth']);
@@ -381,6 +505,11 @@ class BackendConfig {
         oauthProviders = OAuthProviders.fromJson(providers);
       }
     }
+
+    // `/api/config` reports the interpreter engine under `code`, next to the
+    // sandbox engine, only to a signed-in account.
+    final code = _coerceJsonMap(json['code']);
+    codeInterpreterEngine ??= _normalizeString(code?['interpreter_engine']);
 
     // Parse auth features from top-level
     final ldapValue = json['enable_ldap'];
@@ -403,9 +532,30 @@ class BackendConfig {
       if (nestedDirectConnections is bool && enableDirectConnections == null) {
         enableDirectConnections = nestedDirectConnections;
       }
+      final nestedDirectIntegrations = features['enable_direct_integrations'];
+      if (nestedDirectIntegrations is bool &&
+          enableDirectIntegrations == null) {
+        enableDirectIntegrations = nestedDirectIntegrations;
+      }
       final nestedMessageRating = features['enable_message_rating'];
       if (nestedMessageRating is bool && enableMessageRating == null) {
         enableMessageRating = nestedMessageRating;
+      }
+      final nestedUserWebhooks = features['enable_user_webhooks'];
+      if (nestedUserWebhooks is bool && enableUserWebhooks == null) {
+        enableUserWebhooks = nestedUserWebhooks;
+      }
+      final nestedCodeInterpreter = features['enable_code_interpreter'];
+      if (nestedCodeInterpreter is bool && enableCodeInterpreter == null) {
+        enableCodeInterpreter = nestedCodeInterpreter;
+      }
+      final nestedAutomations = features['enable_automations'];
+      if (nestedAutomations is bool && enableAutomations == null) {
+        enableAutomations = nestedAutomations;
+      }
+      final nestedCalendar = features['enable_calendar'];
+      if (nestedCalendar is bool && enableCalendar == null) {
+        enableCalendar = nestedCalendar;
       }
       final nestedAudioIn = features['enable_audio_input'];
       if (nestedAudioIn is bool && enableAudioInput == null) {
@@ -478,7 +628,13 @@ class BackendConfig {
       enableWebsocket: enableWebsocket,
       enableWebSearch: enableWebSearch,
       enableDirectConnections: enableDirectConnections,
+      enableDirectIntegrations: enableDirectIntegrations,
       enableMessageRating: enableMessageRating,
+      enableUserWebhooks: enableUserWebhooks,
+      enableCodeInterpreter: enableCodeInterpreter,
+      codeInterpreterEngine: codeInterpreterEngine,
+      enableAutomations: enableAutomations,
+      enableCalendar: enableCalendar,
       enableAudioInput: enableAudioInput,
       enableAudioOutput: enableAudioOutput,
       sttProvider: sttProvider,
@@ -490,6 +646,9 @@ class BackendConfig {
       audioSampleRate: audioSampleRate,
       audioFrameSize: audioFrameSize,
       vadEnabled: vadEnabled,
+      enableRealtimeCall: enableRealtimeCall,
+      realtimeCallModel: realtimeCallModel,
+      realtimeCallVoice: realtimeCallVoice,
       oauthProviders: oauthProviders,
       enableLdap: enableLdap,
       enableLoginForm: enableLoginForm,

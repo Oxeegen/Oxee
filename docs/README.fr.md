@@ -37,8 +37,9 @@ votre compte à la première ouverture ; vous pourrez en changer ensuite dans
 | **Oxeegen US** | `ai.oxeegen.com` | Comptes hébergés aux États-Unis |
 | **Oxeegen FR** | `ia.oxeegen.fr` | Comptes hébergés en France |
 
-Chaque région a ses propres comptes et conversations. Changer de région vous
-déconnecte de l'une et vous connecte à l'autre ; rien n'est copié entre elles.
+Chaque région a ses propres comptes et conversations. Vous pouvez rester
+connecté aux deux et passer de l'une à l'autre dans les Réglages ; rien n'est
+copié d'une région à l'autre.
 
 ## Ce que vous obtenez
 

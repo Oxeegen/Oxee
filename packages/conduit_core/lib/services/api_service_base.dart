@@ -1,18 +1,107 @@
 part of 'api_service.dart';
 
+/// Reports [response] when it is a proxy in front of [server] turning the
+/// request away, its session there having expired.
+///
+/// Open WebUI answers its API with JSON, its refusals included. A proxy
+/// asking for a sign-in answers with a redirect the client does not follow,
+/// with a page it redirected to elsewhere on the same address, or with a
+/// page refusing access -- as [ApiService.checkHealthWithProxyDetection]
+/// tells one. A page answered without a redirect is left out: Open WebUI's
+/// web app answers an address it does not know, as an older server does a
+/// newer endpoint. So is one after a redirect that kept its path, up to
+/// HTTPS say: that is the same address, and a file's content can be a page.
+void _reportProxyRefusal(
+  Response<dynamic> response,
+  Uri? server,
+  ServerConfig connection,
+) {
+  final options = response.requestOptions;
+  // A replay's refusal passes here inside the replay and again on the way
+  // out of the request it replays; it is one refusal.
+  if (options.extra[_proxyRefusalReportedKey] == true) return;
+  // A replay is judged by where it started: an upgrade to HTTPS on the same
+  // host is still the server's own address.
+  if (!requestUsesServerConnectivityOrigin(
+    sameOriginRedirectStart(options),
+    server,
+  )) {
+    return;
+  }
+  final status = response.statusCode ?? 0;
+  final page = answeredWithWebPage(response.headers);
+  final refused =
+      // Unless the request takes a redirect as its answer: Open WebUI
+      // redirects an image it has no copy of to its default image. Accepting
+      // a redirect's status is not enough -- some requests accept every
+      // status only to read an error's body.
+      (publicHealthRedirectStatusCodes.contains(status) &&
+          options.extra[_redirectIsAnswerKey] != true) ||
+      (page && (status == 401 || status == 403)) ||
+      // Taken elsewhere, to a sign-in.
+      (page &&
+          status >= 200 &&
+          status < 300 &&
+          isSameOriginRedirectReplay(options) &&
+          !_samePath(sameOriginRedirectStart(options), options.uri));
+  if (!refused) return;
+  options.extra[_proxyRefusalReportedKey] = true;
+  ConnectivityService.reportRouteRejected(server, connection: connection);
+}
+
+const _proxyRefusalReportedKey = 'conduit.proxyRefusalReported';
+
+/// Reports [response] when it is a gateway error for [server]: a proxy in
+/// front of it that could not reach it.
+void _reportGatewayFailure(Response<dynamic> response, Uri? server) {
+  final options = response.requestOptions;
+  if (options.extra[_gatewayFailureReportedKey] == true) return;
+  if (!requestUsesServerConnectivityOrigin(
+    sameOriginRedirectStart(options),
+    server,
+  )) {
+    return;
+  }
+  if (!_gatewayErrorStatusCodes.contains(response.statusCode)) return;
+  options.extra[_gatewayFailureReportedKey] = true;
+  ConnectivityService.reportGatewayFailure(server);
+}
+
+const _gatewayErrorStatusCodes = {502, 503, 504};
+const _gatewayFailureReportedKey = 'conduit.gatewayFailureReported';
+
+/// Whether [a] and [b] name one path, a trailing slash aside.
+bool _samePath(Uri a, Uri b) {
+  String trimmed(String path) =>
+      path.endsWith('/') ? path.substring(0, path.length - 1) : path;
+  return trimmed(a.path) == trimmed(b.path);
+}
+
+const _transportFailureReportedKey = 'conduit.transportFailureReported';
+
+/// Set on a request whose answer can be a redirect Open WebUI sends itself.
+const _redirectIsAnswerKey = 'conduit.redirectIsAnswer';
+
 abstract class _ApiServiceBase {
   // Declared here, implemented by the family mixins applied over this base.
   // A mixin cannot see a sibling mixin's members, and three of these are
   // reached from private helpers that live in this class, so the base has to
   // name them. Getting this list wrong is a compile error, not a silent
   // change in behaviour.
-  Future<List<Model>> getModels({bool includeHidden = false});
+  Future<List<Model>> getModels({
+    bool includeHidden = false,
+    ApiAuthSnapshot? authSnapshot,
+  });
   Future<Map<String, dynamic>?> getMessageData(
     String channelId,
     String messageId,
   );
   Future<ServerUserSettings> getServerUserSettingsModel();
   Future<bool> deleteChatRaw(String id);
+  Future<Map<String, dynamic>?> getChatRaw(
+    String id, {
+    ApiAuthSnapshot? authSnapshot,
+  });
 
   final Dio _dio;
   final ServerConfig serverConfig;
@@ -22,6 +111,13 @@ abstract class _ApiServiceBase {
   final PublicHealthSocketUpgrader _publicHealthSocketUpgrader;
   final Duration _publicHealthPinnedConnectTimeout;
   final Duration _publicHealthRequestTimeout;
+
+  /// Whether a proxy turning this client's requests away is reported as the
+  /// route in use refusing them. Only the app's own client, the active
+  /// account's on that route, says so: a proxy session is one account's on
+  /// one address, and a client checking an address or signing in another
+  /// account carries a session of its own, or none.
+  final bool _reportsRouteRefusals;
   late final ApiAuthInterceptor _authInterceptor;
   Future<void> _userSettingsMutationQueue = Future<void>.value();
   bool _disposed = false;
@@ -46,6 +142,7 @@ abstract class _ApiServiceBase {
     PublicHealthSocketUpgrader? publicHealthSocketUpgrader,
     Duration publicHealthPinnedConnectTimeout = const Duration(seconds: 30),
     Duration publicHealthRequestTimeout = const Duration(seconds: 30),
+    bool reportsRouteRefusals = false,
   }) : _dio = Dio(
          BaseOptions(
            baseUrl: serverConfig.url,
@@ -62,6 +159,7 @@ abstract class _ApiServiceBase {
          ),
        ),
        _workerManager = workerManager,
+       _reportsRouteRefusals = reportsRouteRefusals,
        _publicHealthAddressResolver =
            publicHealthAddressResolver ??
            ((host) => InternetAddress.lookup(host)),
@@ -118,19 +216,13 @@ abstract class _ApiServiceBase {
       ),
     );
 
-    // 3. Error handling interceptor (transforms errors to standardized format)
-    _dio.interceptors.add(
-      ApiErrorInterceptor(
-        // Was Flutter's kDebugMode; the core cannot reach Flutter, and
-        // `dart.vm.product` is the same signal without it.
-        logErrors: !const bool.fromEnvironment('dart.vm.product'),
-        throwApiErrors: true, // Transform DioExceptions to include ApiError
-      ),
-    );
-
-    // 4. Success pings to relax offline detection. ApiService also supports
-    // absolute image/CDN URLs, so only the configured server origin is allowed
-    // to influence that server's health state.
+    // 3. Success pings to relax offline detection, requests that could not
+    // reach the server, and requests a proxy in front of it turned away.
+    // ApiService also supports absolute image/CDN URLs, so only the
+    // configured server origin is allowed to influence that server's health
+    // state. Ahead of the error handler: it rejects with its own error, which
+    // ends the chain for interceptors after it. After the redirect replay,
+    // which runs a followed redirect through here again.
     final connectivityOrigin = Uri.tryParse(serverConfig.url);
     _dio.interceptors.add(
       InterceptorsWrapper(
@@ -147,13 +239,35 @@ abstract class _ApiServiceBase {
               );
               ConnectivityService.noteSuccessfulTraffic(connectivityOrigin);
             }
+            // Not once retired: a request it let finish went out with the
+            // session it held, which may since have been replaced.
+            // Here too for a request that takes every status as an answer,
+            // a chat completion among them.
+            if (_reportsRouteRefusals && !_disposed) {
+              _reportProxyRefusal(response, connectivityOrigin, serverConfig);
+              _reportGatewayFailure(response, connectivityOrigin);
+            }
           } catch (_) {}
           handler.next(response);
         },
         onError: (error, handler) {
+          final response = error.response;
+          if (response != null && _reportsRouteRefusals && !_disposed) {
+            // Reporting must not replace the request's own error.
+            try {
+              _reportProxyRefusal(response, connectivityOrigin, serverConfig);
+              _reportGatewayFailure(response, connectivityOrigin);
+            } catch (_) {}
+          }
+          // Judged by where a replay started, as a refusal is: an upgrade to
+          // HTTPS on the same host is still the server's own address. A
+          // replay's failure passes here inside the replay and again on the
+          // way out of the request it replays; it is one failure.
           if (error.response == null &&
+              error.requestOptions.extra[_transportFailureReportedKey] !=
+                  true &&
               requestUsesServerConnectivityOrigin(
-                error.requestOptions.uri,
+                sameOriginRedirectStart(error.requestOptions),
                 connectivityOrigin,
               ) &&
               (error.type == DioExceptionType.connectionTimeout ||
@@ -161,10 +275,21 @@ abstract class _ApiServiceBase {
                   error.type == DioExceptionType.receiveTimeout ||
                   error.type == DioExceptionType.connectionError ||
                   error.type == DioExceptionType.unknown)) {
+            error.requestOptions.extra[_transportFailureReportedKey] = true;
             ConnectivityService.reportTransportFailure(connectivityOrigin);
           }
           handler.next(error);
         },
+      ),
+    );
+
+    // 4. Error handling interceptor (transforms errors to standardized format)
+    _dio.interceptors.add(
+      ApiErrorInterceptor(
+        // Was Flutter's kDebugMode; the core cannot reach Flutter, and
+        // `dart.vm.product` is the same signal without it.
+        logErrors: !const bool.fromEnvironment('dart.vm.product'),
+        throwApiErrors: true, // Transform DioExceptions to include ApiError
       ),
     );
   }
@@ -404,9 +529,12 @@ abstract class _ApiServiceBase {
   }
 
   Future<BackendConfig> _enrichBackendConfigWithAudioConfig(
-    BackendConfig config,
-  ) async {
-    final audioConfig = await _loadServerAudioConfig();
+    BackendConfig config, {
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
+    final audioConfig = await _loadServerAudioConfig(
+      authSnapshot: authSnapshot,
+    );
     return config.copyWith(
       ttsVoice: audioConfig.voice ?? config.ttsVoice,
       ttsSplitOn: audioConfig.splitOn ?? config.ttsSplitOn ?? 'punctuation',
@@ -1152,13 +1280,16 @@ abstract class _ApiServiceBase {
 
   // Audio
   Future<({String? voice, String? splitOn, List<BackendTtsVoice> voices})>
-  _loadServerAudioConfig() async {
+  _loadServerAudioConfig({ApiAuthSnapshot? authSnapshot}) async {
     String? voice;
     String? splitOn;
 
     try {
       _traceApi('Fetching server TTS defaults');
-      final response = await _dio.get('/api/v1/audio/config');
+      final response = await _dio.get(
+        '/api/v1/audio/config',
+        options: _withAuthSnapshot(Options(), authSnapshot),
+      );
       final data = response.data;
       final config = _coerceJsonMap(data);
       final ttsConfig = _coerceJsonMap(config?['tts']);
@@ -1175,13 +1306,19 @@ abstract class _ApiServiceBase {
       );
     }
 
-    final voices = await _loadServerTtsVoicesOrEmpty();
+    final voices = await _loadServerTtsVoicesOrEmpty(
+      authSnapshot: authSnapshot,
+    );
     return (voice: voice, splitOn: splitOn, voices: voices);
   }
 
-  Future<List<BackendTtsVoice>> _loadServerTtsVoicesOrEmpty() async {
+  Future<List<BackendTtsVoice>> _loadServerTtsVoicesOrEmpty({
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
     try {
-      return await _loadServerTtsVoicesFromAudioEndpoint();
+      return await _loadServerTtsVoicesFromAudioEndpoint(
+        authSnapshot: authSnapshot,
+      );
     } catch (e, stackTrace) {
       DebugLogger.error(
         'backend-config-audio-voices',
@@ -1193,9 +1330,14 @@ abstract class _ApiServiceBase {
     }
   }
 
-  Future<List<BackendTtsVoice>> _loadServerTtsVoicesFromAudioEndpoint() async {
+  Future<List<BackendTtsVoice>> _loadServerTtsVoicesFromAudioEndpoint({
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
     _traceApi('Fetching server TTS voices');
-    final response = await _dio.get('/api/v1/audio/voices');
+    final response = await _dio.get(
+      '/api/v1/audio/voices',
+      options: _withAuthSnapshot(Options(), authSnapshot),
+    );
     final data = response.data;
     if (data is Map<String, dynamic>) {
       final voices = data['voices'];
@@ -1410,11 +1552,14 @@ abstract class _ApiServiceBase {
     List<Map<String, dynamic>>? toolServers,
     Map<String, dynamic>? backgroundTasks,
     Map<String, dynamic>? userSettings,
+    Map<String, dynamic>? globalParams,
+    Map<String, dynamic>? chatParams,
     String? reasoningEffort,
     String? parentId,
     Map<String, dynamic>? userMessage,
     Map<String, dynamic>? variables,
     List<Map<String, dynamic>>? files,
+    List<ChatCompletionTarget>? messageIds,
     _ChatRequestMetadataFormat metadataFormat =
         _ChatRequestMetadataFormat.modernV09,
   }) {
@@ -1526,39 +1671,33 @@ abstract class _ApiServiceBase {
       data['stream_options'] = {'include_usage': true};
     }
 
-    // Forward user model params (temperature, top_p, top_k, seed, etc.)
-    // Mirrors OpenWebUI's: { ...$settings?.params, ...params, stop: getStopTokens() }
-    final params = <String, dynamic>{};
-    try {
-      final raw = userSettings?['params'];
-      final userParams = raw is Map ? Map<String, dynamic>.from(raw) : null;
-      if (userParams != null && userParams.isNotEmpty) {
-        params.addAll(userParams);
-        // Normalize stop tokens: split comma-separated string into list
-        final rawStop = params['stop'];
-        if (rawStop is String && rawStop.isNotEmpty) {
-          params['stop'] = rawStop
-              .split(',')
-              .map((s) => s.trim())
-              .where((s) => s.isNotEmpty)
-              .toList();
-        }
-        // Remove empty/null stop so the backend uses its own defaults
-        if (params['stop'] is List && (params['stop'] as List).isEmpty) {
-          params.remove('stop');
-        }
+    // Forward the user's global model params (temperature, top_p, top_k, seed,
+    // etc.) with the chat's own `chat.params` over them. Mirrors OpenWebUI's:
+    // { ...$settings?.params, ...params, stop: getStopTokens() }
+    // A replayed turn passes the baseline it was admitted with; otherwise the
+    // settings document supplies it (`ui.params`, then legacy root `params`).
+    Map<String, dynamic>? baselineParams = globalParams;
+    if (baselineParams == null) {
+      try {
+        baselineParams = openWebUiGlobalParamsFromSettings(userSettings);
+      } catch (_) {
+        // Non-critical: proceed without user params
       }
-    } catch (_) {
-      // Non-critical: proceed without user params
     }
+    final params = resolveOpenWebUiRequestParams(
+      globalParams: baselineParams,
+      chatParams: chatParams,
+    );
 
-    // The user's per-model pick is the chat-level `params` the web client
-    // spreads after `$settings.params`. Sent explicitly, it reaches the
-    // server as a top-level form field, so the model's configured
-    // `reasoning_effort` default is skipped (apply_model_params_to_body only
-    // fills keys absent from the body).
-    if (reasoningEffort != null) {
-      params['reasoning_effort'] = reasoningEffort;
+    // The picker's per-model pick fills `reasoning_effort` when the chat has
+    // not saved its own. Sent explicitly, it reaches the server as a top-level
+    // form field, so the model's configured default is skipped
+    // (apply_model_params_to_body only fills keys absent from the body). A
+    // value saved on the chat is a deliberate override and is never replaced
+    // by whatever the picker last held for the model.
+    if (reasoningEffort != null &&
+        !(chatParams?.containsKey(kChatParamReasoningEffort) ?? false)) {
+      params[kChatParamReasoningEffort] = reasoningEffort;
     }
 
     final modelInfo = modelItem?['info'];
@@ -1636,28 +1775,9 @@ abstract class _ApiServiceBase {
     if (toolIds != null && toolIds.isNotEmpty) {
       data['tool_ids'] = toolIds;
       _traceApi('Including tool_ids in streaming request: $toolIds');
-
-      try {
-        final userParams = userSettings?['params'] as Map<String, dynamic>?;
-        final functionCallingMode = userParams?['function_calling'] as String?;
-        if (functionCallingMode != null) {
-          final params =
-              (data['params'] as Map<String, dynamic>?) ?? <String, dynamic>{};
-          params['function_calling'] = functionCallingMode;
-          data['params'] = params;
-          _traceApi(
-            'Set params.function_calling = $functionCallingMode '
-            '(from user settings)',
-          );
-        } else {
-          _traceApi(
-            'No function_calling preference in user settings, '
-            'backend will use default mode',
-          );
-        }
-      } catch (_) {
-        // Non-fatal; continue without setting function_calling mode
-      }
+      // `function_calling` already rode in with the merged params above, chat
+      // value over global. Re-reading the global here would overwrite a chat's
+      // own tool-calling mode, so it is deliberately not applied a second time.
     }
 
     data['tool_servers'] = toolServers ?? <Map<String, dynamic>>[];
@@ -1677,6 +1797,11 @@ abstract class _ApiServiceBase {
       data['session_id'] = sessionId;
     }
     data['id'] = messageId;
+    // One request for several answers: the server creates a task per entry, in
+    // this order, and reads each answer's column from `modelIdx`.
+    if (messageIds != null && messageIds.isNotEmpty) {
+      data['message_ids'] = [for (final target in messageIds) target.toJson()];
+    }
     if (conversationId != null) {
       data['chat_id'] = conversationId;
     }
@@ -1772,6 +1897,62 @@ abstract class _ApiServiceBase {
     );
   }
 
+  /// Answers a failed completion request for a saved chat whose reply the
+  /// server already finished, or throws the failure.
+  ///
+  /// Sent without a socket session, Open WebUI 0.12 returns a provider's
+  /// error response with its status, or a 400 for any other failure, where
+  /// 0.11 returned a JSON null; either way it saves the error on the reply.
+  /// A request for a reply that already ran gets a 409 instead. In both
+  /// cases the saved reply is what the user should see, so the empty stream
+  /// of [_recoverJsonNullChatCompletion] lets the stream's recovery read it.
+  /// A failure that saved nothing, such as an unknown model, still throws.
+  Future<ChatCompletionSession> _recoverSavedReplyOrThrow({
+    required int status,
+    required String error,
+    required String messageId,
+    String? sessionId,
+    String? conversationId,
+    required Future<void> Function() abort,
+  }) async {
+    final chatId = conversationId?.trim();
+    if (chatId != null && chatId.isNotEmpty && !chatId.startsWith('local:')) {
+      Map<String, dynamic>? reply;
+      try {
+        final chat = await getChatRaw(chatId);
+        final history = chat?['chat'] is Map ? chat!['chat']['history'] : null;
+        final messages = history is Map ? history['messages'] : null;
+        final candidate = messages is Map ? messages[messageId] : null;
+        if (candidate is Map) reply = Map<String, dynamic>.from(candidate);
+      } catch (e) {
+        DebugLogger.warning(
+          'error-status-reply-read-failed',
+          scope: 'api/chat',
+          data: {'chatId': chatId, 'status': status, 'error': e.toString()},
+        );
+      }
+      // Only a finished reply: one still running (a 409 can find it so)
+      // would be read once, mid-answer, and closed as if complete. The
+      // queued retry tries again instead, and finds it finished.
+      final replyFinished =
+          reply != null && (reply['done'] == true || reply['error'] != null);
+      if (replyFinished) {
+        DebugLogger.warning(
+          'error-status-recovery',
+          scope: 'api/chat',
+          data: {'chatId': chatId, 'messageId': messageId, 'status': status},
+        );
+        return _recoverJsonNullChatCompletion(
+          messageId: messageId,
+          sessionId: sessionId,
+          conversationId: conversationId,
+          abort: abort,
+        );
+      }
+    }
+    throw ChatCompletionHttpException(status, error);
+  }
+
   /// Classifies a fully-parsed JSON body as taskSocket or jsonCompletion.
   ChatCompletionSession _classifyJsonBody(
     Map<String, dynamic> json, {
@@ -1780,32 +1961,34 @@ abstract class _ApiServiceBase {
     String? conversationId,
     required Future<void> Function() abort,
   }) {
-    String? taskId;
+    // A multi-model request returns one task per answer, in request order.
+    final taskIds = <String>[];
+    final rawTaskIds = json['task_ids'];
+    if (rawTaskIds is List) {
+      for (final raw in rawTaskIds) {
+        final id = raw?.toString().trim() ?? '';
+        if (id.isNotEmpty) taskIds.add(id);
+      }
+    }
+    final String? taskId;
     if (json['task_id'] != null) {
       taskId = json['task_id'].toString();
+      if (taskIds.isEmpty) taskIds.add(taskId);
     } else {
-      final rawTaskIds = json['task_ids'];
-      if (rawTaskIds is List) {
-        final taskIds = rawTaskIds
-            .map((taskId) => taskId?.toString().trim() ?? '')
-            .where((taskId) => taskId.isNotEmpty)
-            .toList(growable: false);
-        if (taskIds.isNotEmpty) {
-          taskId = taskIds.first;
-        }
-      }
+      taskId = taskIds.isEmpty ? null : taskIds.first;
     }
 
     if (taskId != null) {
       _traceApi(
         'classifyChatCompletionResponse → taskSocket '
-        '(task_id=$taskId)',
+        '(task_ids=$taskIds)',
       );
       return ChatCompletionSession.taskSocket(
         messageId: messageId,
         sessionId: sessionId,
         conversationId: conversationId,
         taskId: taskId,
+        taskIds: taskIds,
         abort: abort,
       );
     }

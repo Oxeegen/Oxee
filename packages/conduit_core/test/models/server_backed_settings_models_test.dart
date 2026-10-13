@@ -205,6 +205,44 @@ void main() {
       check(config.oauthProviders.github).equals('GitHub');
     });
 
+    test('reads realtime calls from Open WebUI 0.12 and keeps them cached', () {
+      final config = BackendConfig.fromJson({
+        'audio': {
+          'stt': {'engine': 'openai'},
+          'realtime': {
+            'enabled': true,
+            'model': 'gpt-realtime-2.1-mini',
+            'voice': 'marin',
+          },
+        },
+      });
+
+      check(config.enableRealtimeCall).equals(true);
+      check(config.realtimeCallModel).equals('gpt-realtime-2.1-mini');
+      check(config.realtimeCallVoice).equals('marin');
+
+      // The app caches the flat form and reads it back on the next launch.
+      final cached = BackendConfig.fromJson(config.toJson());
+      check(cached.enableRealtimeCall).equals(true);
+      check(cached.realtimeCallModel).equals('gpt-realtime-2.1-mini');
+      check(cached.realtimeCallVoice).equals('marin');
+    });
+
+    test('a server without realtime calls leaves them unknown', () {
+      // Open WebUI 0.11 and signed-out configs send no `audio.realtime`.
+      final config = BackendConfig.fromJson({
+        'audio': {
+          'stt': {'engine': 'openai'},
+          'tts': {'engine': 'openai'},
+        },
+      });
+
+      check(config.enableRealtimeCall).isNull();
+      check(config.realtimeCallModel).isNull();
+      check(BackendConfig.fromJson(config.toJson()).enableRealtimeCall)
+          .isNull();
+    });
+
     test('explicit nested audio feature flags override engine inference', () {
       final config = BackendConfig.fromJson({
         'features': {'enable_audio_input': false, 'enable_audio_output': false},
@@ -218,6 +256,92 @@ void main() {
       check(config.enableAudioOutput).equals(false);
       check(config.sttProvider).equals('openai');
       check(config.ttsProvider).equals('openai');
+    });
+
+    test('reads the user webhooks flag the server reports to a signed-in '
+        'account and keeps absence unknown', () {
+      final enabled = BackendConfig.fromJson({
+        'features': {'enable_user_webhooks': true},
+      });
+      final disabled = BackendConfig.fromJson({
+        'features': {'enable_user_webhooks': false},
+      });
+      // The signed-out config omits the flag, which is not the same as off.
+      final signedOut = BackendConfig.fromJson({
+        'features': {'enable_websocket': true},
+      });
+
+      check(enabled.enableUserWebhooks).equals(true);
+      check(disabled.enableUserWebhooks).equals(false);
+      check(signedOut.enableUserWebhooks).isNull();
+    });
+
+    test('keeps the user webhooks flag through the stored copy', () {
+      final stored = BackendConfig.fromJson(
+        BackendConfig.fromJson({
+          'features': {'enable_user_webhooks': true},
+        }).toJson(),
+      );
+
+      check(stored.enableUserWebhooks).equals(true);
+      check(stored.copyWith(serverId: 'server').enableUserWebhooks)
+          .equals(true);
+    });
+
+    test('reads the automations flag the server reports to a signed-in '
+        'account and keeps absence unknown', () {
+      final enabled = BackendConfig.fromJson({
+        'features': {'enable_automations': true},
+      });
+      final disabled = BackendConfig.fromJson({
+        'features': {'enable_automations': false},
+      });
+      final signedOut = BackendConfig.fromJson({
+        'features': {'enable_websocket': true},
+      });
+
+      check(enabled.enableAutomations).equals(true);
+      check(disabled.enableAutomations).equals(false);
+      check(signedOut.enableAutomations).isNull();
+    });
+
+    test('keeps the automations flag through the stored copy', () {
+      final stored = BackendConfig.fromJson(
+        BackendConfig.fromJson({
+          'features': {'enable_automations': true},
+        }).toJson(),
+      );
+
+      check(stored.enableAutomations).equals(true);
+      check(stored.copyWith(serverId: 'server').enableAutomations).equals(true);
+    });
+
+    test('reads the calendar flag the server reports to a signed-in account '
+        'and keeps absence unknown', () {
+      final enabled = BackendConfig.fromJson({
+        'features': {'enable_calendar': true},
+      });
+      final disabled = BackendConfig.fromJson({
+        'features': {'enable_calendar': false},
+      });
+      final signedOut = BackendConfig.fromJson({
+        'features': {'enable_websocket': true},
+      });
+
+      check(enabled.enableCalendar).equals(true);
+      check(disabled.enableCalendar).equals(false);
+      check(signedOut.enableCalendar).isNull();
+    });
+
+    test('keeps the calendar flag through the stored copy', () {
+      final stored = BackendConfig.fromJson(
+        BackendConfig.fromJson({
+          'features': {'enable_calendar': true},
+        }).toJson(),
+      );
+
+      check(stored.enableCalendar).equals(true);
+      check(stored.copyWith(serverId: 'server').enableCalendar).equals(true);
     });
   });
 }

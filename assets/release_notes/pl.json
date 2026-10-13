@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Co nowego",
+      "intro": "Cześć! Możesz mieć zalogowanych kilka kont Open WebUI i przełączać się między nimi oraz zapisać kilka połączeń Hermes. Rozmowy mogą mówić głosem na żywo, który możesz przerwać. Open WebUI 0.12 działa, łącznie z logowaniem dwuetapowym, a kolejne funkcje Open WebUI nie wymagają już opcji Zaawansowane.",
+      "bullets": [
+        {
+          "text": "Konta: miej zalogowanych kilka kont Open WebUI, na jednym lub kilku serwerach, i przełączaj się z profilu albo z nowej strony Konta na górze Ustawień. Każde konto lub połączenie dodasz z jednego arkusza. Serwer może mieć kilka adresów, np. LAN, Tailscale i publiczne proxy; aplikacja używa pierwszego, który odpowie.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: zapisz kilka nazwanych połączeń, np. Dom i Badania, i przełączaj się między nimi z paska bocznego, ustawień lub strony Konta. Czat, którego sesja należy do innego połączenia, zaproponuje przełączenie na nie.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Rozmowy na żywo: w Open WebUI 0.12, Direct i Hermes Desktop Gateway rozmowy mogą mówić głosem OpenAI na żywo, a gdy zaczniesz mówić, głos milknie. Dla czatów Direct i Apple wybierz Dostawcę głosu w ustawieniach dźwięku. Zamiana mowy na tekst i tekstu na mowę na serwerze działa zgodnie z backendem każdego czatu.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: aplikacja działa bez ostrzeżenia o zgodności. Weryfikacja dwuetapowa przy logowaniu działa, łącznie z konfiguracją i kodami odzyskiwania. Eksport umiejętności, udostępnianie folderów, wymuszone czaty tymczasowe i zatwierdzanie narzędzi działają zgodnie z wersją 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Funkcje Open WebUI: kolejka szkiców, interpreter kodu, gałęzie, odbiorcy czatu, foldery projektów, udostępnianie, członkowie kanałów i kalendarz nie wymagają już opcji Zaawansowane. Zaawansowane dodaje porównanie modeli, zaplanowane zadania, webhooki i zarządzanie danymi. Duże czaty nie są już pobierane od nowa przy każdym otwarciu, a wybrany poziom rozumowania zostaje zapamiętany.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }
