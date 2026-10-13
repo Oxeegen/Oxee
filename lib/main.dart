@@ -754,8 +754,8 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
     final value = event.value;
     try {
       // OXEE: region row of the native settings sheet.
+      // The row closes the sheet itself (dismissOnSelect), before this runs.
       if (event.id == oxeeRegionNativeSheetItemId) {
-        await _dismissNativeSheetBeforeFollowUp();
         final context = NavigationService.context;
         if (context == null || !context.mounted) return;
         await showOxeeRegionSwitcher(context, ref);
