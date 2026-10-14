@@ -23,6 +23,8 @@ import 'platform/android_ime_inset_resync.dart';
 import 'platform/flutter_app_lifecycle.dart';
 import 'platform/flutter_clipboard_port.dart';
 import 'platform/flutter_connectivity_port.dart';
+import 'platform/realtime_pcm_audio.dart';
+import 'platform/webrtc_realtime_media.dart';
 import 'platform/url_launcher_open_external_url_port.dart';
 import 'platform/flutter_cookie_jar.dart';
 import 'platform/flutter_flush_scheduler.dart';
@@ -72,10 +74,35 @@ import 'platform/carplay_service.dart';
 import 'core/services/native_symbol_image_service.dart';
 
 import 'package:conduit_core/services/readiness_gated_secure_storage.dart';
+import 'package:conduit_core/features/chat/server_speech/direct_voice_provider_settings.dart';
+import 'package:conduit_core/features/chat/realtime_call/realtime_call_availability.dart';
 import 'package:conduit_core/services/settings_service.dart';
+import 'package:conduit_core/features/automations/providers/automation_providers.dart'
+    show scheduledTasksEntryVisibleProvider;
+import 'package:conduit_core/features/calendar/providers/calendar_providers.dart'
+    show calendarAvailableProvider;
+import 'package:conduit_core/features/chat/providers/chat_providers.dart'
+    show chatDataControlsEntryVisibleProvider;
+import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart';
 
 import 'package:conduit_core/sync/request_completion_runner_provider.dart';
 
+import 'core/utils/native_sheet_utils.dart'
+    show
+        nativeAccountAddActionId,
+        nativeNoVoiceProviderId,
+        nativeVoiceProviderFieldIds,
+        nativeAccountServerActionId,
+        nativeAccountSignOutActionId,
+        nativeAccountSwitchActionId,
+        nativeDirectEditActionId,
+        nativeHermesUseActionId,
+        nativeAdvancedFeaturesId,
+        nativeCitationShowTitlesId,
+        nativeMemoryEditorActionPrefix,
+        nativeMemoryEditorNewActionId,
+        nativeNotificationTargetsActionId;
+import 'shared/utils/ui_utils.dart';
 import 'core/utils/tts_voice_utils.dart';
 import 'core/utils/current_localizations.dart';
 
@@ -88,7 +115,11 @@ import 'features/chat/voice_mode/chat_voice_audio_session_coordinator.dart';
 import 'features/chat/voice_mode/chat_voice_mode_controller.dart';
 
 import 'package:conduit_core/features/chat/providers/chat_providers.dart'
-    show chatWakelockCoordinatorProvider, restoreDefaultModel;
+    show
+        chatWakelockCoordinatorProvider,
+        isChatStreamingProvider,
+        localChatGenerationActiveProvider,
+        restoreDefaultModel;
 import 'package:conduit_core/features/release_notes/release_notes_bootstrap.dart';
 import 'features/release_notes/data/release_notes_repository.dart';
 import 'features/release_notes/release_notes_presenter.dart';
@@ -97,6 +128,10 @@ import 'shared/widgets/legacy_design_compatibility.dart';
 
 import 'package:conduit_core/features/tools/providers/tools_providers.dart';
 
+import 'package:conduit_core/features/notifications/providers/notification_target_providers.dart'
+    show notificationTargetsAvailableProvider;
+
+import 'features/profile/views/personalization_page.dart' show showMemoryEditor;
 import 'features/workspace/providers/workspace_capabilities_provider.dart';
 import 'features/workspace/workspace_navigation.dart';
 
@@ -104,6 +139,7 @@ import 'package:conduit_core/utils/debug_logger.dart';
 
 import 'core/utils/system_ui_style.dart';
 
+import 'package:conduit_core/models/server_memory.dart';
 import 'package:conduit_core/models/tool.dart';
 
 import 'package:conduit/l10n/app_localizations.dart';
@@ -126,13 +162,19 @@ import 'shared/services/app_package_info.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 
 import 'features/hermes/services/hermes_dashboard_rest_bridge.dart';
+import 'features/hermes/widgets/hermes_connection_switcher.dart';
+import 'package:conduit_core/providers/openwebui_accounts_controller.dart';
+import 'package:conduit_core/providers/openwebui_route_resolver.dart'
+    show openWebUiRouteResolverProvider;
+import 'core/services/background_streaming_handler.dart';
+import 'features/profile/widgets/account_actions.dart';
+import 'features/profile/widgets/account_sheet.dart'
+    show EditDirectConnectionRequest, showAccountSheet;
 
 const bool _enableFlutterDriverExtension = bool.fromEnvironment(
   'ENABLE_FLUTTER_DRIVER_EXTENSION',
   defaultValue: false,
 );
-
-const _nativeSheetFollowUpDelay = Duration(milliseconds: 700);
 
 Locale? _localeFromNativeTag(String code) {
   final normalized = code.replaceAll('_', '-');
@@ -186,6 +228,13 @@ void _registerBundledLicenses() {
     ], notice);
   });
 }
+
+/// Whether this device runs realtime voice calls' audio: the native engine
+/// and WebRTC exist on iOS and Android.
+bool get _hasRealtimeAudio =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.android);
 
 void main() {
   // Diagnostics have no destination until a host gives them one.
@@ -351,6 +400,52 @@ void main() {
           signOutResetTargetsProvider.overrideWithValue(
             themePreferenceResetTargets,
           ),
+          // A reply streaming in the background (screen locked, another chat
+          // open) is cut off by an account switch just like a visible one.
+          accountChangeReplyGuardProvider.overrideWith((ref) {
+            return () {
+              try {
+                return ref.read(isChatStreamingProvider) ||
+                    ref.read(localChatGenerationActiveProvider) ||
+                    BackgroundStreamingHandler.instance.hasActiveReplyStreams;
+              } catch (_) {
+                return false;
+              }
+            };
+          }),
+          // Replies still being written in the background are Open WebUI's,
+          // which arrive through the active account's address.
+          addressChangeReplyGuardProvider.overrideWith((ref) {
+            return () {
+              try {
+                return (ref.read(isChatStreamingProvider) &&
+                        conversationUsesOpenWebUiStorage(
+                          ref.read(activeConversationProvider),
+                        )) ||
+                    BackgroundStreamingHandler.instance.hasActiveReplyStreams;
+              } catch (_) {
+                return false;
+              }
+            };
+          }),
+          // Posted notifications deep-link into the account that posted them.
+          hostActiveAccountChangedProvider.overrideWith((ref) {
+            return (_) {
+              unawaited(
+                ref
+                    .read(localNotificationServiceProvider)
+                    .cancelAll()
+                    .catchError((Object error, StackTrace stackTrace) {
+                      DebugLogger.error(
+                        'account-switch-notification-clear-failed',
+                        scope: 'notifications/system',
+                        error: error,
+                        stackTrace: stackTrace,
+                      );
+                    }),
+              );
+            };
+          }),
           // The in-memory selection, so a language change applies to the
           // next request before the preference write lands.
           appLanguageTagProvider.overrideWith(
@@ -378,6 +473,13 @@ void main() {
           ),
           clipboardPortProvider.overrideWithValue(const FlutterClipboardPort()),
           uiRequestPortProvider.overrideWithValue(const FlutterUiRequests()),
+          hermesConnectionSwitchPromptProvider.overrideWith(
+            (ref) =>
+                (name) => confirmHermesConnectionSwitch(
+                  ref.read(uiRequestPortProvider),
+                  name,
+                ),
+          ),
           routeNavigatorProvider.overrideWithValue(const GoRouterNavigator()),
           openExternalUrlProvider.overrideWithValue(
             const UrlLauncherOpenExternalUrlPort(),
@@ -414,6 +516,14 @@ void main() {
           ),
           voiceModePlatformProvider.overrideWithValue(
             const FlutterVoiceModePlatform(),
+          ),
+          // A realtime voice needs the native echo-cancelled audio engine.
+          realtimePcmAudioFactoryProvider.overrideWithValue(
+            () => _hasRealtimeAudio ? MethodChannelRealtimePcmAudio() : null,
+          ),
+          // Hermes's GPT-Live calls run over WebRTC.
+          realtimeWebRtcMediaFactoryProvider.overrideWithValue(
+            () => _hasRealtimeAudio ? WebRtcRealtimeMedia() : null,
           ),
         ],
       );
@@ -461,6 +571,8 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
   void initState() {
     super.initState();
     ref.read(userScopedProviderCleanupProvider);
+    ref.read(openWebUiDuplicateAccountReconcilerProvider);
+    ref.read(openWebUiRouteResolverProvider);
     ref.read(quickActionsCoordinatorProvider);
     ref.read(chatWakelockCoordinatorProvider);
     _nativeSheetSubscription = NativeSheetBridge.instance.events.listen(
@@ -499,6 +611,53 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
       case NativeEditProfileCommitted():
         unawaited(_handleNativeEditProfileCommitted(event));
     }
+  }
+
+  /// The native Settings rows for accounts and connections. Returns whether
+  /// [actionId] was one of them.
+  Future<bool> _handleNativeAccountAction(String actionId, Object? value) async {
+    final context = NavigationService.context;
+    switch (actionId) {
+      case nativeAccountSwitchActionId:
+        if (context == null || value is! String) return true;
+        await switchToSavedAccount(context, ref, value);
+        return true;
+      case nativeAccountAddActionId:
+        if (context == null) return true;
+        await showAddAccountSheet(
+          context,
+          ref,
+          kind: value is String
+              ? AccountKind.values.asNameMap()[value] ?? AccountKind.openWebUi
+              : AccountKind.openWebUi,
+        );
+        return true;
+      case nativeAccountServerActionId:
+        if (value is! String) return true;
+        unawaited(
+          NavigationService.router.pushNamed<void>(
+            RouteNames.serverAddresses,
+            extra: value,
+          ),
+        );
+        return true;
+      case nativeHermesUseActionId:
+        if (context == null || value is! String) return true;
+        await useHermesConnection(context, ref, value);
+        return true;
+      case nativeDirectEditActionId:
+        if (context == null || value is! String) return true;
+        await showAccountSheet(context, EditDirectConnectionRequest(value));
+        return true;
+      case nativeAccountSignOutActionId:
+        if (context == null) return true;
+        final accounts = await ref.read(openWebUiAccountsProvider.future);
+        final active = accounts.where((entry) => entry.isActive).firstOrNull;
+        if (active == null || !context.mounted) return true;
+        await signOutOfSavedAccount(context, ref, active);
+        return true;
+    }
+    return false;
   }
 
   Future<void> _handleNativeSheetLogoutRequested({
@@ -595,8 +754,8 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
     final value = event.value;
     try {
       // OXEE: region row of the native settings sheet.
+      // The row closes the sheet itself (dismissOnSelect), before this runs.
       if (event.id == oxeeRegionNativeSheetItemId) {
-        await _dismissNativeSheetBeforeFollowUp();
         final context = NavigationService.context;
         if (context == null || !context.mounted) return;
         await showOxeeRegionSwitcher(context, ref);
@@ -611,6 +770,8 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
         return;
       }
 
+      if (await _handleNativeAccountAction(event.id, value)) return;
+
       if (event.id == NativeSheetRoutes.directConnections) {
         final request = directConnectionsNativeSheetNavigationRequest;
         unawaited(
@@ -622,8 +783,82 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
         return;
       }
 
+      if (event.id == NativeSheetRoutes.personalConnections) {
+        // The sheet was built before this arrived, and Advanced or the
+        // account's access can change while it is open. The page enforces the
+        // same rule, but a stale row should not even navigate.
+        if (!ref.read(personalConnectionsEntryVisibleProvider)) {
+          _showNativeOptionUnavailable();
+          return;
+        }
+        final request = personalConnectionsNativeSheetNavigationRequest;
+        unawaited(
+          NavigationService.router.pushNamed<void>(
+            request.routeName,
+            extra: request.extra,
+          ),
+        );
+        return;
+      }
+
+      if (event.id == NativeSheetRoutes.scheduledTasks) {
+        // As for Personal connections: the sheet was built before this
+        // arrived, so a row that went stale (Advanced turned off, the account
+        // or its permission changed) must not navigate.
+        if (!ref.read(scheduledTasksEntryVisibleProvider)) {
+          _showNativeOptionUnavailable();
+          return;
+        }
+        final request = scheduledTasksNativeSheetNavigationRequest;
+        unawaited(
+          NavigationService.router.pushNamed<void>(
+            request.routeName,
+            extra: request.extra,
+          ),
+        );
+        return;
+      }
+
+      if (event.id == NativeSheetRoutes.calendar) {
+        // As for Scheduled tasks: the sheet was built before this arrived, so
+        // a row that went stale (the account or its permission changed) must
+        // not navigate.
+        if (!ref.read(calendarAvailableProvider)) {
+          _showNativeOptionUnavailable();
+          return;
+        }
+        final request = calendarNativeSheetNavigationRequest;
+        unawaited(
+          NavigationService.router.pushNamed<void>(
+            request.routeName,
+            extra: request.extra,
+          ),
+        );
+        return;
+      }
+
+      if (event.id == NativeSheetRoutes.chatDataControls) {
+        // As for Scheduled tasks: the sheet was built before this arrived, so
+        // a row that went stale (Advanced turned off, the account signed out)
+        // must not navigate. The page itself opens its file picker only after
+        // the user acts on it, never while this sheet is still up.
+        if (!ref.read(chatDataControlsEntryVisibleProvider)) {
+          _showNativeOptionUnavailable();
+          return;
+        }
+        final request = chatDataControlsNativeSheetNavigationRequest;
+        unawaited(
+          NavigationService.router.pushNamed<void>(
+            request.routeName,
+            extra: request.extra,
+          ),
+        );
+        return;
+      }
+
+      // Both rows close the sheet themselves and arrive as it slides away, so
+      // their Flutter page is already opening underneath it.
       if (event.id == NativeSheetRoutes.releaseNotesManual) {
-        await _dismissNativeSheetBeforeFollowUp();
         final context = NavigationService.context;
         if (context == null || !context.mounted) return;
         await _showManualReleaseNotes(context);
@@ -631,7 +866,6 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
       }
 
       if (event.id == NativeSheetRoutes.openSourceLicenses) {
-        await _dismissNativeSheetBeforeFollowUp();
         final context = NavigationService.context;
         if (context == null || !context.mounted) return;
         showLicensePage(context: context, applicationName: 'Oxee');
@@ -650,22 +884,35 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
         return;
       }
 
+      if (event.id == nativeNotificationTargetsActionId) {
+        _openNativeNotificationTargets();
+        return;
+      }
+
+      if (event.id == nativeMemoryEditorNewActionId ||
+          event.id.startsWith(nativeMemoryEditorActionPrefix)) {
+        await _openNativeMemoryEditor(event.id);
+        return;
+      }
+
       if (event.id.startsWith('memory-save:')) {
         final encoded = event.id.substring('memory-save:'.length);
         final memoryId = Uri.decodeComponent(encoded);
         if (value is String) {
-          await ref
-              .read(userMemoriesProvider.notifier)
-              .updateItem(memoryId, value);
+          await _runNativeMemoryAction(
+            (memories, owner) =>
+                memories.updateItem(memoryId, value, owner: owner),
+          );
         }
         return;
       }
 
       if (event.id.startsWith('memory-delete:')) {
         final encoded = event.id.substring('memory-delete:'.length);
-        await ref
-            .read(userMemoriesProvider.notifier)
-            .deleteItem(Uri.decodeComponent(encoded));
+        await _runNativeMemoryAction(
+          (memories, owner) =>
+              memories.deleteItem(Uri.decodeComponent(encoded), owner: owner),
+        );
         return;
       }
 
@@ -783,10 +1030,14 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
           }
         case 'memory-add-content':
           if (value is String && value.trim().isNotEmpty) {
-            await ref.read(userMemoriesProvider.notifier).add(value.trim());
+            await _runNativeMemoryAction(
+              (memories, owner) => memories.add(value.trim(), owner: owner),
+            );
           }
         case 'memory-clear-all':
-          await ref.read(userMemoriesProvider.notifier).clearAll();
+          await _runNativeMemoryAction(
+            (memories, owner) => memories.clearAll(owner: owner),
+          );
         case 'memory-enabled':
           if (value is bool) {
             await ref
@@ -838,6 +1089,29 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
             await notifier.setTtsEngineSelection(TtsEngine.device);
             await _refreshNativeVoiceDetail();
           }
+        case 'voice-call-mode':
+          final mode = VoiceCallMode.values
+              .where((mode) => mode.name == value)
+              .firstOrNull;
+          if (mode != null) {
+            await ref.read(appSettingsProvider.notifier).setVoiceCallMode(mode);
+            await _refreshNativeVoiceDetail();
+          }
+        case 'voice-provider-connection':
+          if (value is String) {
+            await _chooseNativeVoiceProvider(value);
+            await _refreshNativeVoiceDetail(NativeSheetRoutes.voiceProvider);
+          }
+        case final id when nativeVoiceProviderFieldIds.containsKey(id):
+          final current = ref.read(appSettingsProvider).directVoiceProvider;
+          if (value is String && current != null) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setDirectVoiceProvider(
+                  current.withField(nativeVoiceProviderFieldIds[id]!, value),
+                );
+            await _refreshNativeVoiceDetail(NativeSheetRoutes.voiceProvider);
+          }
         case 'theme-light':
           switch (value) {
             case 'system':
@@ -873,6 +1147,23 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
             await ref
                 .read(appSettingsProvider.notifier)
                 .setTemporaryChatByDefault(value);
+          }
+        case nativeAdvancedFeaturesId:
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setAdvancedFeaturesEnabled(value);
+            final hydration = ref.read(nativeSheetHydrationServiceProvider);
+            await hydration.hydrateDetail(NativeSheetRoutes.chats);
+            // The Settings root under this page lists what Advanced reveals,
+            // so it gains or loses those rows before the user goes back.
+            await hydration.refreshProfileRoot();
+          }
+        case nativeCitationShowTitlesId:
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setCitationShowTitles(value);
           }
         case 'disable-haptics-streaming':
           if (value is bool) {
@@ -969,10 +1260,37 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
     return trimmed == null || trimmed.isEmpty ? null : trimmed;
   }
 
-  Future<void> _refreshNativeVoiceDetail() {
+  /// Makes the connection with [profileId] the Voice provider, or clears it.
+  Future<void> _chooseNativeVoiceProvider(String profileId) async {
+    final notifier = ref.read(appSettingsProvider.notifier);
+    if (profileId == nativeNoVoiceProviderId) {
+      await notifier.setDirectVoiceProvider(null);
+      return;
+    }
+    // Connections still loading are not gone: the choice waits for them.
+    final profiles = ref.read(directConnectionProfilesProvider).value;
+    if (profiles == null) return;
+    final profile = profiles
+        .where(canBeVoiceProvider)
+        .where((profile) => profile.id == profileId)
+        .firstOrNull;
+    await notifier.setDirectVoiceProvider(
+      profile == null
+          ? null
+          : DirectVoiceProviderSettings.forConnection(
+              profile,
+              current: ref.read(appSettingsProvider).directVoiceProvider,
+            ),
+    );
+  }
+
+  /// Redraws the Voice pages from [detailId], the one the change came from.
+  Future<void> _refreshNativeVoiceDetail([
+    String detailId = NativeSheetRoutes.voice,
+  ]) {
     return ref
         .read(nativeSheetHydrationServiceProvider)
-        .hydrateDetail(NativeSheetRoutes.voice);
+        .hydrateDetail(detailId);
   }
 
   Future<void> _saveNativePasswordDraft(String id, Object? value) async {
@@ -1023,11 +1341,80 @@ class _ConduitAppState extends ConsumerState<ConduitApp> {
     );
   }
 
-  Future<void> _dismissNativeSheetBeforeFollowUp() async {
-    await NativeSheetBridge.instance.dismiss();
-    // The platform channel returns before UIKit finishes dismissing the sheet.
-    // Presenting the next sheet inside that animation window can no-op on iOS.
-    await Future<void>.delayed(_nativeSheetFollowUpDelay);
+  /// Runs a memory action from the native Memory list for the account that
+  /// list was built for. With no list on record, or once the account has
+  /// changed, nothing is sent.
+  Future<void> _runNativeMemoryAction(
+    Future<void> Function(UserMemories memories, MemoryOwner owner) action,
+  ) async {
+    final owner = ref.read(nativeSheetHydrationServiceProvider).memoryOwner;
+    if (owner == null) return;
+    await action(ref.read(userMemoriesProvider.notifier), owner);
+  }
+
+  /// Opens the Flutter Notifications page, where webhook destinations live, once
+  /// the native sheet has closed. It is entered with the native-sheet origin so
+  /// the page does not slide over the sheet that just left. Nothing is sent from
+  /// here: the page captures the account when an action in it opens, so this
+  /// only has to keep a stale or denied row from navigating.
+  void _openNativeNotificationTargets() {
+    final advanced = ref.read(appSettingsProvider).advancedFeaturesEnabled;
+    if (!advanced || !ref.read(notificationTargetsAvailableProvider)) {
+      _showNativeOptionUnavailable();
+      return;
+    }
+    unawaited(
+      NavigationService.router.pushNamed<void>(
+        RouteNames.notificationSettings,
+        extra: const NativeSheetNavigationOrigin(),
+      ),
+    );
+  }
+
+  /// Opens the Flutter memory editor, which the native sheet cannot match with
+  /// its type and path fields, over the app once the native sheet has closed.
+  Future<void> _openNativeMemoryEditor(String actionId) async {
+    final memories = ref.read(userMemoriesProvider.notifier);
+    final owner = ref.read(nativeSheetHydrationServiceProvider).memoryOwner;
+    final permitted = ref
+        .read(memoriesPermittedProvider)
+        .maybeWhen(data: (permitted) => permitted, orElse: () => true);
+    if (owner == null || !permitted) return;
+
+    ServerMemory? memory;
+    if (actionId != nativeMemoryEditorNewActionId) {
+      final id = Uri.decodeComponent(
+        actionId.substring(nativeMemoryEditorActionPrefix.length),
+      );
+      memory = ref
+          .read(userMemoriesProvider)
+          .asData
+          ?.value
+          .where((candidate) => candidate.id == id)
+          .firstOrNull;
+      if (memory == null) return;
+    }
+
+    final context = NavigationService.context;
+    if (context == null || !context.mounted) return;
+    await showMemoryEditor(
+      context,
+      notifier: memories,
+      owner: owner,
+      advanced: ref.read(appSettingsProvider).advancedFeaturesEnabled,
+      memory: memory,
+    );
+  }
+
+  /// Says why a row tapped in the native sheet did nothing: it went away
+  /// while the sheet was open (Advanced turned off, the account lost access).
+  /// The sheet has already closed, so the message shows over the app.
+  void _showNativeOptionUnavailable() {
+    final context = NavigationService.context;
+    if (context == null || !context.mounted) return;
+    final l10n = AppLocalizations.of(context);
+    if (l10n == null) return;
+    UiUtils.showMessage(context, l10n.nativeSheetOptionUnavailable);
   }
 
   Future<void> _handleNativeTtsVoicePick(

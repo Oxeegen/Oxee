@@ -11,6 +11,8 @@ import 'package:conduit_core/auth/api_auth_interceptor.dart';
 
 import 'package:conduit_core/models/chat_message.dart';
 import 'package:conduit_core/models/conversation.dart';
+import 'package:conduit_core/models/openwebui_chat_prompt.dart'
+    show openWebUiConfirmationText;
 
 import 'package:conduit_core/providers/app_providers.dart' show isTemporaryChat;
 
@@ -674,6 +676,13 @@ ActiveChatStream attachUnifiedChunkedStreaming({
   /// conversation. When null or when it yields null (engine inert), the
   /// legacy direct `api.getConversation` fetch is used instead.
   Future<Conversation?> Function(String chatId)? pullChatSnapshot,
+
+  /// Whether this stream may adopt a server message id other than
+  /// [assistantMessageId] (socket resume, where the server names the message).
+  /// One answer of a multi-model turn must refuse: its sibling answers share
+  /// the chat and the socket session, and adopting one would write a sibling's
+  /// text into this answer.
+  bool allowForeignMessageBinding = true,
 }) {
   // Track if streaming has been finished to avoid duplicate cleanup
   bool hasFinished = false;
@@ -775,7 +784,8 @@ ActiveChatStream attachUnifiedChunkedStreaming({
     String? candidateId, {
     required String source,
   }) {
-    if (candidateId == null ||
+    if (!allowForeignMessageBinding ||
+        candidateId == null ||
         candidateId.isEmpty ||
         candidateId == assistantMessageId ||
         boundRemoteMessageId != null) {
@@ -893,7 +903,7 @@ ActiveChatStream attachUnifiedChunkedStreaming({
       return currentTargetId;
     }
 
-    if (!allowBindingForeignMessage) {
+    if (!allowBindingForeignMessage || !allowForeignMessageBinding) {
       final boundMessageId = boundRemoteMessageId;
       DebugLogger.log(
         boundMessageId == null
@@ -3889,9 +3899,10 @@ ActiveChatStream attachUnifiedChunkedStreaming({
               onInteractivePrompt(type.toString(), map, ack);
             } else {
               () async {
+                final text = openWebUiConfirmationText(map);
                 final confirmed = await uiRequests.confirm(
-                  title: map['title']?.toString() ?? 'Confirm',
-                  message: map['message']?.toString() ?? '',
+                  title: text.title.isEmpty ? 'Confirm' : text.title,
+                  message: text.message,
                   confirmLabel: map['confirm_text']?.toString(),
                   cancelLabel: map['cancel_text']?.toString(),
                 );

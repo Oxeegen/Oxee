@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:checks/checks.dart';
+import 'package:conduit_core/auth/api_auth_interceptor.dart';
 import 'package:conduit_core/auth/auth_state_manager.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:conduit_core/models/server_config.dart';
@@ -142,7 +143,10 @@ class _ModelsApiService extends ApiService {
   bool fail = false;
 
   @override
-  Future<List<Model>> getModels({bool includeHidden = false}) async {
+  Future<List<Model>> getModels({
+    bool includeHidden = false,
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
     getModelsCalls += 1;
     if (!getModelsStarted.isCompleted) getModelsStarted.complete();
     await responseGate?.future;
@@ -166,9 +170,10 @@ class _PendingDefaultModelApi extends ApiService {
   }
 
   @override
-  Future<List<Model>> getModels({bool includeHidden = false}) async => const [
-    Model(id: 'owui/stale', name: 'Stale OpenWebUI model'),
-  ];
+  Future<List<Model>> getModels({
+    bool includeHidden = false,
+    ApiAuthSnapshot? authSnapshot,
+  }) async => const [Model(id: 'owui/stale', name: 'Stale OpenWebUI model')];
 }
 
 class _UnreachableDefaultApi extends ApiService {
@@ -833,6 +838,51 @@ void main() {
 
       check(model).isNotNull();
       check(isHermesModel(model!)).isTrue();
+    });
+
+    test('default model follows a switch while resolving', () async {
+      final hermesController = _MutableHermesConfigController(
+        _usableHermes.copyWith(
+          connectionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          name: 'Alpha',
+        ),
+      );
+      final container = ProviderContainer(
+        overrides: [
+          reviewerModeProvider.overrideWithValue(false),
+          preferredBackendProvider.overrideWith(
+            () => _FakePreferredBackendController(PreferredBackend.hermes),
+          ),
+          isAuthenticatedProvider2.overrideWithValue(false),
+          isAuthLoadingProvider2.overrideWithValue(false),
+          authStatusProvider.overrideWithValue(AuthStatus.unauthenticated),
+          apiServiceProvider.overrideWithValue(null),
+          optimizedStorageServiceProvider.overrideWithValue(
+            _FakeOptimizedStorageService(),
+          ),
+          hermesConfigProvider.overrideWith(() => hermesController),
+        ],
+      );
+      addTearDown(container.dispose);
+      // Let startup reconciliation settle, then clear the selection: with
+      // nothing selected, no selection follows the switch below.
+      container.read(selectedModelProvider);
+      await pumpEventQueue();
+      container.read(selectedModelProvider.notifier).set(null);
+
+      final pendingDefault = container.read(defaultModelProvider.future);
+      hermesController.setConfig(
+        _usableHermes.copyWith(
+          connectionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          name: 'Beta',
+        ),
+      );
+      await pendingDefault;
+
+      check(container.read(selectedModelProvider))
+          .isNotNull()
+          .has((model) => model.name, 'name')
+          .equals('Beta');
     });
 
     test('default model reacts when reviewer mode is enabled', () async {

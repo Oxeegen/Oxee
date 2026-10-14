@@ -1,11 +1,15 @@
+import 'dart:convert';
 import 'dart:developer' as developer;
 
 import 'package:riverpod/riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../persistence/account_scoped_preferences.dart';
+import '../providers/app_providers.dart' show settledActiveAccountIdProvider;
 import '../persistence/persistence_keys.dart';
 import '../persistence/preferences_store.dart';
 
+import 'package:conduit_core/features/chat/server_speech/direct_voice_provider_settings.dart';
 import 'package:conduit_core/features/web_search/models/web_search_preferences.dart';
 import 'package:conduit_core/models/animation_settings.dart';
 import 'package:conduit_ddgs/conduit_ddgs.dart' show SafeSearch;
@@ -17,6 +21,10 @@ enum SttPreference { deviceOnly, serverOnly }
 
 /// TTS engine selection
 enum TtsEngine { device, server }
+
+/// How a call talks: [auto] uses the backend's realtime voice when it offers
+/// one, [standard] always transcribes, sends and reads aloud turn by turn.
+enum VoiceCallMode { auto, standard }
 
 /// Action to take when the Android digital assistant is triggered.
 enum AndroidAssistantTrigger { overlay, newChat, voiceCall }
@@ -92,10 +100,20 @@ class SettingsService {
   static const String _notificationChannelEnabledKey =
       PreferenceKeys.notificationChannelEnabled;
 
-  static T? _getPreference<T>(String key) => PreferencesStore.get<T>(key);
+  // Settings that name a server's data are stored per Open WebUI account;
+  // see account_scoped_preferences.dart. Every read and write below resolves
+  // its key through these, which is the identity for device-wide settings.
+  static T? _getPreference<T>(String key) =>
+      PreferencesStore.get<T>(scopedPreferenceReadKey(key));
 
-  static Future<void> _putPreference(String key, Object? value) =>
-      PreferencesStore.put(key, value);
+  static Future<void> _putPreference(String key, Object? value) async {
+    final accountId = currentPreferenceAccountId();
+    final scoped = scopedPreferenceWriteKey(key);
+    if (value == null && scoped != key) {
+      await settleDeviceSettingsCopy(accountId, clearing: [key]);
+    }
+    await PreferencesStore.put(scoped, value);
+  }
 
   /// Get reduced motion preference
   static Future<bool> getReduceMotion() {
@@ -230,23 +248,29 @@ class SettingsService {
   }
 
   /// Set default model preference
-  static Future<void> setDefaultModel(String? modelId) {
+  static Future<void> setDefaultModel(String? modelId) async {
+    final accountId = currentPreferenceAccountId();
+    final key = scopedPreferenceWriteKey(_defaultModelKey);
     if (modelId != null) {
-      return PreferencesStore.put(_defaultModelKey, modelId);
+      return PreferencesStore.put(key, modelId);
     }
-    return PreferencesStore.remove(_defaultModelKey);
+    await settleDeviceSettingsCopy(accountId, clearing: [_defaultModelKey]);
+    await PreferencesStore.remove(key);
   }
 
   /// Set the model used by OpenRouter's dedicated Image API.
-  static Future<void> setOpenRouterImageGenerationModel(String? modelId) {
+  static Future<void> setOpenRouterImageGenerationModel(String? modelId) async {
     final normalized = modelId?.trim();
+    final accountId = currentPreferenceAccountId();
+    final key = scopedPreferenceWriteKey(_openRouterImageGenerationModelKey);
     if (normalized != null && normalized.isNotEmpty) {
-      return PreferencesStore.put(
-        _openRouterImageGenerationModelKey,
-        normalized,
-      );
+      return PreferencesStore.put(key, normalized);
     }
-    return PreferencesStore.remove(_openRouterImageGenerationModelKey);
+    await settleDeviceSettingsCopy(
+      accountId,
+      clearing: [_openRouterImageGenerationModelKey],
+    );
+    await PreferencesStore.remove(key);
   }
 
   /// Load all settings
@@ -269,6 +293,7 @@ class SettingsService {
       _voiceHoldToTalkKey: settings.voiceHoldToTalk,
       _voiceAutoSendKey: settings.voiceAutoSendFinal,
       PreferenceKeys.voiceBargeInEnabled: settings.voiceBargeInEnabled,
+      PreferenceKeys.voiceCallMode: settings.voiceCallMode.name,
       _socketTransportModeKey: settings.socketTransportMode,
       _quickPillsKey: settings.quickPills.toList(),
       _sendOnEnterKey: settings.sendOnEnter,
@@ -283,6 +308,7 @@ class SettingsService {
       _androidAssistantTriggerKey:
           settings.androidAssistantTrigger.storageValue,
       PreferenceKeys.temporaryChatByDefault: settings.temporaryChatByDefault,
+      PreferenceKeys.advancedFeaturesEnabled: settings.advancedFeaturesEnabled,
       _pinnedModelsKey: settings.pinnedModels.toList(),
       _notificationsEnabledKey: settings.notificationsEnabled,
       _notificationSoundKey: settings.notificationSound,
@@ -293,18 +319,80 @@ class SettingsService {
       _notificationChannelEnabledKey: settings.notificationChannelEnabled,
     };
 
+    // Resolve every account-scoped key now, before the first write yields: a
+    // switch completing mid-save must not land the rest under another account.
+    final accountId = currentPreferenceAccountId();
+    final defaultModelKey = scopedPreferenceWriteKey(_defaultModelKey);
+    final openRouterImageGenerationModelKey = scopedPreferenceWriteKey(
+      _openRouterImageGenerationModelKey,
+    );
+    final ttsServerVoiceIdKey = scopedPreferenceWriteKey(
+      PreferenceKeys.ttsServerVoiceId,
+    );
+    final ttsServerVoiceNameKey = scopedPreferenceWriteKey(
+      PreferenceKeys.ttsServerVoiceName,
+    );
+
+    final scopedUpdates = {
+      for (final entry in updates.entries)
+        scopedPreferenceWriteKey(entry.key): entry.value,
+    };
+    // A setting this clears must not fall back to the device value.
+    await settleDeviceSettingsCopy(
+      accountId,
+      clearing: [
+        if (settings.defaultModel == null) _defaultModelKey,
+        if (settings.openRouterImageGenerationModel == null)
+          _openRouterImageGenerationModelKey,
+        if (settings.ttsServerVoiceId?.isNotEmpty != true)
+          PreferenceKeys.ttsServerVoiceId,
+        if (settings.ttsServerVoiceName?.isNotEmpty != true)
+          PreferenceKeys.ttsServerVoiceName,
+      ],
+    );
+
+    // The account can be signed out of and removed while this is written:
+    // what lands for it then goes too.
+    try {
+      await _writeSettings(
+        settings,
+        scopedUpdates: scopedUpdates,
+        defaultModelKey: defaultModelKey,
+        openRouterImageGenerationModelKey: openRouterImageGenerationModelKey,
+        ttsServerVoiceIdKey: ttsServerVoiceIdKey,
+        ttsServerVoiceNameKey: ttsServerVoiceNameKey,
+      );
+    } finally {
+      await removeClearedAccountPreferences([
+        ...scopedUpdates.keys,
+        defaultModelKey,
+        openRouterImageGenerationModelKey,
+        ttsServerVoiceIdKey,
+        ttsServerVoiceNameKey,
+      ]);
+    }
+  }
+
+  static Future<void> _writeSettings(
+    AppSettings settings, {
+    required Map<String, Object?> scopedUpdates,
+    required String defaultModelKey,
+    required String openRouterImageGenerationModelKey,
+    required String ttsServerVoiceIdKey,
+    required String ttsServerVoiceNameKey,
+  }) async {
     // Web search preferences are written only by their own setters, so a
     // bulk save of a stale snapshot can't undo a concurrent change.
-    await PreferencesStore.putAll(updates);
+    await PreferencesStore.putAll(scopedUpdates);
 
     await _putOrRemove(_chatWebSearchEnabledKey, settings.chatWebSearchEnabled);
     await _putOrRemove(
       _chatImageGenerationEnabledKey,
       settings.chatImageGenerationEnabled,
     );
-    await _putOrRemove(_defaultModelKey, settings.defaultModel);
+    await _putOrRemove(defaultModelKey, settings.defaultModel);
     await _putOrRemove(
-      _openRouterImageGenerationModelKey,
+      openRouterImageGenerationModelKey,
       settings.openRouterImageGenerationModel,
     );
     await _putOrRemove(
@@ -326,13 +414,13 @@ class SettingsService {
           : null,
     );
     await _putOrRemove(
-      PreferenceKeys.ttsServerVoiceId,
+      ttsServerVoiceIdKey,
       (settings.ttsServerVoiceId?.isNotEmpty ?? false)
           ? settings.ttsServerVoiceId
           : null,
     );
     await _putOrRemove(
-      PreferenceKeys.ttsServerVoiceName,
+      ttsServerVoiceNameKey,
       (settings.ttsServerVoiceName?.isNotEmpty ?? false)
           ? settings.ttsServerVoiceName
           : null,
@@ -570,6 +658,15 @@ class SettingsService {
     return _putPreference(PreferenceKeys.temporaryChatByDefault, value);
   }
 
+  static Future<bool> getAdvancedFeaturesEnabled() {
+    final value = _getPreference<bool>(PreferenceKeys.advancedFeaturesEnabled);
+    return Future.value(value ?? false);
+  }
+
+  static Future<void> setAdvancedFeaturesEnabled(bool value) {
+    return _putPreference(PreferenceKeys.advancedFeaturesEnabled, value);
+  }
+
   static List<String> sanitizePinnedModels(Iterable<String> modelIds) {
     final sanitized = <String>[];
     final seen = <String>{};
@@ -584,7 +681,9 @@ class SettingsService {
   }
 
   static Future<List<String>> getPinnedModels() {
-    final raw = PreferencesStore.getStringList(_pinnedModelsKey);
+    final raw = PreferencesStore.getStringList(
+      scopedPreferenceReadKey(_pinnedModelsKey),
+    );
     if (raw == null) {
       return Future.value(const []);
     }
@@ -623,102 +722,125 @@ class SettingsService {
   }
 
   static AppSettings _loadSettingsSync() {
+    T? get<T>(String key) =>
+        PreferencesStore.get<T>(scopedPreferenceReadKey(key));
+    List<String>? getStringList(String key) =>
+        PreferencesStore.getStringList(scopedPreferenceReadKey(key));
     return AppSettings(
-      reduceMotion: PreferencesStore.get<bool>(_reduceMotionKey) ?? false,
+      reduceMotion: get<bool>(_reduceMotionKey) ?? false,
       animationSpeed:
-          PreferencesStore.get<num>(_animationSpeedKey)?.toDouble() ?? 1.0,
+          get<num>(_animationSpeedKey)?.toDouble() ?? 1.0,
       disableHapticsWhileStreaming:
-          PreferencesStore.get<bool>(_disableHapticsWhileStreamingKey) ?? false,
+          get<bool>(_disableHapticsWhileStreamingKey) ?? false,
       citationShowTitles:
-          PreferencesStore.get<bool>(PreferenceKeys.citationShowTitles) ??
+          get<bool>(PreferenceKeys.citationShowTitles) ??
           false,
-      highContrast: PreferencesStore.get<bool>(_highContrastKey) ?? false,
-      darkMode: PreferencesStore.get<bool>(_darkModeKey) ?? true,
-      defaultModel: PreferencesStore.get<String>(_defaultModelKey),
-      openRouterImageGenerationModel: PreferencesStore.get<String>(
+      highContrast: get<bool>(_highContrastKey) ?? false,
+      darkMode: get<bool>(_darkModeKey) ?? true,
+      defaultModel: get<String>(_defaultModelKey),
+      openRouterImageGenerationModel: get<String>(
         _openRouterImageGenerationModelKey,
       ),
       voiceLocaleId: normalizeVoiceLocaleId(
-        PreferencesStore.get<String>(_voiceLocaleKey),
+        get<String>(_voiceLocaleKey),
       ),
-      voiceHoldToTalk: PreferencesStore.get<bool>(_voiceHoldToTalkKey) ?? false,
+      voiceHoldToTalk: get<bool>(_voiceHoldToTalkKey) ?? false,
       voiceAutoSendFinal:
-          PreferencesStore.get<bool>(_voiceAutoSendKey) ?? false,
+          get<bool>(_voiceAutoSendKey) ?? false,
       voiceBargeInEnabled:
-          PreferencesStore.get<bool>(PreferenceKeys.voiceBargeInEnabled) ??
+          get<bool>(PreferenceKeys.voiceBargeInEnabled) ??
           false,
+      voiceCallMode: VoiceCallMode.values.firstWhere(
+        (mode) => mode.name == get<String>(PreferenceKeys.voiceCallMode),
+        orElse: () => VoiceCallMode.auto,
+      ),
       socketTransportMode:
-          PreferencesStore.get<String>(_socketTransportModeKey) ?? 'ws',
-      quickPills: PreferencesStore.getStringList(_quickPillsKey) ?? const [],
-      chatWebSearchEnabled: PreferencesStore.get<bool>(
+          get<String>(_socketTransportModeKey) ?? 'ws',
+      quickPills: getStringList(_quickPillsKey) ?? const [],
+      chatWebSearchEnabled: get<bool>(
         _chatWebSearchEnabledKey,
       ),
-      chatImageGenerationEnabled: PreferencesStore.get<bool>(
+      chatImageGenerationEnabled: get<bool>(
         _chatImageGenerationEnabledKey,
       ),
-      sendOnEnter: PreferencesStore.get<bool>(_sendOnEnterKey) ?? false,
-      ttsVoice: PreferencesStore.get<String>(PreferenceKeys.ttsVoice),
-      ttsVoiceName: PreferencesStore.get<String>(PreferenceKeys.ttsVoiceName),
+      sendOnEnter: get<bool>(_sendOnEnterKey) ?? false,
+      ttsVoice: get<String>(PreferenceKeys.ttsVoice),
+      ttsVoiceName: get<String>(PreferenceKeys.ttsVoiceName),
       ttsSpeechRate:
-          PreferencesStore.get<num>(PreferenceKeys.ttsSpeechRate)?.toDouble() ??
+          get<num>(PreferenceKeys.ttsSpeechRate)?.toDouble() ??
           0.5,
       ttsPitch:
-          PreferencesStore.get<num>(PreferenceKeys.ttsPitch)?.toDouble() ?? 1.0,
+          get<num>(PreferenceKeys.ttsPitch)?.toDouble() ?? 1.0,
       ttsVolume:
-          PreferencesStore.get<num>(PreferenceKeys.ttsVolume)?.toDouble() ??
+          get<num>(PreferenceKeys.ttsVolume)?.toDouble() ??
           1.0,
       ttsEngine: _parseTtsEngine(
-        PreferencesStore.get<String>(PreferenceKeys.ttsEngine),
+        get<String>(PreferenceKeys.ttsEngine),
       ),
-      ttsServerVoiceId: PreferencesStore.get<String>(
+      ttsServerVoiceId: get<String>(
         PreferenceKeys.ttsServerVoiceId,
       ),
-      ttsServerVoiceName: PreferencesStore.get<String>(
+      ttsServerVoiceName: get<String>(
         PreferenceKeys.ttsServerVoiceName,
       ),
       sttPreference: _parseSttPreference(
-        PreferencesStore.get<String>(PreferenceKeys.voiceSttPreference),
+        get<String>(PreferenceKeys.voiceSttPreference),
       ),
       sttLanguageCode: normalizeSttLanguageCode(
-        PreferencesStore.get<String>(_voiceSttLanguageCodeKey),
+        get<String>(_voiceSttLanguageCodeKey),
       ),
       androidAssistantTrigger: _parseAndroidAssistantTrigger(
-        PreferencesStore.get<String>(_androidAssistantTriggerKey),
+        get<String>(_androidAssistantTriggerKey),
       ),
       voiceSilenceDuration:
-          (PreferencesStore.get<int>(_voiceSilenceDurationKey) ??
+          (get<int>(_voiceSilenceDurationKey) ??
                   defaultVoiceSilenceDurationMs)
               .clamp(minVoiceSilenceDurationMs, maxVoiceSilenceDurationMs),
       temporaryChatByDefault:
-          PreferencesStore.get<bool>(PreferenceKeys.temporaryChatByDefault) ??
+          get<bool>(PreferenceKeys.temporaryChatByDefault) ??
+          false,
+      advancedFeaturesEnabled:
+          get<bool>(PreferenceKeys.advancedFeaturesEnabled) ??
           false,
       pinnedModels: sanitizePinnedModels(
-        PreferencesStore.getStringList(_pinnedModelsKey) ?? const <String>[],
+        getStringList(_pinnedModelsKey) ?? const <String>[],
       ),
       notificationsEnabled:
-          PreferencesStore.get<bool>(_notificationsEnabledKey) ?? false,
+          get<bool>(_notificationsEnabledKey) ?? false,
       notificationSound:
-          PreferencesStore.get<bool>(_notificationSoundKey) ?? true,
+          get<bool>(_notificationSoundKey) ?? true,
       notificationSoundAlways:
-          PreferencesStore.get<bool>(_notificationSoundAlwaysKey) ?? false,
+          get<bool>(_notificationSoundAlwaysKey) ?? false,
       notificationInAppBanner:
-          PreferencesStore.get<bool>(_notificationInAppBannerKey) ?? true,
+          get<bool>(_notificationInAppBannerKey) ?? true,
       notificationSystem:
-          PreferencesStore.get<bool>(_notificationSystemKey) ?? true,
+          get<bool>(_notificationSystemKey) ?? true,
       notificationChatEnabled:
-          PreferencesStore.get<bool>(_notificationChatEnabledKey) ?? true,
+          get<bool>(_notificationChatEnabledKey) ?? true,
       notificationChannelEnabled:
-          PreferencesStore.get<bool>(_notificationChannelEnabledKey) ?? true,
+          get<bool>(_notificationChannelEnabledKey) ?? true,
       webSearchEngine: WebSearchEngineChoice.parse(
-        PreferencesStore.get<String>(PreferenceKeys.webSearchEngine),
+        get<String>(PreferenceKeys.webSearchEngine),
       ),
       webSearchSafeSearch: parseSafeSearch(
-        PreferencesStore.get<String>(PreferenceKeys.webSearchSafeSearch),
+        get<String>(PreferenceKeys.webSearchSafeSearch),
       ),
-      webSearchRegion: PreferencesStore.get<String>(
+      webSearchRegion: get<String>(
         PreferenceKeys.webSearchRegion,
       ),
+      directVoiceProvider: _parseDirectVoiceProvider(
+        get<String>(PreferenceKeys.directVoiceProvider),
+      ),
     );
+  }
+
+  static DirectVoiceProviderSettings? _parseDirectVoiceProvider(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return DirectVoiceProviderSettings.fromJson(jsonDecode(raw));
+    } on FormatException {
+      return null;
+    }
   }
 }
 
@@ -741,6 +863,7 @@ class AppSettings {
   final bool voiceHoldToTalk;
   final bool voiceAutoSendFinal;
   final bool voiceBargeInEnabled;
+  final VoiceCallMode voiceCallMode;
   final String socketTransportMode; // 'polling' or 'ws'
   final List<String> quickPills; // e.g., ['web','image']
   final bool? chatWebSearchEnabled;
@@ -759,6 +882,7 @@ class AppSettings {
   final AndroidAssistantTrigger androidAssistantTrigger;
   final int voiceSilenceDuration;
   final bool temporaryChatByDefault;
+  final bool advancedFeaturesEnabled;
   final List<String> pinnedModels;
   // Notifications (see PreferenceKeys for which are server-synced).
   final bool notificationsEnabled;
@@ -774,6 +898,10 @@ class AppSettings {
 
   /// `null` follows the device locale; see [resolveWebSearchRegion].
   final String? webSearchRegion;
+
+  /// The Direct connection that speaks and listens for Direct and Apple
+  /// chats, or `null` when none is chosen.
+  final DirectVoiceProviderSettings? directVoiceProvider;
   const AppSettings({
     this.reduceMotion = false,
     this.animationSpeed = 1.0,
@@ -787,6 +915,7 @@ class AppSettings {
     this.voiceHoldToTalk = false,
     this.voiceAutoSendFinal = false,
     this.voiceBargeInEnabled = false,
+    this.voiceCallMode = VoiceCallMode.auto,
     this.socketTransportMode = 'ws',
     this.quickPills = const [],
     this.chatWebSearchEnabled,
@@ -805,6 +934,7 @@ class AppSettings {
     this.androidAssistantTrigger = AndroidAssistantTrigger.overlay,
     this.voiceSilenceDuration = SettingsService.defaultVoiceSilenceDurationMs,
     this.temporaryChatByDefault = false,
+    this.advancedFeaturesEnabled = false,
     this.pinnedModels = const [],
     this.notificationsEnabled = false,
     this.notificationSound = true,
@@ -816,6 +946,7 @@ class AppSettings {
     this.webSearchEngine = WebSearchEngineChoice.auto,
     this.webSearchSafeSearch = SafeSearch.moderate,
     this.webSearchRegion,
+    this.directVoiceProvider,
   });
 
   AppSettings copyWith({
@@ -831,6 +962,7 @@ class AppSettings {
     bool? voiceHoldToTalk,
     bool? voiceAutoSendFinal,
     bool? voiceBargeInEnabled,
+    VoiceCallMode? voiceCallMode,
     String? socketTransportMode,
     List<String>? quickPills,
     bool? chatWebSearchEnabled,
@@ -849,6 +981,7 @@ class AppSettings {
     int? voiceSilenceDuration,
     AndroidAssistantTrigger? androidAssistantTrigger,
     bool? temporaryChatByDefault,
+    bool? advancedFeaturesEnabled,
     List<String>? pinnedModels,
     bool? notificationsEnabled,
     bool? notificationSound,
@@ -860,6 +993,7 @@ class AppSettings {
     WebSearchEngineChoice? webSearchEngine,
     SafeSearch? webSearchSafeSearch,
     Object? webSearchRegion = const _DefaultValue(),
+    Object? directVoiceProvider = const _DefaultValue(),
   }) {
     return AppSettings(
       reduceMotion: reduceMotion ?? this.reduceMotion,
@@ -882,6 +1016,7 @@ class AppSettings {
       voiceHoldToTalk: voiceHoldToTalk ?? this.voiceHoldToTalk,
       voiceAutoSendFinal: voiceAutoSendFinal ?? this.voiceAutoSendFinal,
       voiceBargeInEnabled: voiceBargeInEnabled ?? this.voiceBargeInEnabled,
+      voiceCallMode: voiceCallMode ?? this.voiceCallMode,
       socketTransportMode: socketTransportMode ?? this.socketTransportMode,
       quickPills: quickPills ?? this.quickPills,
       chatWebSearchEnabled: chatWebSearchEnabled ?? this.chatWebSearchEnabled,
@@ -911,6 +1046,8 @@ class AppSettings {
       voiceSilenceDuration: voiceSilenceDuration ?? this.voiceSilenceDuration,
       temporaryChatByDefault:
           temporaryChatByDefault ?? this.temporaryChatByDefault,
+      advancedFeaturesEnabled:
+          advancedFeaturesEnabled ?? this.advancedFeaturesEnabled,
       pinnedModels: pinnedModels ?? this.pinnedModels,
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       notificationSound: notificationSound ?? this.notificationSound,
@@ -928,6 +1065,9 @@ class AppSettings {
       webSearchRegion: webSearchRegion is _DefaultValue
           ? this.webSearchRegion
           : webSearchRegion as String?,
+      directVoiceProvider: directVoiceProvider is _DefaultValue
+          ? this.directVoiceProvider
+          : directVoiceProvider as DirectVoiceProviderSettings?,
     );
   }
 
@@ -948,6 +1088,7 @@ class AppSettings {
         other.voiceHoldToTalk == voiceHoldToTalk &&
         other.voiceAutoSendFinal == voiceAutoSendFinal &&
         other.voiceBargeInEnabled == voiceBargeInEnabled &&
+        other.voiceCallMode == voiceCallMode &&
         other.chatWebSearchEnabled == chatWebSearchEnabled &&
         other.chatImageGenerationEnabled == chatImageGenerationEnabled &&
         other.sttPreference == sttPreference &&
@@ -964,6 +1105,7 @@ class AppSettings {
         other.androidAssistantTrigger == androidAssistantTrigger &&
         other.voiceSilenceDuration == voiceSilenceDuration &&
         other.temporaryChatByDefault == temporaryChatByDefault &&
+        other.advancedFeaturesEnabled == advancedFeaturesEnabled &&
         other.notificationsEnabled == notificationsEnabled &&
         other.notificationSound == notificationSound &&
         other.notificationSoundAlways == notificationSoundAlways &&
@@ -974,6 +1116,7 @@ class AppSettings {
         other.webSearchEngine == webSearchEngine &&
         other.webSearchSafeSearch == webSearchSafeSearch &&
         other.webSearchRegion == webSearchRegion &&
+        other.directVoiceProvider == directVoiceProvider &&
         _listEquals(other.pinnedModels, pinnedModels) &&
         _listEquals(other.quickPills, quickPills);
     // socketTransportMode intentionally not included in == to avoid frequent rebuilds
@@ -994,6 +1137,7 @@ class AppSettings {
       voiceHoldToTalk,
       voiceAutoSendFinal,
       voiceBargeInEnabled,
+      voiceCallMode,
       chatWebSearchEnabled,
       chatImageGenerationEnabled,
       sttPreference,
@@ -1010,6 +1154,7 @@ class AppSettings {
       androidAssistantTrigger,
       voiceSilenceDuration,
       temporaryChatByDefault,
+      advancedFeaturesEnabled,
       notificationsEnabled,
       notificationSound,
       notificationSoundAlways,
@@ -1020,6 +1165,7 @@ class AppSettings {
       webSearchEngine,
       webSearchSafeSearch,
       webSearchRegion,
+      directVoiceProvider,
       Object.hashAllUnordered(quickPills),
       Object.hashAll(pinnedModels),
     ]);
@@ -1042,6 +1188,9 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
 
   @override
   AppSettings build() {
+    // Model and chat defaults belong to the active Open WebUI account, so a
+    // settled switch reloads them. Device-wide settings read the same values.
+    ref.watch(settledActiveAccountIdProvider);
     if (PreferencesStore.isReady) {
       return SettingsService._loadSettingsSync();
     }
@@ -1130,23 +1279,55 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
   /// without echoing them back to the server. Used at bootstrap so the server
   /// stays authoritative for cross-device parity. Only writes when a value
   /// actually changed to avoid spurious rebuilds.
+  ///
+  /// They are stored under [accountId], the account they were fetched for:
+  /// a switch can complete before or while they are written, and they must
+  /// not land under the account that took over.
   Future<void> applyServerNotificationPrefs({
+    required String accountId,
     bool? enabled,
     bool? sound,
     bool? soundAlways,
   }) async {
-    final next = state.copyWith(
-      notificationsEnabled: enabled,
-      notificationSound: sound,
-      notificationSoundAlways: soundAlways,
-    );
-    if (next == state) return;
-    state = next;
-    if (enabled != null) await SettingsService.setNotificationsEnabled(enabled);
-    if (sound != null) await SettingsService.setNotificationSound(sound);
-    if (soundAlways != null) {
-      await SettingsService.setNotificationSoundAlways(soundAlways);
+    void show() {
+      if (currentPreferenceAccountId() != accountId) return;
+      final next = state.copyWith(
+        notificationsEnabled: enabled,
+        notificationSound: sound,
+        notificationSoundAlways: soundAlways,
+      );
+      if (next != state) state = next;
     }
+
+    show();
+    String key(String baseKey) =>
+        accountScopedPreferenceKey(baseKey, accountId);
+    final written = {
+      key(SettingsService._notificationsEnabledKey): ?enabled,
+      key(SettingsService._notificationSoundKey): ?sound,
+      key(SettingsService._notificationSoundAlwaysKey): ?soundAlways,
+    };
+    // Read from the server for an account that can be signed out of and
+    // removed meanwhile: what lands for it then goes too.
+    try {
+      await PreferencesStore.putAll(written);
+    } finally {
+      await removeClearedAccountPreferences(written.keys);
+    }
+    // Switching away and back while these were written reloads the settings
+    // from the ones written by then. Show what is stored once they all are:
+    // a choice the user made meanwhile is stored after the server's, and
+    // stays.
+    if (currentPreferenceAccountId() != accountId) return;
+    bool? stored(String baseKey) => PreferencesStore.getBool(key(baseKey));
+    final next = state.copyWith(
+      notificationsEnabled: stored(SettingsService._notificationsEnabledKey),
+      notificationSound: stored(SettingsService._notificationSoundKey),
+      notificationSoundAlways: stored(
+        SettingsService._notificationSoundAlwaysKey,
+      ),
+    );
+    if (next != state) state = next;
   }
 
   Future<void> setHighContrast(bool value) async {
@@ -1259,6 +1440,18 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     await SettingsService._putOrRemove(PreferenceKeys.webSearchRegion, value);
   }
 
+  /// Chooses the Voice provider for Direct and Apple chats; `null` clears it.
+  Future<void> setDirectVoiceProvider(
+    DirectVoiceProviderSettings? value,
+  ) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(directVoiceProvider: value);
+    await SettingsService._putOrRemove(
+      PreferenceKeys.directVoiceProvider,
+      value == null ? null : jsonEncode(value.toJson()),
+    );
+  }
+
   Future<void> setSendOnEnter(bool value) async {
     state = state.copyWith(sendOnEnter: value);
     await SettingsService.setSendOnEnter(value);
@@ -1267,6 +1460,16 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
   Future<void> setTemporaryChatByDefault(bool value) async {
     state = state.copyWith(temporaryChatByDefault: value);
     await SettingsService.setTemporaryChatByDefault(value);
+  }
+
+  Future<void> setAdvancedFeaturesEnabled(bool value) async {
+    final pendingLoad = _pendingLoad;
+    if (pendingLoad != null) {
+      await pendingLoad;
+      if (!ref.mounted) return;
+    }
+    state = state.copyWith(advancedFeaturesEnabled: value);
+    await SettingsService.setAdvancedFeaturesEnabled(value);
   }
 
   Future<void> setPinnedModels(List<String> modelIds) async {
@@ -1296,6 +1499,16 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     }
     state = state.copyWith(sttPreference: preference);
     await SettingsService.saveSettings(state);
+  }
+
+  Future<void> setVoiceCallMode(VoiceCallMode mode) async {
+    state = state.copyWith(voiceCallMode: mode);
+    // Only this key: a whole snapshot could put back an older value of
+    // another setting saved meanwhile.
+    await SettingsService._putPreference(
+      PreferenceKeys.voiceCallMode,
+      mode.name,
+    );
   }
 
   Future<void> setVoiceBargeInEnabled(bool value) async {
@@ -1387,6 +1600,11 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
   Future<void> resetToDefaults() async {
     const defaultSettings = AppSettings();
     await SettingsService.saveSettings(defaultSettings);
+    // Written only by its own setter, so the bulk save leaves it.
+    await SettingsService._putOrRemove(
+      PreferenceKeys.directVoiceProvider,
+      null,
+    );
     state = defaultSettings;
   }
 }

@@ -35,8 +35,9 @@ governed by your Oxeegen account terms and Oxeegen's privacy policy.
   credentials stay on your device until you sign out, clear the app's data or
   uninstall it.
 - **Network**: requests go directly from your device to the Oxeegen
-  Intelligence region you selected. Choosing another region signs you out of
-  the first one; data is not copied between regions.
+  Intelligence region of the account in use. You can be signed in to both
+  regions; each account's data stays with its region and is not copied to
+  the other.
 
 ## Permissions
 

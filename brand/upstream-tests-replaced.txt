@@ -4,3 +4,4 @@
 # so this list cannot silently go stale.
 
 test/features/profile/profile_page_hermes_test.dart  # settings list: Oxee shows the Oxeegen region instead of Hermes/Direct rows and has no donation section
+test/features/profile/manage_accounts_page_test.dart  # Accounts page: Oxee shows Oxeegen accounts only (no Hermes or Direct cards); 4 of its 10 tests assert those cards. Oxee's own coverage: test/brand/oxee_settings_test.dart

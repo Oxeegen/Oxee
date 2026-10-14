@@ -51,25 +51,39 @@ one (and the absence of what it removed).
 
 | File | Hook |
 | --- | --- |
-| `lib/core/router/app_router.dart` | `backendChooser`, `serverConnection` and `login` routes build `OxeeRegionPage`; `serverConnection` takes the region to auto-connect as `extra`. |
-| `lib/features/profile/views/profile_page.dart` | Region row replaces the Hermes, Direct connections and "Connect Open WebUI" rows; donation section and its links removed. |
-| `lib/features/navigation/widgets/sidebar_user_pill.dart` | Same for the iOS 26 native settings sheet; support section removed. |
+| `lib/core/router/app_router.dart` | `backendChooser`, `serverConnection`, `addServer` and `login` routes build `OxeeRegionPage` (`addServer` in adding mode); `extra` is the region to connect to at once. |
+| `lib/features/profile/views/profile_page.dart` | Region row in the account card; no donation section. |
+| `lib/features/profile/widgets/account_actions.dart` | `showAddAccountSheet` opens the region picker (`openOxeeRegionAddAccount`) instead of upstream's sheet with Hermes and Direct tabs. Every "add account" path goes through it. |
+| `lib/features/profile/views/manage_accounts_page.dart` | No Hermes or Direct cards (`oxeeOffersOtherBackends`). |
+| `lib/features/navigation/widgets/sidebar_user_pill.dart` | iOS 26 native Settings root: `oxeeNativeRootSections` adds the Region row and drops the donation section; no support items. |
+| `lib/core/services/native_sheet_hydration_service.dart` | The root it rebuilds goes through `oxeeNativeRootSections` too; native Accounts page through `oxeeNativeAccountsDetail` (no Hermes/Direct); About rows through `oxeeNativeAboutItems` (no release notes). |
 | `lib/main.dart` | Routes the native-sheet region row to `showOxeeRegionSwitcher`; no `ReleaseNotesCoordinator` (upstream's "What's new" popup). |
-| `lib/core/utils/native_sheet_utils.dart` | `buildNativeAboutItems`: no release-notes row in the native About sheet (repo link via `rebrand.py`). |
+| `lib/core/utils/native_sheet_utils.dart` | Unedited apart from the repo link (`rebrand.py`): Oxee adjusts what its builders return, at the call sites, so upstream's tests of them keep passing. |
 | `lib/features/profile/views/about_page.dart` | No release-notes row (repo link via `rebrand.py`). |
 | `.github/workflows/release.yml` | Guarded to `cogwheel0/conduit`: upstream's release never runs here. |
-| `.github/workflows/l10n.yml` | Guarded the same way; `ci.yml`'s Localization job runs its ARB checks. |
-| `.github/workflows/ci.yml` | Runs `check_brand.py` and `flutter_test.py` instead of plain `flutter test`. |
+| `.github/workflows/ci.yml` | Runs `check_brand.py` before the gates and `flutter_test.py` in place of `tool/run_test_shards.dart`. |
+
+Prefer a call-site adjustment over an edit inside an upstream builder: the
+builder's upstream tests keep passing and merges do not conflict there.
+
+**Platform UI seam.** Upstream's CI (`tool/platform_ui_lint.dart`) fails a
+`lib/` file that imports `material_ui`/`cupertino_ui` or uses a listed
+control (`CircularProgressIndicator`, `AlertDialog`, ...) beyond its entry in
+`tool/platform_ui_allowlist.yaml`, and also fails an entry that became
+*smaller* (stale). Brand files stay at zero: `flutter/widgets.dart`, the
+`platform_ui` facade and `platform_ui/vocabulary.dart` (icons, `Theme`). A hook
+must not add or remove a counted import or control in an upstream file.
 
 ### How switching region works
 
-Signing in goes through upstream's `selectUnauthenticatedServerConfig`, which
-replaces the saved server. So a switch is: confirm, full sign-out
-(`signOutCoordinatorProvider.signOut(keepServerDetails: false)`), then
-`serverConnection` with the target region as `extra`, which connects and opens
-the sign-in page. Upstream has per-server session vaults
-(`switchToServerConfig`) that could later keep both regions signed in; no
-upstream UI uses them yet.
+Since upstream 4.2.0 several Open WebUI accounts stay signed in. The Region
+row (`showOxeeRegionSwitcher`) switches to the other region's saved account
+(`switchToSavedAccount`) when there is one; otherwise it begins an account
+addition (`openOxeeRegionAddAccount`: `accountAdditionOriginProvider.begin`,
+then `addServer` with the region) and the sign-in page adds the account next
+to the current one. The picker in adding mode ends the addition when it goes
+and, on Back, drops an addition whose sign-in never finished
+(`abandonAddedAccount`), as upstream's server page does.
 
 ## Taking an upstream release
 

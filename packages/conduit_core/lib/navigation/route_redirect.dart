@@ -8,6 +8,9 @@ import 'package:conduit_core/navigation/routes.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/providers/backend_mode_providers.dart';
 import 'package:conduit_core/providers/chat_entry_readiness_providers.dart';
+import 'package:conduit_core/providers/openwebui_accounts_controller.dart';
+import 'package:conduit_core/providers/openwebui_route_resolver.dart'
+    show proxySignInForRouteEditingProvider;
 import 'package:riverpod/misc.dart';
 import 'package:riverpod/riverpod.dart';
 
@@ -25,6 +28,8 @@ final List<ProviderListenable<Object?>> routeRedirectDependencies = [
   // Hermes-only routing: re-evaluate when the preferred backend changes or
   // the Hermes config becomes usable (secrets finish loading).
   preferredBackendProvider,
+  accountAdditionOriginProvider,
+  proxySignInForRouteEditingProvider,
   hermesConfigProvider,
   hermesSecretsLoadingProvider,
   effectiveDirectConnectionProfilesProvider,
@@ -42,16 +47,29 @@ bool isHermesOnlyAppLocation(String location) =>
 bool _isAccountlessBackendLocation(String location) {
   return location == Routes.chat ||
       location == Routes.profile ||
+      // The saved accounts are on the device: switching to one still
+      // signed in needs no session on the active account.
+      location == Routes.accounts ||
+      // A server's addresses are on the device too, and Manage accounts
+      // opens them.
+      location == Routes.serverAddresses ||
+      location == Routes.serverAddressEditor ||
       location == Routes.audioSettings ||
+      location == Routes.voiceProviderSettings ||
       location == Routes.appearanceSettings ||
       location == Routes.chatSettings ||
       location == Routes.dataConnectionSettings ||
       location == Routes.personalization ||
       isDirectConnectionsLocation(location) ||
-      location == Routes.hermesSettings ||
+      isHermesSettingsLocation(location) ||
       location == Routes.hermesJobs ||
       location == Routes.about;
 }
+
+/// The saved Hermes connection list and its connection editors.
+bool isHermesSettingsLocation(String location) =>
+    location == Routes.hermesSettings ||
+    location.startsWith('${Routes.hermesSettings}/connections/');
 
 bool isDirectConnectionsLocation(String location) {
   return location == Routes.directConnections ||
@@ -103,7 +121,7 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
   );
   final isLocalBackendSetup =
       location == Routes.backendChooser ||
-      location == Routes.hermesSettings ||
+      isHermesSettingsLocation(location) ||
       isDirectConnectionsLocation(location);
 
   // A stale optional Open WebUI credential must not block local-backend
@@ -127,7 +145,9 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
   // the accountless fallback below strand a completed sign-in on that page.
   if (authState == AuthNavigationState.authenticated &&
       isAuthLocation(location) &&
-      location != Routes.connectionIssue) {
+      location != Routes.connectionIssue &&
+      !_isAddingAccountFromActive(read) &&
+      !_isProxySignInForRouteEditing(location, read)) {
     return Routes.chat;
   }
 
@@ -136,7 +156,11 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
     return null;
   }
 
-  if (activeServerAsync.isLoading) {
+  // A refresh of the server already known keeps the user where they are:
+  // re-reading its addresses, or moving to another of them, does not change
+  // whose app this is, and an account change shows its own loading through
+  // auth. Only a first lookup holds the splash.
+  if (activeServerAsync.isLoading && !activeServerAsync.hasValue) {
     // Avoid redirect loops: do not override explicit auth routes while loading
     if (isAuthLocation(location)) return null;
     if (prefersDirect && !directUsable) {
@@ -163,6 +187,12 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
   }
 
   if (activeServerAsync.hasError) {
+    // A failed read of the active server leaves an addition's pages open
+    // while the account it began from is the one last settled active: the
+    // read can fail for a moment, as the Keychain can be locked.
+    if (isAuthLocation(location) && _isAddingAccountFromActive(read)) {
+      return null;
+    }
     if (prefersDirect && !directUsable) {
       if (isAuthLocation(location)) return null;
       final destination = directProfilesLoading
@@ -186,7 +216,7 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
     return location == Routes.connectionIssue ? null : Routes.connectionIssue;
   }
 
-  final activeServer = activeServerAsync.asData?.value;
+  final activeServer = activeServerAsync.value;
   final hasActiveServer = activeServer != null;
   // A preferred Direct backend is usable only while at least one validated,
   // enabled profile has resolved. With an authenticated OpenWebUI session we
@@ -253,6 +283,7 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
     // Exception: allow staying on server connection, authentication,
     // proxy auth, and SSO pages during the connection/auth flow.
     if (location == Routes.serverConnection ||
+        location == Routes.addServer ||
         location == Routes.authentication ||
         location == Routes.proxyAuth ||
         location == Routes.ssoAuth ||
@@ -282,6 +313,11 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
       if (isAuthLocation(location)) return null;
       return Routes.authentication;
     case AuthNavigationState.error:
+      // A request refused for the account an addition began from, which
+      // keeps its token, is that account's: the addition's pages stay.
+      if (isAuthLocation(location) && _isAddingAccountFromActive(read)) {
+        return null;
+      }
       final authSnapshot = read(authStateManagerProvider)
           .maybeWhen(data: (state) => state, orElse: () => null);
       final hasValidToken = authSnapshot?.hasValidToken ?? false;
@@ -296,6 +332,13 @@ String? resolveRouteRedirect(String location, ProviderRead read) {
       // Otherwise show connection issue page for recoverable auth errors
       return location == Routes.connectionIssue ? null : Routes.connectionIssue;
     case AuthNavigationState.authenticated:
+      // Adding another account passes through sign-in screens while the
+      // current one is still signed in. Stay until the new account is the
+      // active one; then this rule no longer applies and chat takes over.
+      if (isAuthLocation(location) && _isAddingAccountFromActive(read)) {
+        return null;
+      }
+      if (_isProxySignInForRouteEditing(location, read)) return null;
       // Avoid unnecessary redirects if already on a non-auth route
       if (isAuthLocation(location) ||
           location == Routes.splash ||
@@ -329,8 +372,29 @@ String? _workspaceRedirect(String location, ProviderRead read) {
   return null;
 }
 
+/// Whether another account is being added and the account it began from is
+/// still the active one. Signing in to the new account makes it active,
+/// which ends this, and ordinary routing lands it in chat.
+bool _isAddingAccountFromActive(ProviderRead read) {
+  final origin = read(accountAdditionOriginProvider);
+  if (origin == null || origin.isEmpty) return false;
+  final active = read(activeServerProvider);
+  // A read that failed names no account; the one last settled active
+  // stands for it.
+  final activeId = active.hasError && !active.hasValue
+      ? read(settledActiveAccountIdProvider)
+      : active.value?.id;
+  return origin == activeId;
+}
+
+/// Whether [location] is the proxy sign-in the address editor opened to check
+/// a proxy-protected address, which it does while signed in.
+bool _isProxySignInForRouteEditing(String location, ProviderRead read) =>
+    location == Routes.proxyAuth && read(proxySignInForRouteEditingProvider);
+
 bool isAuthLocation(String location) {
   return location == Routes.serverConnection ||
+      location == Routes.addServer ||
       location == Routes.login ||
       location == Routes.authentication ||
       location == Routes.connectionIssue ||

@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Novinky",
+      "intro": "Ahoj! Môžeš mať prihlásených niekoľko účtov Open WebUI a prepínať medzi nimi a uložiť si niekoľko pripojení Hermes. Hovory môžu hovoriť hlasom v reálnom čase, ktorý môžeš prerušiť. Open WebUI 0.12 funguje vrátane dvojfázového prihlásenia a ďalšie funkcie Open WebUI už nevyžadujú voľbu Pokročilé.",
+      "bullets": [
+        {
+          "text": "Účty: maj prihlásených niekoľko účtov Open WebUI na jednom alebo viacerých serveroch a prepínaj medzi nimi z profilu alebo z novej stránky Účty v hornej časti Nastavení. Akýkoľvek účet alebo pripojenie pridáš z jedného panela. Server môže mať niekoľko adries, napríklad LAN, Tailscale a verejnú proxy; aplikácia použije prvú, ktorá odpovie.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: ulož si niekoľko pomenovaných pripojení, napríklad Domov a Výskum, a prepínaj medzi nimi z bočného panela, nastavení alebo stránky Účty. Chat, ktorého relácia patrí inému pripojeniu, ponúkne prepnutie naň.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Hovory v reálnom čase: v Open WebUI 0.12, Direct a Hermes Desktop Gateway môžu hovory hovoriť hlasom OpenAI v reálnom čase a keď doň prehovoríš, stíchne. Pre chaty Direct a Apple vyber Poskytovateľa hlasu v nastaveniach zvuku. Prevod reči na text a textu na reč na serveri sa riadi backendom každého chatu.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: aplikácia funguje bez upozornenia na kompatibilitu. Dvojfázové overenie pri prihlásení funguje vrátane nastavenia a záložných kódov. Export zručností, zdieľanie priečinkov, vynútené dočasné chaty a schvaľovanie nástrojov zodpovedajú verzii 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Funkcie Open WebUI: front konceptov, interpret kódu, vetvy, publikum chatu, projektové priečinky, zdieľanie, členovia kanálov a kalendár už nevyžadujú voľbu Pokročilé. Pokročilé pridáva porovnanie modelov, plánované úlohy, webhooky a správu dát. Veľké chaty sa už pri každom otvorení nesťahujú znova a zvolená úroveň uvažovania zostane.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

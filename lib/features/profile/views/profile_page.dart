@@ -14,11 +14,18 @@ import '../../../shared/widgets/adaptive_route_shell.dart';
 import '../../../shared/widgets/adaptive_toolbar_components.dart';
 
 import '../../../shared/utils/ui_utils.dart';
-import '../../../shared/widgets/sign_out_options_dialog.dart';
 
 import 'package:conduit_core/providers/app_providers.dart';
+import 'package:conduit_core/features/automations/providers/automation_providers.dart'
+    show scheduledTasksEntryVisibleProvider;
+import 'package:conduit_core/features/calendar/providers/calendar_providers.dart'
+    show calendarAvailableProvider;
+import 'package:conduit_core/features/chat/providers/chat_providers.dart'
+    show chatDataControlsEntryVisibleProvider;
+import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart';
 
 import 'package:conduit_core/providers/backend_mode_providers.dart';
+import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 
 import '../../../shared/services/navigation_service.dart';
 
@@ -28,7 +35,6 @@ import '../../workspace/providers/workspace_capabilities_provider.dart';
 
 import 'package:conduit_core/services/api_service.dart';
 
-import 'package:conduit_core/models/user.dart' as models;
 import 'package:conduit_core/utils/user_display_name.dart';
 
 import 'package:conduit_core/utils/user_avatar_utils.dart';
@@ -37,10 +43,12 @@ import '../../../shared/widgets/user_avatar.dart';
 import '../../../shared/widgets/utility_components.dart';
 
 import '../../../brand/oxee_brand.dart'; // OXEE: region row
+import '../widgets/account_actions.dart';
 
 /// Profile page (You tab) showing user info and main actions
 /// Enhanced with production-grade design tokens for better cohesion
 class ProfilePage extends ConsumerWidget {
+
   const ProfilePage({super.key});
 
   @override
@@ -135,6 +143,9 @@ class ProfilePage extends ConsumerWidget {
       directPrimary: directPrimary,
       hasOpenWebUiAccount: hasOpenWebUiAccount,
     );
+    final accountsAsync = ref.watch(openWebUiAccountsProvider);
+    final accounts = accountsAsync.value ?? const <OpenWebUiAccountEntry>[];
+    final activeAccount = accounts.where((entry) => entry.isActive).firstOrNull;
     return ListView(
       physics: const BouncingScrollPhysics(
         parent: AlwaysScrollableScrollPhysics(),
@@ -146,15 +157,31 @@ class ProfilePage extends ConsumerWidget {
         Spacing.pagePadding + mediaQuery.padding.bottom,
       ),
       children: [
-        if (hasOpenWebUiAccount) ...[
-          _buildProfileHeader(context, userData, api),
-          const SizedBox(height: Spacing.lg),
-        ],
+        _buildAccountCard(
+          context,
+          ref,
+          user: hasOpenWebUiAccount ? userData : null,
+          api: api,
+          accounts: accounts,
+        ),
+        const SizedBox(height: Spacing.lg),
         ...items,
         // OXEE: no donation section.
         if (hasOpenWebUiAccount) const SizedBox(height: Spacing.xl),
         if (hasOpenWebUiAccount)
-          InsetGroupedList(children: [_buildSignOutOption(context, ref)]),
+          InsetGroupedList(
+            children: [
+              // With several accounts, Sign out leaves this one and the next
+              // takes over; signing out of all is on the Accounts page. With
+              // one, it is what it always was -- and until the accounts are
+              // read, or when they cannot be, there may be several, and it
+              // signs out of every one: say so.
+              if (accounts.length > 1 && activeAccount != null)
+                _buildSignOutOfAccountOption(context, ref, activeAccount)
+              else
+                _buildSignOutOption(context, ref, all: !accountsAsync.hasValue),
+            ],
+          ),
       ],
     );
   }
@@ -163,77 +190,91 @@ class ProfilePage extends ConsumerWidget {
     return Spacing.lg;
   }
 
-  Widget _buildProfileHeader(
+  /// Who Settings is for -- the Open WebUI account signed in, else the
+  /// Hermes connection in use, else Direct -- leading to every account and
+  /// connection, with the way to add another under it.
+  Widget _buildAccountCard(
     BuildContext context,
-    dynamic user,
-    ApiService? api,
-  ) {
+    WidgetRef ref, {
+    required dynamic user,
+    required ApiService? api,
+    required List<OpenWebUiAccountEntry> accounts,
+  }) {
     final l10n = AppLocalizations.of(context)!;
-    final displayName = deriveUserDisplayName(
-      user,
-      fallback: l10n.userFallbackName,
-    );
-    final characters = displayName.characters;
-    final initial = characters.isNotEmpty
-        ? characters.first.toUpperCase()
-        : 'U';
-    final avatarUrl = resolveUserAvatarUrlForUser(api, user);
-
-    String? extractEmail(dynamic source) {
-      if (source is models.User) {
-        return source.email;
-      }
-      if (source is Map) {
-        final value = source['email'];
-        if (value is String && value.trim().isNotEmpty) {
-          return value.trim();
-        }
-        final nested = source['user'];
-        if (nested is Map) {
-          final nestedValue = nested['email'];
-          if (nestedValue is String && nestedValue.trim().isNotEmpty) {
-            return nestedValue.trim();
-          }
-        }
-      }
-      return null;
-    }
-
-    final email = extractEmail(user) ?? l10n.noEmailLabel;
     final theme = context.conduitTheme;
-    // Identity header: centered avatar, name, and account line,
-    // with an explicit pill that opens the account editor.
-    return Column(
+    final signedInName = user == null
+        ? null
+        : deriveUserDisplayName(user, fallback: l10n.userFallbackName);
+    final card = accountCardSummary(
+      l10n,
+      signedInName: signedInName,
+      accounts: accounts,
+      hermesConnections: ref.watch(hermesConnectionsProvider),
+      hermesInUseId: ref.watch(hermesEnabledProvider)
+          ? ref.watch(hermesActiveConnectionIdProvider)
+          : null,
+    );
+    final Widget leading = switch (card.kind) {
+      AccountCardKind.openWebUi => UserAvatar(
+        size: IconSize.xl,
+        imageUrl: resolveUserAvatarUrlForUser(api, user),
+        fallbackText: card.title.characters.isEmpty
+            ? 'U'
+            : card.title.characters.first.toUpperCase(),
+      ),
+      AccountCardKind.hermes => _buildAssetIconBadge(
+        context,
+        'assets/icons/hermes_agent.png',
+        color: theme.textPrimary,
+      ),
+      AccountCardKind.direct => _buildIconBadge(
+        context,
+        UiUtils.platformIcon(
+          ios: CupertinoIcons.link,
+          android: Icons.hub_outlined,
+        ),
+        color: theme.iconSecondary,
+      ),
+    };
+
+    return InsetGroupedList(
+      key: const Key('settings-account-card'),
       children: [
-        UserAvatar(size: 80, imageUrl: avatarUrl, fallbackText: initial),
-        const SizedBox(height: Spacing.sm + Spacing.xxs),
-        Text(
-          displayName,
-          textAlign: TextAlign.center,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: AppTypography.headlineSmallStyle.copyWith(
-            color: theme.textPrimary,
-            fontWeight: FontWeight.w500,
-          ),
+        UtilityRow(
+          key: const Key('settings-accounts'),
+          leading: leading,
+          title: card.title,
+          subtitle: card.subtitle,
+          showChevron: true,
+          onTap: () => context.pushNamed(RouteNames.accounts),
         ),
-        const SizedBox(height: Spacing.xxs),
-        Text(
-          email,
-          textAlign: TextAlign.center,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: AppTypography.bodyMediumStyle.copyWith(
-            color: theme.textSecondary,
+        // OXEE: the Oxeegen region of the active account. Switching keeps
+        // the other region's account signed in.
+        UtilityRow(
+          key: const Key('oxee-region-entry'),
+          leading: _buildIconBadge(
+            context,
+            UiUtils.platformIcon(
+              ios: CupertinoIcons.globe,
+              android: Icons.public,
+            ),
+            color: theme.iconSecondary,
           ),
+          title: OxeeStrings.of(context).regionTitle,
+          subtitle: oxeeActiveRegion(ref)?.label,
+          showChevron: true,
+          onTap: () => showOxeeRegionSwitcher(context, ref),
         ),
-        const SizedBox(height: Spacing.md),
-        AdaptiveButton(
-          key: const Key('settings-edit-profile'),
-          onPressed: () => context.pushNamed(RouteNames.accountSettings),
-          label: l10n.edit,
-          style: AdaptiveButtonStyle.bordered,
-          size: AdaptiveButtonSize.small,
+        UtilityRow(
+          key: const Key('settings-add-account'),
+          title: l10n.accountsAddAccount,
+          foregroundColor: theme.buttonPrimary,
+          leading: _buildIconBadge(
+            context,
+            UiUtils.platformIcon(ios: CupertinoIcons.add, android: Icons.add),
+            color: theme.buttonPrimary,
+          ),
+          onTap: () => showAddAccountSheet(context, ref),
         ),
       ],
     );
@@ -247,7 +288,66 @@ class ProfilePage extends ConsumerWidget {
   }) {
     final l10n = AppLocalizations.of(context)!;
     final canManageWorkspace = canManageAnyWorkspaceSection(ref);
+    // The calendar is there whenever the server and account allow it.
+    final showCalendar = ref.watch(calendarAvailableProvider);
+    // Personal connections need the Advanced disclosure and the server's own
+    // rule for who may keep them; either one missing hides the entry.
+    final showPersonalConnections = ref.watch(
+      personalConnectionsEntryVisibleProvider,
+    );
+    // Scheduled tasks follow the same rule: Advanced reveals them, and the
+    // server and account decide whether they exist at all.
+    final showScheduledTasks = ref.watch(scheduledTasksEntryVisibleProvider);
+    // Data controls follow the same rule: Advanced reveals them, and a signed
+    // in Open WebUI account decides whether there is anything to act on.
+    final showChatDataControls = ref.watch(
+      chatDataControlsEntryVisibleProvider,
+    );
 
+    final personalizationItem = _buildAccountOption(
+      context,
+      icon: UiUtils.platformIcon(
+        ios: CupertinoIcons.person_crop_circle_badge_checkmark,
+        android: Icons.auto_awesome,
+      ),
+      title: l10n.personalization,
+      onTap: () => context.pushNamed(RouteNames.personalization),
+    );
+    // What belongs to the Open WebUI account signed in.
+    final accountItems = <Widget>[
+      if (hasOpenWebUiAccount) ...[
+        _buildAccountOption(
+          context,
+          key: const Key('settings-profile'),
+          icon: UiUtils.platformIcon(
+            ios: CupertinoIcons.person_crop_circle,
+            android: Icons.account_circle_outlined,
+          ),
+          title: l10n.profileTitle,
+          onTap: () => context.pushNamed(RouteNames.accountSettings),
+        ),
+        _buildAccountOption(
+          context,
+          icon: UiUtils.platformIcon(
+            ios: CupertinoIcons.bell,
+            android: Icons.notifications_outlined,
+          ),
+          title: l10n.notificationsTitle,
+          onTap: () => context.pushNamed(RouteNames.notificationSettings),
+        ),
+        personalizationItem,
+        _buildAccountOption(
+          context,
+          key: const Key('data-connection-entry'),
+          icon: UiUtils.platformIcon(
+            ios: CupertinoIcons.antenna_radiowaves_left_right,
+            android: Icons.sync_alt,
+          ),
+          title: l10n.settingsDataAndConnection,
+          onTap: () => context.pushNamed(RouteNames.dataConnectionSettings),
+        ),
+      ],
+    ];
     // Single-line settings rows, so each title and its
     // icon carry the meaning without a descriptive subtitle.
     final appItems = <Widget>[
@@ -278,41 +378,22 @@ class ProfilePage extends ConsumerWidget {
         title: l10n.audioSettingsTitle,
         onTap: () => context.pushNamed(RouteNames.audioSettings),
       ),
-      if (hasOpenWebUiAccount)
-        _buildAccountOption(
-          context,
-          icon: UiUtils.platformIcon(
-            ios: CupertinoIcons.bell,
-            android: Icons.notifications_outlined,
-          ),
-          title: l10n.notificationsTitle,
-          onTap: () => context.pushNamed(RouteNames.notificationSettings),
-        ),
-      if (hasOpenWebUiAccount || directPrimary)
-        _buildAccountOption(
-          context,
-          icon: UiUtils.platformIcon(
-            ios: CupertinoIcons.person_crop_circle_badge_checkmark,
-            android: Icons.auto_awesome,
-          ),
-          title: l10n.personalization,
-          onTap: () => context.pushNamed(RouteNames.personalization),
-        ),
+      // Without an account, Direct's default model is set there.
+      if (!hasOpenWebUiAccount && directPrimary) personalizationItem,
     ];
-    final connectionItems = <Widget>[
-      // OXEE: the Oxeegen region replaces the Hermes, Direct connections and
-      // "Connect Open WebUI" rows; those backends are not offered in Oxee.
-      _buildAccountOption(
-        context,
-        key: const Key('oxee-region-entry'),
-        icon: UiUtils.platformIcon(
-          ios: CupertinoIcons.globe,
-          android: Icons.public,
+    // Everyday server places: things to open and use, not to configure.
+    final placeItems = <Widget>[
+      if (showCalendar)
+        _buildAccountOption(
+          context,
+          key: const Key('calendar-entry'),
+          icon: UiUtils.platformIcon(
+            ios: CupertinoIcons.calendar,
+            android: Icons.calendar_month_outlined,
+          ),
+          title: l10n.calendarTitle,
+          onTap: () => context.pushNamed(RouteNames.calendar),
         ),
-        title: OxeeStrings.of(context).regionTitle,
-        subtitle: oxeeActiveRegion(ref)?.label,
-        onTap: () => showOxeeRegionSwitcher(context, ref),
-      ),
       if (canManageWorkspace)
         _buildAccountOption(
           context,
@@ -324,28 +405,100 @@ class ProfilePage extends ConsumerWidget {
           title: l10n.workspaceTitle,
           onTap: () => context.pushNamed(RouteNames.workspace),
         ),
-      if (hasOpenWebUiAccount)
+    ];
+    // Power-user pages that Advanced reveals. The group disappears with its
+    // last row, so turning Advanced off leaves no empty heading behind.
+    final advancedItems = <Widget>[
+      if (showScheduledTasks)
         _buildAccountOption(
           context,
-          key: const Key('data-connection-entry'),
+          key: const Key('scheduled-tasks-entry'),
           icon: UiUtils.platformIcon(
-            ios: CupertinoIcons.antenna_radiowaves_left_right,
-            android: Icons.hub_outlined,
+            ios: CupertinoIcons.clock,
+            android: Icons.schedule_outlined,
           ),
-          title: l10n.settingsDataAndConnection,
-          onTap: () => context.pushNamed(RouteNames.dataConnectionSettings),
+          title: l10n.scheduledTasksTitle,
+          onTap: () => context.pushNamed(RouteNames.scheduledTasks),
+        ),
+      if (showPersonalConnections)
+        _buildAccountOption(
+          context,
+          key: const Key('personal-connections-entry'),
+          icon: UiUtils.platformIcon(
+            ios: CupertinoIcons.cloud,
+            android: Icons.dns_outlined,
+          ),
+          title: l10n.personalConnectionsTitle,
+          onTap: () => context.pushNamed(RouteNames.personalConnections),
+        ),
+      if (showChatDataControls)
+        _buildAccountOption(
+          context,
+          key: const Key('chat-data-controls-entry'),
+          icon: UiUtils.platformIcon(
+            ios: CupertinoIcons.tray_2,
+            android: Icons.storage_outlined,
+          ),
+          title: l10n.chatDataControlsTitle,
+          onTap: () => context.pushNamed(RouteNames.chatDataControls),
         ),
     ];
     return [
+      if (accountItems.isNotEmpty) ...[
+        InsetGroupedList(
+          key: const Key('settings-account-group'),
+          title: l10n.accountSettingsTitle,
+          children: accountItems,
+        ),
+        const SizedBox(height: Spacing.lg),
+      ],
       InsetGroupedList(children: appItems),
-      const SizedBox(height: Spacing.lg),
-      InsetGroupedList(children: connectionItems),
+      if (placeItems.isNotEmpty) ...[
+        const SizedBox(height: Spacing.lg),
+        InsetGroupedList(
+          key: const Key('settings-places-group'),
+          children: placeItems,
+        ),
+      ],
+      if (advancedItems.isNotEmpty) ...[
+        const SizedBox(height: Spacing.lg),
+        InsetGroupedList(
+          key: const Key('settings-advanced-group'),
+          title: l10n.advancedFeatures,
+          footer: l10n.profileAdvancedFooter,
+          children: advancedItems,
+        ),
+      ],
       const SizedBox(height: Spacing.lg),
       InsetGroupedList(children: [_buildAboutTile(context)]),
     ];
   }
 
-  Widget _buildSignOutOption(BuildContext context, WidgetRef ref) {
+  Widget _buildSignOutOfAccountOption(
+    BuildContext context,
+    WidgetRef ref,
+    OpenWebUiAccountEntry entry,
+  ) {
+    final l10n = AppLocalizations.of(context)!;
+    return _buildAccountOption(
+      context,
+      key: const Key('settings-sign-out-account'),
+      icon: UiUtils.platformIcon(
+        ios: CupertinoIcons.square_arrow_left,
+        android: Icons.logout,
+      ),
+      title: l10n.signOut,
+      onTap: () => signOutOfSavedAccount(context, ref, entry),
+      showChevron: false,
+      destructive: true,
+    );
+  }
+
+  Widget _buildSignOutOption(
+    BuildContext context,
+    WidgetRef ref, {
+    bool all = false,
+  }) {
     final l10n = AppLocalizations.of(context)!;
     return _buildAccountOption(
       context,
@@ -354,8 +507,8 @@ class ProfilePage extends ConsumerWidget {
         ios: CupertinoIcons.square_arrow_left,
         android: Icons.logout,
       ),
-      title: l10n.signOut,
-      onTap: () => _signOut(context, ref),
+      title: all ? l10n.accountsSignOutAll : l10n.signOut,
+      onTap: () => signOutOfAllAccounts(context, ref),
       showChevron: false,
       destructive: true,
     );
@@ -439,19 +592,5 @@ class ProfilePage extends ConsumerWidget {
       title: AppLocalizations.of(context)!.aboutApp,
       onTap: () => context.pushNamed(RouteNames.about),
     );
-  }
-
-  void _signOut(BuildContext context, WidgetRef ref) async {
-    final keepServerDetails = await showSignOutOptionsDialog(context);
-
-    if (!context.mounted || keepServerDetails == null) return;
-    try {
-      await ref
-          .read(signOutCoordinatorProvider)
-          .signOut(keepServerDetails: keepServerDetails);
-    } catch (_) {
-      if (!context.mounted) return;
-      UiUtils.showMessage(context, AppLocalizations.of(context)!.errorMessage);
-    }
   }
 }

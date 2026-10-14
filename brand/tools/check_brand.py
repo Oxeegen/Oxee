@@ -25,16 +25,32 @@ ROOT = Path(__file__).resolve().parents[2]
 HOOKS: dict[str, tuple[list[str], list[str]]] = {
     "lib/core/router/app_router.dart": (
         ["_buildPlatformPage(state: state, child: const OxeeRegionPage())",
-         "initialRegion: state.extra is OxeeRegion"],
-        ["const BackendChooserPage()", "const ConnectAndSignInPage()"],
+         "initialRegion: state.extra is OxeeRegion",
+         "child: OxeeRegionPage(\n          addingAccount: true,"],
+        ["const BackendChooserPage()", "const ConnectAndSignInPage()",
+         "ServerConnectionPage(\n          addingAccount: true,"],
     ),
     "lib/features/profile/views/profile_page.dart": (
         ["showOxeeRegionSwitcher(context, ref)"],
-        ["RouteNames.hermesSettings", "RouteNames.directConnections", "_buildDonationSection", "cogwheel0"],
+        ["_buildDonationSection", "cogwheel0"],
+    ),
+    "lib/features/profile/widgets/account_actions.dart": (
+        ["openOxeeRegionAddAccount(context, ref);"],
+        [],
+    ),
+    "lib/features/profile/views/manage_accounts_page.dart": (
+        ["if (oxeeOffersOtherBackends) ...["],
+        [],
     ),
     "lib/features/navigation/widgets/sidebar_user_pill.dart": (
-        ["buildOxeeRegionNativeSheetItem(context: context, ref: ref)"],
-        ["buy-me-a-coffee", "github-sponsors", "id: NativeSheetRoutes.hermes,", "'add-owui-server'"],
+        ["oxeeNativeRootSections(", "buildOxeeRegionNativeSheetItem(context, ref.read)"],
+        ["supportItems: supportItems", "buy-me-a-coffee"],
+    ),
+    "lib/core/services/native_sheet_hydration_service.dart": (
+        ["oxeeNativeAccountsDetail(buildNativeAccountsDetail(",
+         "items: oxeeNativeAboutItems(",
+         "region: buildOxeeRegionNativeSheetItem(ctx, _ref.read)"],
+        [],
     ),
     "lib/main.dart": (
         ["event.id == oxeeRegionNativeSheetItemId"],
@@ -42,7 +58,7 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
     ),
     "lib/core/utils/native_sheet_utils.dart": (
         [],
-        ["id: NativeSheetRoutes.releaseNotesManual", "github.com/cogwheel0"],
+        ["github.com/cogwheel0/conduit"],
     ),
     "lib/features/profile/views/about_page.dart": (
         [],
@@ -52,13 +68,9 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
         ["if: github.repository == 'cogwheel0/conduit'"],
         [],
     ),
-    ".github/workflows/l10n.yml": (
-        ["if: github.repository == 'cogwheel0/conduit'"],
-        [],
-    ),
     ".github/workflows/ci.yml": (
         ["python3 brand/tools/flutter_test.py", "python3 brand/tools/check_brand.py"],
-        [],
+        ["- run: dart run tool/run_test_shards.dart"],
     ),
 }
 

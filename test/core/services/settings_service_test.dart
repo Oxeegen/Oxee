@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:conduit_core/features/chat/server_speech/direct_voice_provider_settings.dart';
 import 'package:conduit_core/features/web_search/web_search.dart';
 import 'package:conduit_core/persistence/persistence_keys.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
@@ -489,6 +490,69 @@ void main() {
       check(PreferencesStore.containsKey(PreferenceKeys.webSearchRegion))
           .isFalse();
       check((await SettingsService.loadSettings()).webSearchRegion).isNull();
+    });
+  });
+
+  group('AppSettingsNotifier advanced features preference', () {
+    setUp(() {
+      PreferencesStore.debugReset();
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+    });
+
+    tearDown(PreferencesStore.debugReset);
+
+    test('starts off, survives a restart even when enabled before hydration, '
+        'and reset turns it off', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      check(container.read(appSettingsProvider).advancedFeaturesEnabled)
+          .isFalse();
+
+      await container
+          .read(appSettingsProvider.notifier)
+          .setAdvancedFeaturesEnabled(true);
+      check(container.read(appSettingsProvider).advancedFeaturesEnabled)
+          .isTrue();
+
+      final restarted = ProviderContainer();
+      addTearDown(restarted.dispose);
+      check(restarted.read(appSettingsProvider).advancedFeaturesEnabled)
+          .isTrue();
+
+      await restarted.read(appSettingsProvider.notifier).resetToDefaults();
+      final afterReset = ProviderContainer();
+      addTearDown(afterReset.dispose);
+      check(afterReset.read(appSettingsProvider).advancedFeaturesEnabled)
+          .isFalse();
+    });
+  });
+
+  group('AppSettingsNotifier Voice provider', () {
+    setUp(() {
+      PreferencesStore.debugReset();
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+    });
+
+    tearDown(PreferencesStore.debugReset);
+
+    test('survives a restart, and reset clears it for good', () async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await container
+          .read(appSettingsProvider.notifier)
+          .setDirectVoiceProvider(
+            const DirectVoiceProviderSettings(profileId: 'voice'),
+          );
+
+      final restarted = ProviderContainer();
+      addTearDown(restarted.dispose);
+      check(restarted.read(appSettingsProvider).directVoiceProvider?.profileId)
+          .equals('voice');
+
+      await restarted.read(appSettingsProvider.notifier).resetToDefaults();
+      final afterReset = ProviderContainer();
+      addTearDown(afterReset.dispose);
+      check(afterReset.read(appSettingsProvider).directVoiceProvider).isNull();
     });
   });
 

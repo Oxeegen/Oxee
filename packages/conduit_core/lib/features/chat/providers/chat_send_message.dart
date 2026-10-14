@@ -9,13 +9,43 @@ Future<void> _sendMessageInternal(
   String? pendingFolderIdOverride,
   void Function(ChatSendPlaceholderHandle handle)?
   onAssistantPlaceholderCreated,
+  ChatSendVoiceContext? voice,
 ]) async {
+  final hermesSelectedAtStart = ref.read(selectedModelProvider) as Model?;
+  if (hermesSelectedAtStart != null && isHermesModel(hermesSelectedAtStart)) {
+    // Before anything below is captured: switching connections replaces the
+    // Hermes runtime and the selected model.
+    final ownerBeforeOffer = captureChatMutationOwner(
+      ref,
+      ref.read(activeConversationProvider) as Conversation?,
+    );
+    final offer = _offerHermesConnectionSwitchForMixedChat(ref);
+    if (offer is Future<void>) {
+      await offer;
+      // The user may have opened another chat while the prompt or the switch
+      // ran; this text belongs to the chat it was typed in. Thrown so the
+      // composer keeps the text instead of treating it as sent.
+      if (!chatMutationTokenStillActive(ref, ownerBeforeOffer)) {
+        throw StateError(
+          'The conversation changed while preparing the message.',
+        );
+      }
+    }
+  }
   final conversationAtSendStart =
       ref.read(activeConversationProvider) as Conversation?;
   final sendMutationOwner = captureChatMutationOwner(
     ref,
     conversationAtSendStart,
   );
+  // Settings chosen before this chat existed seed it; an existing chat reads
+  // its own stored params further down, under its captured owner.
+  final draftChatParamsAtSendStart = conversationAtSendStart == null
+      ? Map<String, dynamic>.of(
+          ref.read(pendingOpenWebUiChatSettingsProvider)
+              as Map<String, dynamic>,
+        )
+      : const <String, dynamic>{};
   final reviewerMode = ref.read(reviewerModeProvider);
   final api = ref.read(apiServiceProvider);
   final Object? directSourceApi = sendMutationOwner.usesOpenWebUiContext
@@ -37,6 +67,9 @@ Future<void> _sendMessageInternal(
   final imageGenerationAtSendStart =
       ref.read(imageGenerationEnabledProvider) &&
       ref.read(imageGenerationAvailableProvider);
+  // Admitted with the account and model this send started under. The request
+  // below drops it if a terminal turns out to be part of the same request.
+  final codeInterpreterAtSendStart = _admitCodeInterpreter(ref);
   final localMcpToolIdsAtSendStart = (toolIds ?? const <String>[])
       .where((id) => id.startsWith(kDirectMcpToolIdPrefix))
       .toList(growable: false);
@@ -216,23 +249,26 @@ Future<void> _sendMessageInternal(
   // after fetching server info.
   final userMessageId = const Uuid().v4();
   final String assistantMessageId = const Uuid().v4();
-  var userMessage = ChatMessage(
-    id: userMessageId,
-    role: 'user',
-    content: message,
-    timestamp: DateTime.now(),
-    model: selectedModel.id,
-    attachmentIds: attachments,
-    files: initialUserFiles,
-    metadata: {
-      'parentId': openWebUiParentId,
-      'childrenIds': <String>[assistantMessageId],
-      'models': <String>[selectedModel.id],
-    },
+  var userMessage = _withUserVoice(
+    ChatMessage(
+      id: userMessageId,
+      role: 'user',
+      content: message,
+      timestamp: DateTime.now(),
+      model: selectedModel.id,
+      attachmentIds: attachments,
+      files: initialUserFiles,
+      metadata: {
+        'parentId': openWebUiParentId,
+        'childrenIds': <String>[assistantMessageId],
+        'models': <String>[selectedModel.id],
+      },
+    ),
+    voice,
   );
 
   // Add assistant placeholder immediately to show typing indicator right away
-  final assistantPlaceholder = ChatMessage(
+  final placeholder = ChatMessage(
     id: assistantMessageId,
     role: 'assistant',
     content: '',
@@ -248,6 +284,10 @@ Future<void> _sendMessageInternal(
         'modelName': selectedModel.name.trim(),
     },
   );
+  final voiceReply = voice?.reply;
+  final assistantPlaceholder = voiceReply == null
+      ? placeholder
+      : _voiceReplyMessage(placeholder, voiceReply);
   final messagesNotifier =
       ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier;
   if ((directRoute != null || isHermesModel(selectedModel)) &&
@@ -277,6 +317,42 @@ Future<void> _sendMessageInternal(
     mutationOwner: sendMutationOwner,
   );
   onAssistantPlaceholderCreated?.call(sendHandle);
+  if (voiceReply != null) {
+    // The voice already answered: the turn is stored as it was said, and no
+    // model runs. Chats this path holds only in memory keep it there.
+    if (directRoute != null) {
+      _DirectConversationOwner? owner;
+      try {
+        owner = await _persistDirectTurnStart(
+          ref,
+          route: directRoute,
+          expectedConversation: currentConversation,
+          expectedConversationId: directSendConversationId,
+          userMessage: userMessage,
+          assistantMessage: assistantPlaceholder,
+          allMessages: optimisticTurnMessages,
+          bindOwner: (resolvedOwner) {
+            // Kept here: the helper's post-commit auth fence may throw
+            // instead of returning the owner, whose lease must still go.
+            owner = resolvedOwner;
+            return true;
+          },
+          sourceApi: directSourceApi,
+          sourceAuthSnapshot: directSourceAuthSnapshot,
+          sourceAuthSessionEpoch: directSourceAuthSessionEpoch,
+          remapEvents: directRemapEvents,
+          openWebUiAuthSessionEpoch:
+              sendMutationOwner.openWebUiAuthSessionEpoch,
+          openWebUiSyncEngine: directOpenWebUiSyncEngine,
+          pendingFolderId:
+              pendingFolderIdOverride ?? ref.read(pendingFolderIdProvider),
+        );
+      } finally {
+        await owner?.releaseDatabaseLease();
+      }
+    }
+    return;
+  }
   final DirectRunRegistry? directRegistry = directRoute == null
       ? null
       : ref.read(directRunRegistryProvider);
@@ -487,6 +563,7 @@ Future<void> _sendMessageInternal(
         databaseLease: hermesDatabaseLease,
         preRegisteredCancelToken: pendingCancelToken,
         reasoningEffort: reasoningEffortAtSendStart,
+        voiceContext: voice?.spokenContext,
       );
     } catch (error) {
       final visible = hermesOwner.isActive(ref)
@@ -907,6 +984,7 @@ Future<void> _sendMessageInternal(
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
         messages: [userMessage, assistantPlaceholder],
+        chatParams: draftChatParamsAtSendStart,
       );
 
       sendHandle._bindConversation(localConversation);
@@ -923,6 +1001,7 @@ Future<void> _sendMessageInternal(
         updatedAt: DateTime.now(),
         messages: [userMessage, assistantPlaceholder],
         folderId: pendingFolderId,
+        chatParams: draftChatParamsAtSendStart,
       );
 
       // Set as active conversation locally
@@ -948,6 +1027,9 @@ Future<void> _sendMessageInternal(
             messages: [lightweightMessage],
             model: serverModelId,
             folderId: pendingFolderId,
+            chatParams: draftChatParamsAtSendStart.isEmpty
+                ? null
+                : draftChatParamsAtSendStart,
           );
 
           // Clear the pending folder ID after successful creation
@@ -1094,32 +1176,12 @@ Future<void> _sendMessageInternal(
     }
   }
 
-  final conversationSystemPrompt = activeConversation?.systemPrompt?.trim();
-  final effectiveSystemPrompt =
-      (conversationSystemPrompt != null && conversationSystemPrompt.isNotEmpty)
-      ? conversationSystemPrompt
-      : userSystemPrompt;
-  if (effectiveSystemPrompt != null && effectiveSystemPrompt.isNotEmpty) {
-    final hasSystemMessage = conversationMessages.any(
-      (m) => (m['role']?.toString().toLowerCase() ?? '') == 'system',
-    );
-    if (!hasSystemMessage) {
-      conversationMessages.insert(0, {
-        'role': 'system',
-        'content': effectiveSystemPrompt,
-      });
-    }
-  }
   final selectedToolIds = toolIds ?? const <String>[];
   final toolIdsForApi = _extractToolIdsForApi(selectedToolIds);
   final selectedTerminalId = ref.read(selectedTerminalIdProvider);
   final isTemporary =
       (activeConversation != null && isTemporaryChat(activeConversation.id)) ||
       ref.read(temporaryChatEnabledProvider);
-  final requestMessages = _buildChatCompletionMessages(
-    conversationMessages: conversationMessages,
-    isTemporary: isTemporary,
-  );
 
   // Check feature toggles for API (gated by server availability)
   final webSearchEnabled =
@@ -1167,6 +1229,35 @@ Future<void> _sendMessageInternal(
       }
     }
 
+    // The chat's own settings, read through the owner captured above (a chat
+    // that does not exist yet carries the draft it was created with).
+    final pickerReasoningEffort = reasoningEffortForModel(
+      ref.read,
+      selectedModel,
+    );
+    final turnSettings = submittedOwner == null
+        ? _OpenWebUiTurnSettings(
+            chatParams:
+                activeConversation?.chatParams ?? const <String, dynamic>{},
+            reasoningEffort: pickerReasoningEffort,
+          )
+        : await _resolveOpenWebUiTurnSettings(
+            submittedOwner,
+            conversation: submittedConversation,
+            pickerReasoningEffort: pickerReasoningEffort,
+          );
+    requireOpenWebUiPreflightOwner();
+    _insertOpenWebUiSystemMessage(
+      conversationMessages,
+      chatParams: turnSettings.chatParams,
+      legacyChatSystem: activeConversation?.systemPrompt,
+      globalSystem: userSystemPrompt,
+    );
+    final requestMessages = _buildChatCompletionMessages(
+      conversationMessages: conversationMessages,
+      isTemporary: isTemporary,
+    );
+
     // Reconnect before choosing session_id so eligible sends stay on the
     // task/socket transport instead of falling back to fragile HTTP streaming.
     final socketService = _readOpenWebUiSocketForApi(ref, api);
@@ -1181,17 +1272,23 @@ Future<void> _sendMessageInternal(
     requireOpenWebUiPreflightOwner();
 
     List<Map<String, dynamic>>? toolServers;
+    final admittedToolServers = <PersonalToolAdmission>[];
     try {
       toolServers = await _resolveToolServersForRequest(
         api: api,
         userSettings: userSettingsData,
         selectedToolIds: selectedToolIds,
+        onUnresolvedSelections: (ids) =>
+            _clearUnresolvedPersonalToolSelections(ref, ids),
+        admitted: admittedToolServers,
       );
     } catch (_) {}
     requireOpenWebUiPreflightOwner();
     final terminalIdForApi = modelSupportsTerminal(selectedModel)
         ? _resolveTerminalIdForRequest(selectedTerminalId: selectedTerminalId)
         : null;
+    final codeInterpreterEnabled =
+        codeInterpreterAtSendStart && terminalIdForApi == null;
 
     // Background tasks should follow backend-synced user settings instead of
     // forcing local defaults. Enable title/tags generation only on the first
@@ -1273,6 +1370,13 @@ Future<void> _sendMessageInternal(
 
     try {
       requireOpenWebUiPreflightOwner();
+      _admitPersonalToolServers(
+        socketService,
+        sessionId: socketSessionId,
+        chatId: submittedOwner?.chatId,
+        messageId: assistantMessageId,
+        admitted: admittedToolServers,
+      );
       final session = await api.sendMessageSession(
         messages: requestMessages,
         model: serverModelId,
@@ -1282,6 +1386,7 @@ Future<void> _sendMessageInternal(
         filterIds: filterIdsForApi,
         enableWebSearch: webSearchEnabled,
         enableImageGeneration: imageGenerationEnabled,
+        enableCodeInterpreter: codeInterpreterEnabled,
         isVoiceMode: isVoiceMode,
         modelItem: modelItem,
         sessionIdOverride: socketSessionId,
@@ -1289,7 +1394,8 @@ Future<void> _sendMessageInternal(
         backgroundTasks: bgTasks,
         responseMessageId: assistantMessageId,
         userSettings: userSettingsData,
-        reasoningEffort: reasoningEffortForModel(ref.read, selectedModel),
+        chatParams: turnSettings.chatParams,
+        reasoningEffort: turnSettings.reasoningEffort,
         parentId: userMessageMap?['parentId']?.toString(),
         userMessage: userMessageMap,
         variables: promptVariables,
@@ -1342,6 +1448,7 @@ Future<void> _sendMessageInternal(
             isBackgroundToolsFlowPre ||
             isBackgroundWebSearchPre ||
             imageGenerationEnabled ||
+            codeInterpreterEnabled ||
             bgTasks.isNotEmpty;
 
         final attached = await dispatchChatTransport(
@@ -1362,7 +1469,8 @@ Future<void> _sendMessageInternal(
               toolIdsForApi.isNotEmpty ||
               terminalIdForApi != null ||
               (toolServers != null && toolServers.isNotEmpty) ||
-              imageGenerationEnabled,
+              imageGenerationEnabled ||
+              codeInterpreterEnabled,
           isTemporary: isTemporary,
           filterIds: filterIdsForApi,
           ownsActiveConversation: () =>
@@ -1434,9 +1542,24 @@ Future<void> _sendMessageInternal(
         assistantMessageId: assistantMessageId,
       );
     }
-    if (e.toString().contains('401') || e.toString().contains('403')) {
-      // Authentication errors - clear auth state and redirect to login.
-      ref.invalidate(authStateManagerProvider);
+    // A 401 or 403 here may be a model provider rejecting its API key, which
+    // Open WebUI passes through, or the session ending. Ask the session
+    // endpoint: as everywhere else, the auth interceptor reports its refusal
+    // as the session ending, and a provider's refusal only marks the reply.
+    if (e is ChatCompletionHttpException && e.mayRejectSession) {
+      final ApiService? api = ref.read(apiServiceProvider) as ApiService?;
+      if (api != null) {
+        unawaited(
+          api.getCurrentUser().then<void>(
+            (_) {},
+            onError: (Object error) => DebugLogger.log(
+              'session-check-after-refused-completion',
+              scope: 'chat/providers',
+              data: {'errorType': error.runtimeType.toString()},
+            ),
+          ),
+        );
+      }
     }
   }
 }
@@ -1451,6 +1574,9 @@ String chatErrorContentForException(Object e) {
   if (e is HermesLocalDocumentException) return e.message;
   if (e is DirectChatInputException) return e.message;
   if (e is DirectProviderException) return e.message;
+  if (e is CodeInterpreterUnavailableException) {
+    return '${e.message} Send the message again without it.';
+  }
 
   final msg = e.toString();
   if (msg.contains('400')) {

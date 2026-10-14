@@ -178,6 +178,33 @@
           "icon": "polish"
         }
       ]
+    },
+    {
+      "version": "4.2.0",
+      "title": "Nieuw",
+      "intro": "Hoi! Je kunt meerdere Open WebUI-accounts ingelogd houden en ertussen wisselen, en meerdere Hermes-verbindingen bewaren. Gesprekken kunnen praten met een realtime stem die je kunt onderbreken. Open WebUI 0.12 werkt, inclusief inloggen in twee stappen, en meer Open WebUI-functies hebben Geavanceerd niet meer nodig.",
+      "bullets": [
+        {
+          "text": "Accounts: houd meerdere Open WebUI-accounts ingelogd, op één of meer servers, en wissel via je profiel of de nieuwe pagina Accounts bovenaan Instellingen. Voeg elk account of elke verbinding toe vanuit één venster. Een server kan meerdere adressen hebben, zoals LAN, Tailscale en een openbare proxy; de app gebruikt het eerste dat antwoordt.",
+          "icon": "direct"
+        },
+        {
+          "text": "Hermes: bewaar meerdere verbindingen met een naam, zoals Thuis en Onderzoek, en wissel ertussen via de zijbalk, de instellingen of Accounts. Een chat waarvan de sessie bij een andere verbinding hoort, biedt aan daarnaar over te schakelen.",
+          "icon": "hermes"
+        },
+        {
+          "text": "Realtime gesprekken: met Open WebUI 0.12, Direct en de Hermes Desktop Gateway kunnen gesprekken praten met een realtime stem van OpenAI, en door erdoorheen te praten stopt hij. Kies een Spraakprovider in de audio-instellingen voor Direct- en Apple-chats. Spraak-naar-tekst en tekst-naar-spraak via de server volgen de backend van elke chat.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI 0.12: de app werkt zonder compatibiliteitswaarschuwing. Verificatie in twee stappen bij het inloggen werkt, inclusief instellen en herstelcodes. Vaardigheden exporteren, mappen delen, verplichte tijdelijke chats en goedkeuring van tools volgen 0.12.",
+          "icon": "direct"
+        },
+        {
+          "text": "Open WebUI-functies: de conceptwachtrij, code-interpreter, vertakkingen, chatpubliek, projectmappen, delen, kanaalleden en agenda hebben Geavanceerd niet meer nodig. Geavanceerd voegt modelvergelijking, geplande taken, webhooks en gegevensbeheer toe. Grote chats worden niet meer bij elke opening opnieuw gedownload, en het gekozen redeneerniveau blijft bewaard.",
+          "icon": "polish"
+        }
+      ]
     }
   ]
 }

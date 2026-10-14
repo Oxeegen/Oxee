@@ -16,6 +16,7 @@ import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/optimized_storage_service.dart';
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:conduit_core/auth/token_validator.dart';
+import 'package:conduit_core/auth/openwebui_two_step.dart';
 
 import 'package:conduit_core/auth/auth_cache_manager.dart';
 
@@ -26,6 +27,8 @@ import 'package:conduit_core/utils/user_avatar_utils.dart';
 import 'package:conduit_core/persistence/persistence_keys.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
 import 'package:conduit_core/auth/openwebui_account_owner_marker.dart';
+import 'package:conduit_core/auth/openwebui_account_summaries.dart';
+import 'package:conduit_core/database/account_storage_isolation.dart';
 import 'package:conduit_core/providers/host_ports.dart';
 
 part 'auth_state_manager.g.dart';
@@ -44,6 +47,52 @@ final class _AuthPublicationRolledBack implements Exception {
 
   @override
   String toString() => 'Authentication publication was rolled back';
+}
+
+/// A password or LDAP sign-in that stopped at a second step: the server it
+/// began on, and what to remember once the second step signs it in.
+final class _PendingTwoStepSignIn {
+  const _PendingTwoStepSignIn({
+    required this.serverId,
+    required this.authType,
+    required this.username,
+    required this.password,
+    required this.rememberCredentials,
+  });
+
+  final String serverId;
+
+  /// `credentials` or `ldap`, as the sign-in it finishes saves them.
+  final String authType;
+  final String username;
+  final String password;
+  final bool rememberCredentials;
+
+  /// What the sign-in would have remembered with [token]. An LDAP sign-in
+  /// keeps the session token rather than the password, as it does without a
+  /// second step.
+  Map<String, String>? rememberedCredentials({
+    required String serverId,
+    required String token,
+  }) {
+    if (!rememberCredentials) return null;
+    return authType == 'ldap'
+        ? {
+            'serverId': serverId,
+            'username': 'ldap:$username',
+            'password': token,
+            'authType': 'ldap',
+          }
+        : {
+            'serverId': serverId,
+            'username': username,
+            'password': password,
+            'authType': 'credentials',
+          };
+  }
+
+  @override
+  String toString() => '_PendingTwoStepSignIn($authType)';
 }
 
 enum FullAppDataClearOutcome {
@@ -265,6 +314,9 @@ OpenWebUiCachedAccountOwnerResolution resolveOpenWebUiCachedAccountOwner({
 class AuthStateManager extends _$AuthStateManager {
   final AuthCacheManager _cacheManager = AuthCacheManager();
   Future<bool>? _silentLoginFuture;
+
+  /// A password or LDAP sign-in waiting for its second step, if any.
+  _PendingTwoStepSignIn? _pendingTwoStep;
   int _authAttemptRevision = 0;
   int _authAttemptSafetyEpoch = 0;
   int _sessionSafetyEpoch = 0;
@@ -279,10 +331,16 @@ class AuthStateManager extends _$AuthStateManager {
   DateTime? _lastRetryTime;
   int _retryResetGeneration = 0;
 
+  /// Whether the connection issue shown now has had its session checked
+  /// again on a route moved to ([recheckSessionAfterRouteChange]).
+  bool _connectionIssueRechecked = false;
+
   AuthState get _current =>
       state.asData?.value ?? const AuthState(status: AuthStatus.initial);
 
   int _beginAuthAttempt() {
+    // Any newer attempt, a sign-out included, ends a pending second step.
+    _pendingTwoStep = null;
     _authAttemptSafetyEpoch = _sessionSafetyEpoch;
     return ++_authAttemptRevision;
   }
@@ -455,6 +513,7 @@ class AuthStateManager extends _$AuthStateManager {
     if (!next.isLoading && next.status != AuthStatus.loading) {
       _lastSettledState = next;
     }
+    if (next.status != AuthStatus.error) _connectionIssueRechecked = false;
     // Riverpod listeners run synchronously during this assignment. Any cache
     // derived from the publication must therefore be fenced after listeners
     // have had a chance to replace it or start a newer auth operation.
@@ -734,7 +793,7 @@ class AuthStateManager extends _$AuthStateManager {
             error: 'apiKeyNoLongerSupported',
             isLoading: false,
           );
-          final cleared = await storage.clearAuthDataIf(
+          final cleared = await storage.clearActiveAccountAuthDataIf(
             canClear: () => !_authAttemptSuperseded(attemptRevision),
           );
           if (!cleared || _authAttemptSuperseded(attemptRevision)) return;
@@ -847,11 +906,25 @@ class AuthStateManager extends _$AuthStateManager {
     final marker = serverId == null || serverId.isEmpty
         ? null
         : ref.read(openWebUiAccountOwnerMarkerStoreProvider).read(serverId);
-    final ownerResolution = resolveOpenWebUiCachedAccountOwner(
-      marker: marker,
-      token: token,
-      cachedUserId: cachedUser?.id,
-    );
+    final carriedOver =
+        cachedUser != null &&
+        openWebUiAccountOwnerMarkerCarriesOver(
+          marker: marker,
+          token: token,
+          userId: cachedUser.id,
+          ledger: ref.read(openWebUiValidatedIdentityLedgerProvider),
+        );
+    // A marker written for an older token of the same user still owns this
+    // database when the server has accepted the new token as that user in
+    // this process: a re-login after expiry, or a sign-in merged into an
+    // existing account.
+    final ownerResolution = carriedOver
+        ? (retainCachedUser: true, ownerMismatch: false)
+        : resolveOpenWebUiCachedAccountOwner(
+            marker: marker,
+            token: token,
+            cachedUserId: cachedUser?.id,
+          );
     ref
         .read(openWebUiCachedAccountOwnerMismatchProvider.notifier)
         .set(ownerResolution.ownerMismatch);
@@ -1001,6 +1074,7 @@ class AuthStateManager extends _$AuthStateManager {
               );
               return;
             }
+            _recordValidatedIdentity(token, user);
 
             if (inheritedTransactionalRevision != null &&
                 _lastTransactionalSessionRevision ==
@@ -1078,31 +1152,49 @@ class AuthStateManager extends _$AuthStateManager {
     );
   }
 
-  /// Selects a newly verified server while making both durable and in-memory
-  /// auth tokenless before the new API provider can be observed.
-  /// Switches to [config] without discarding the other configured servers.
+  /// Makes [accountId] the active Open WebUI account.
   ///
-  /// The counterpart to [selectUnauthenticatedServerConfig], which is the
-  /// *onboarding* path and deliberately destructive: it drops the stored
-  /// token, the saved credentials and every other server, because connecting
-  /// for the first time should not leave a previous account's session
-  /// reachable. That is the wrong shape for "switch account", which is what
-  /// this is.
+  /// The account being left keeps its session in the vault and [accountId]
+  /// takes up its own, validated exactly as a cold start would validate it, so
+  /// a token the server revoked meanwhile lands in `tokenExpired` (and a
+  /// silent re-login, when a sign-in is saved) rather than in a session that
+  /// fails on its first request.
   ///
-  /// The session for the server being left is moved into the per-server
-  /// vault, and the target's is taken up if it has one. Returns whether a
-  /// session was restored; false means the target needs a sign-in, which is
-  /// the ordinary case the first time a second server is added.
+  /// Auth goes tokenless *before* the active id moves, so no API client is
+  /// ever built for the new account's server with the old account's bearer.
+  /// The storage barrier is told first, so the next account's database is
+  /// judged against its own owner marker instead of being purged as an
+  /// unannounced server change.
   ///
-  /// The adopted token is not trusted on sight. [refresh] re-reads it from
-  /// storage and validates it against the server exactly as a cold start
-  /// does, so a token the server revoked while this app was pointed
-  /// elsewhere lands in `tokenExpired` rather than in a session that fails on
-  /// its first real request.
-  Future<bool> switchToServerConfig(ServerConfig config) async {
+  /// Returns whether the new account is signed in. False means it needs a
+  /// sign-in, the ordinary case for an account that was signed out of.
+  Future<bool> switchToAccount(String accountId) async {
     final storage = ref.read(optimizedStorageServiceProvider);
-    final previousActiveId = await storage.getActiveServerId();
-    if (previousActiveId == config.id) {
+    // Taken before anything is awaited: a sign-in started meanwhile owns
+    // what comes next.
+    final revision = _authAttemptRevision;
+    final previousActiveId = await storage.getEffectiveActiveServerId();
+    if (previousActiveId == accountId) {
+      // Signed out, it may still have its session in the vault, left there
+      // by a switch that failed part-way. Storage takes it up when asked to
+      // switch to the account it is on; left there, the next switch away
+      // would drop it.
+      if (!_current.isAuthenticated) {
+        if (!ref.mounted || _authAttemptRevision != revision) {
+          return _current.isAuthenticated;
+        }
+        if (await storage.switchActiveServer(
+          fromServerId: accountId,
+          toServerId: accountId,
+        )) {
+          if (!ref.mounted || _authAttemptRevision != revision) {
+            return _current.isAuthenticated;
+          }
+          _invalidateServerProviders();
+          await refresh();
+          return _current.isAuthenticated;
+        }
+      }
       // Already active -- which a single stored config is, by the storage
       // layer's own fallback, before anything has explicitly selected it. So
       // this branch is the *first* connect after the first add, not just a
@@ -1114,43 +1206,400 @@ class AuthStateManager extends _$AuthStateManager {
       return _current.isAuthenticated;
     }
 
-    final attemptRevision = _beginAuthAttempt();
-    _update(
-      (current) => current.copyWith(
-        status: AuthStatus.loading,
-        isLoading: true,
-        clearError: true,
-      ),
-    );
-
-    final adopted = await storage.switchActiveServer(
-      fromServerId: previousActiveId,
-      toServerId: config.id,
-    );
+    final attemptRevision = _enterAccountBoundary();
+    final bool hasSession;
+    try {
+      hasSession = await storage.switchActiveServer(
+        fromServerId: previousActiveId,
+        toServerId: accountId,
+      );
+    } catch (error, stackTrace) {
+      _logAuthenticationFailure(
+        'account-switch-failed',
+        error,
+        stackTrace: stackTrace,
+      );
+      // Settle on whatever reached storage rather than staying in loading.
+      _invalidateServerProviders();
+      if (!_authAttemptSuperseded(attemptRevision)) await refresh();
+      Error.throwWithStackTrace(error, stackTrace);
+    }
     if (_authAttemptSuperseded(attemptRevision)) return false;
+    return _settleAtAccountBoundary(
+      attemptRevision: attemptRevision,
+      hasSession: hasSession,
+    );
+  }
 
-    // The API client is bound to a server and a token, and both just changed.
-    ref.invalidate(serverConfigsProvider);
-    ref.invalidate(activeServerProvider);
-    ref.invalidate(apiServiceProvider);
+  /// Signs out of [accountId] and forgets it on this device.
+  ///
+  /// The server is asked to end the session first (best effort: a server
+  /// that cannot be reached does not keep the account on this device). Then
+  /// its tokens, saved sign-in and record go, and finally its local data.
+  /// Every other account, Hermes and Direct are left alone. When it is the
+  /// active account, [thenActivate] -- another saved account -- takes over;
+  /// without one no Open WebUI account is left active.
+  ///
+  /// Returns whether an account is signed in afterwards.
+  Future<bool> signOutAccount(String accountId, {String? thenActivate}) async {
+    _activeLogoutOperations++;
+    try {
+      final storage = ref.read(optimizedStorageServiceProvider);
+      // Before anything is removed: once the account is gone, only this
+      // record leads a later start back to data its purge fails to delete.
+      // One that cannot be written stops the sign-out here, with the account
+      // still there to sign out of again.
+      await _accountStorageIsolation.recordAccountPurge(accountId);
+      Future<bool> isActive() async {
+        String? activeId;
+        try {
+          activeId = await storage.getEffectiveActiveServerId();
+        } catch (error, stackTrace) {
+          // Unread, it is judged by the account the app has in use.
+          _logAuthenticationFailure(
+            'active-account-read-failed',
+            error,
+            stackTrace: stackTrace,
+          );
+        }
+        return activeId == accountId ||
+            (activeId == null &&
+                ref.read(activeServerProvider).asData?.value?.id == accountId);
+      }
 
-    if (!adopted) {
-      _updateApiServiceToken(null);
-      final signedOut = const AuthState(
+      final bool signedIn;
+      var revoked = false;
+      if (await isActive()) {
+        final api = ref.read(apiServiceProvider);
+        final token = api?.authToken;
+        final snapshot = api?.captureAuthSnapshot();
+        _rememberRemotelyRevokedToken(token);
+        if (api != null) {
+          try {
+            await api.logout(authSnapshot: snapshot);
+            revoked = true;
+          } catch (error) {
+            _logAuthenticationFailure('server-logout-failed', error);
+          }
+        }
+      }
+
+      // A switch can finish while the server is asked. The account is then
+      // no longer the active one, and leaving it must not touch the one that
+      // is: no boundary, no tokenless state for the account now in use.
+      var removedInactive = false;
+      if (!await isActive()) {
+        if (!revoked) await _revokeVaultedSession(storage, accountId);
+        // The reverse too: a switch to it can land while its vaulted session
+        // is ended on the server. Storage then declines, and it is removed
+        // below as the active account, behind a boundary, so auth does not
+        // go on holding the token of an account that is gone.
+        removedInactive = await storage.removeInactiveAccount(accountId);
+      }
+      if (removedInactive) {
+        ref.invalidate(serverConfigsProvider);
+        signedIn = _current.isAuthenticated;
+      } else {
+        final attemptRevision = _enterAccountBoundary();
+        final bool hasSession;
+        try {
+          hasSession = await storage.removeAccount(
+            accountId,
+            thenActivate: thenActivate,
+          );
+        } catch (error, stackTrace) {
+          _logAuthenticationFailure(
+            'account-sign-out-failed',
+            error,
+            stackTrace: stackTrace,
+          );
+          // Settle on whatever reached storage rather than staying in loading.
+          _invalidateServerProviders();
+          if (!_authAttemptSuperseded(attemptRevision)) await refresh();
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        // Storage decides "active" again under its own lock. If a switch got
+        // in first, it removed an inactive account and left the live session
+        // alone; settle on that session rather than publishing it signed out.
+        final next = thenActivate != accountId ? thenActivate : null;
+        final removedActive = await storage.getActiveServerId() == next;
+        signedIn = _authAttemptSuperseded(attemptRevision)
+            ? _current.isAuthenticated
+            : await _settleAtAccountBoundary(
+                attemptRevision: attemptRevision,
+                hasSession: hasSession || !removedActive,
+              );
+      }
+
+      await _purgeRemovedAccount(accountId);
+      return signedIn;
+    } finally {
+      _activeLogoutOperations--;
+    }
+  }
+
+  /// Leaves [accountId], the active account, whose sign-in was never
+  /// finished, for [thenActivate], and forgets it on this device.
+  ///
+  /// It never signed in, so there is no session to end on its server. Storage
+  /// checks that, under the lock a sign-in commits under, as it removes the
+  /// account: one that is no longer active, or that a sign-in has reached
+  /// meanwhile, is refused and keeps its session and its data.
+  ///
+  /// Returns whether it was left.
+  Future<bool> abandonPendingAccount(
+    String accountId, {
+    required String thenActivate,
+  }) async {
+    final storage = ref.read(optimizedStorageServiceProvider);
+    // As for a sign-out, recorded before the account goes; when it cannot
+    // be, the account stays.
+    await _accountStorageIsolation.recordAccountPurge(accountId);
+    final attemptRevision = _enterAccountBoundary();
+    final bool? hasSession;
+    try {
+      hasSession = await storage.removePendingAccount(
+        accountId,
+        thenActivate: thenActivate,
+      );
+    } catch (error, stackTrace) {
+      _logAuthenticationFailure(
+        'pending-account-abandon-failed',
+        error,
+        stackTrace: stackTrace,
+      );
+      // Settle on whatever reached storage rather than staying in loading.
+      _invalidateServerProviders();
+      if (!_authAttemptSuperseded(attemptRevision)) await refresh();
+      Error.throwWithStackTrace(error, stackTrace);
+    }
+    if (hasSession == null) {
+      // Refused: settle back on the account, and whatever session it has.
+      _invalidateServerProviders();
+      if (!_authAttemptSuperseded(attemptRevision)) await refresh();
+      return false;
+    }
+    if (!_authAttemptSuperseded(attemptRevision)) {
+      await _settleAtAccountBoundary(
+        attemptRevision: attemptRevision,
+        hasSession: hasSession,
+      );
+    }
+    await _purgeRemovedAccount(accountId);
+    return true;
+  }
+
+  /// Folds the account just signed in to into [targetAccountId], the
+  /// existing account of the same user on the same server.
+  ///
+  /// Adding an account and signing in as someone who already has one here
+  /// should land in that account, with its offline history and queued sends,
+  /// not in a duplicate. The live session stays live; only the account it
+  /// belongs to changes, and the session is re-validated against the target's
+  /// owner marker, which the server's fresh acceptance of the token lets
+  /// carry over without deleting the target's data.
+  ///
+  /// Does nothing, returning false, unless [expectedSourceAccountId] is still
+  /// the active account: a switch since the sign-in must not hand some other
+  /// account's session to the target.
+  Future<bool> mergeActiveAccountInto(
+    String targetAccountId, {
+    required String expectedSourceAccountId,
+    String? expectedToken,
+  }) async {
+    final storage = ref.read(optimizedStorageServiceProvider);
+    // Taken before anything is awaited: a sign-in started meanwhile owns
+    // what comes next, and the boundary below would cancel it.
+    final revision = _authAttemptRevision;
+    final sourceAccountId = await storage.getActiveServerId();
+    if (sourceAccountId == null ||
+        sourceAccountId != expectedSourceAccountId ||
+        sourceAccountId == targetAccountId ||
+        !ref.mounted ||
+        _authAttemptRevision != revision) {
+      return false;
+    }
+    // As for a sign-out, recorded before the source goes. Unrecorded, the
+    // merge does not happen, and the source stays an account of its own.
+    try {
+      await _accountStorageIsolation.recordAccountPurge(sourceAccountId);
+    } catch (error, stackTrace) {
+      _logAuthenticationFailure(
+        'account-merge-purge-record-failed',
+        error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    }
+    if (!ref.mounted || _authAttemptRevision != revision) return false;
+
+    final attemptRevision = _enterAccountBoundary();
+    final bool merged;
+    try {
+      merged = await storage.mergeActiveAccountInto(
+        targetAccountId,
+        expectedSourceAccountId: expectedSourceAccountId,
+        expectedToken: expectedToken,
+      );
+    } finally {
+      _invalidateServerProviders();
+      if (!_authAttemptSuperseded(attemptRevision)) await refresh();
+    }
+    // Storage declines when something changed since the check above -- a
+    // switch, or the target signed out of. The source then still exists, and
+    // may be the active account; its data stays.
+    if (!merged) return false;
+    await _purgeRemovedAccount(sourceAccountId);
+    return true;
+  }
+
+  /// Deletes the local data of [accountId], which storage has just removed.
+  ///
+  /// The removal has happened by now, so a purge that fails does not turn
+  /// it into an error: its record, written before the removal, has the next
+  /// start finish it.
+  Future<void> _purgeRemovedAccount(String accountId) async {
+    try {
+      await _accountStorageIsolation.purgeAccount(accountId);
+    } catch (error, stackTrace) {
+      _logAuthenticationFailure(
+        'account-data-purge-failed',
+        error,
+        stackTrace: stackTrace,
+      );
+    }
+    ref.read(openWebUiAccountSummariesProvider.notifier).reload();
+  }
+
+  /// Starts an account boundary: auth tokenless and loading, the storage
+  /// barrier told, before anything durable changes.
+  int _enterAccountBoundary() {
+    final attemptRevision = _beginAuthAttempt();
+    _lastTransactionalSessionRevision = null;
+    _cacheManager.clearAuthCache();
+    _publishTokenlessAuthRejection(status: AuthStatus.loading, isLoading: true);
+    _accountStorageIsolation.beginAccountSwitch();
+    return attemptRevision;
+  }
+
+  /// The storage barrier for account changes. It follows this notifier, so
+  /// Riverpod refuses a read from this notifier's ref as a dependency cycle;
+  /// these are one-off commands, not dependencies, so they go through the
+  /// container.
+  OpenWebUiAccountStorageIsolation get _accountStorageIsolation =>
+      ref.container.read(openWebUiAccountStorageIsolationProvider.notifier);
+
+  /// Ends an account boundary: restores the new active account's session, or
+  /// settles signed out when it has none.
+  Future<bool> _settleAtAccountBoundary({
+    required int attemptRevision,
+    required bool hasSession,
+  }) async {
+    _invalidateServerProviders();
+    if (!hasSession) {
+      const signedOut = AuthState(
         status: AuthStatus.unauthenticated,
         isLoading: false,
       );
       _lastSettledState = signedOut;
-      _lastTransactionalSessionRevision = null;
       _set(signedOut);
+      _updateApiServiceToken(null);
       return false;
     }
-
     await refresh();
     return _current.isAuthenticated;
   }
 
-  Future<void> selectUnauthenticatedServerConfig(ServerConfig config) async {
+  void _invalidateServerProviders() {
+    if (!ref.mounted) return;
+    ref.invalidate(serverConfigsProvider);
+    ref.invalidate(activeServerProvider);
+    ref.invalidate(apiServiceProvider);
+  }
+
+  void _rememberRemotelyRevokedToken(String? token) {
+    if (token == null || token.isEmpty) return;
+    _recentlyRevokedTokens
+      ..remove(token)
+      ..add(token);
+    if (_recentlyRevokedTokens.length > 8) _recentlyRevokedTokens.removeAt(0);
+  }
+
+  /// The sessions vaulted for accounts other than the active one, so signing
+  /// out of all accounts can end them on the server once the local wipe has
+  /// committed (after it, the vault is gone).
+  Future<List<({ServerConfig config, String token})>>
+  inactiveAccountSessions() async {
+    final sessions = <({ServerConfig config, String token})>[];
+    try {
+      final storage = ref.read(optimizedStorageServiceProvider);
+      final activeId = await storage.getActiveServerId();
+      for (final session in await storage.vaultedSessions()) {
+        if (session.config.id != activeId) sessions.add(session);
+      }
+    } catch (error) {
+      _logAuthenticationFailure('vaulted-sessions-read-failed', error);
+    }
+    return sessions;
+  }
+
+  /// Asks the server to end each of [sessions]. Best effort.
+  Future<void> revokeSessions(
+    List<({ServerConfig config, String token})> sessions,
+  ) => Future.wait([
+    for (final session in sessions)
+      _revokeSession(config: session.config, token: session.token),
+  ]);
+
+  /// Asks the server to end [accountId]'s vaulted session, through a client
+  /// that lives only for that request. Best effort.
+  Future<void> _revokeVaultedSession(
+    OptimizedStorageService storage,
+    String accountId,
+  ) async {
+    try {
+      // The token and where it was kept for, read together: a server edit
+      // between two reads would send the old token to its new address.
+      for (final session in await storage.vaultedSessions(
+        accountIds: {accountId},
+      )) {
+        await _revokeSession(config: session.config, token: session.token);
+      }
+    } catch (error) {
+      _logAuthenticationFailure('vaulted-session-revoke-failed', error);
+    }
+  }
+
+  Future<void> _revokeSession({
+    required ServerConfig config,
+    required String token,
+  }) async {
+    _rememberRemotelyRevokedToken(token);
+    try {
+      final api = ref.read(savedCredentialAuthApiFactoryProvider)(
+        serverConfig: config,
+        workerManager: ref.read(workerManagerProvider),
+      );
+      try {
+        api.updateAuthToken(token);
+        await api.logout();
+      } finally {
+        api.dispose();
+      }
+    } catch (error) {
+      _logAuthenticationFailure('session-revoke-failed', error);
+    }
+  }
+
+  /// Makes [config] the active account, signed out, for a sign-in to it.
+  ///
+  /// [canCommit] lets the caller withdraw the selection while it is saved:
+  /// once it says no, the account active before stays active, as it does
+  /// when a newer auth attempt begins.
+  Future<void> selectUnauthenticatedServerConfig(
+    ServerConfig config, {
+    bool Function()? canCommit,
+  }) async {
     final currentState = _current;
     final previousState =
         currentState.isLoading || currentState.status == AuthStatus.loading
@@ -1158,17 +1607,20 @@ class AuthStateManager extends _$AuthStateManager {
         : currentState;
     final capturedSessionSafetyEpoch = _sessionSafetyEpoch;
     final attemptRevision = _beginAuthAttempt();
+    bool superseded() =>
+        _authAttemptSuperseded(attemptRevision) ||
+        !(canCommit?.call() ?? true);
     final storage = ref.read(optimizedStorageServiceProvider);
     try {
-      await storage.selectUnauthenticatedServerConfig(
+      final selected = await storage.selectUnauthenticatedServerConfig(
         config,
-        canCommit: () => !_authAttemptSuperseded(attemptRevision),
+        canCommit: () => !superseded(),
         onRollbackUncertain: () {
           if (!ref.mounted) return;
           _poisonUncertainServerSession(failedAttemptRevision: attemptRevision);
         },
         publish: () {
-          if (_authAttemptSuperseded(attemptRevision)) {
+          if (superseded()) {
             throw StateError(
               'Server selection was superseded before publication.',
             );
@@ -1180,26 +1632,26 @@ class AuthStateManager extends _$AuthStateManager {
           _lastSettledState = safeState;
           _lastTransactionalSessionRevision = null;
           _set(safeState);
-          if (_authAttemptSuperseded(attemptRevision)) {
+          if (superseded()) {
             throw StateError(
               'Server selection was superseded during publication.',
             );
           }
           _updateApiServiceToken(null);
           ref.invalidate(serverConfigsProvider);
-          if (_authAttemptSuperseded(attemptRevision)) {
+          if (superseded()) {
             throw StateError(
               'Server selection was superseded during publication.',
             );
           }
           ref.invalidate(activeServerProvider);
-          if (_authAttemptSuperseded(attemptRevision)) {
+          if (superseded()) {
             throw StateError(
               'Server selection was superseded during publication.',
             );
           }
           ref.invalidate(apiServiceProvider);
-          if (_authAttemptSuperseded(attemptRevision)) {
+          if (superseded()) {
             throw StateError(
               'Server selection was superseded during publication.',
             );
@@ -1207,6 +1659,16 @@ class AuthStateManager extends _$AuthStateManager {
           _clearIncompleteLogoutFenceAfterTokenlessCleanup();
         },
       );
+      if (!selected) {
+        // Declined, or put back after it was published: the addition it was
+        // for ended meanwhile. Storage holds the previous account's session
+        // again, so auth shows it again, unless a newer attempt owns it.
+        _restoreRolledBackAuthPublication(
+          attemptRevision: attemptRevision,
+          capturedSessionSafetyEpoch: capturedSessionSafetyEpoch,
+          previousState: previousState,
+        );
+      }
     } catch (error, stackTrace) {
       if (error is! ServerConfigSessionRollbackException) {
         _restoreRolledBackAuthPublication(
@@ -1290,10 +1752,15 @@ class AuthStateManager extends _$AuthStateManager {
   /// server config is written. The config, active-server id, and token are
   /// committed as one revision-owned attempt; a persistence failure restores
   /// the previous config/session, while a newer auth attempt always wins.
+  ///
+  /// [canCommit] lets the caller withdraw the commit while it is saved: once
+  /// it says no, the account active before stays active, as it does when a
+  /// newer auth attempt begins.
   Future<bool> commitPrevalidatedProxySession({
     required ServerConfig serverConfig,
     required String token,
     required User user,
+    bool Function()? canCommit,
   }) async {
     final tokenStr = token.trim();
     if (tokenStr.isEmpty) {
@@ -1315,6 +1782,8 @@ class AuthStateManager extends _$AuthStateManager {
         'This sign-in session was already signed out. Please authenticate again.',
       );
     }
+    // The proxy discovery client validated this exact pair with the server.
+    _recordValidatedIdentity(tokenStr, user);
 
     final currentState = _current;
     final previousState =
@@ -1323,6 +1792,8 @@ class AuthStateManager extends _$AuthStateManager {
         : currentState;
     final capturedSessionSafetyEpoch = _sessionSafetyEpoch;
     final attemptRevision = _beginAuthAttempt();
+    bool superseded() =>
+        _authAttemptSuperseded(attemptRevision) || !_canCommitAuth(canCommit);
     _update(
       (current) => current.copyWith(
         status: AuthStatus.loading,
@@ -1332,17 +1803,28 @@ class AuthStateManager extends _$AuthStateManager {
     );
 
     final storage = ref.read(optimizedStorageServiceProvider);
+    // Stopped by the caller rather than by a newer attempt, this one still
+    // owns the state it set loading, and settles it back.
+    void settleStopped() => _restorePrevalidatedProxyAttemptState(
+      attemptRevision: attemptRevision,
+      capturedSessionSafetyEpoch: capturedSessionSafetyEpoch,
+      previousState: previousState,
+    );
     ServerConfigCandidateSnapshot? candidateSnapshot;
     try {
-      if (_authAttemptSuperseded(attemptRevision)) return false;
+      if (superseded()) {
+        settleStopped();
+        return false;
+      }
       final snapshot = await storage.stageServerConfigCandidate(serverConfig);
       candidateSnapshot = snapshot;
-      if (_authAttemptSuperseded(attemptRevision)) {
+      if (superseded()) {
         await _restorePrevalidatedProxyConfig(
           storage: storage,
           candidate: serverConfig,
           snapshot: snapshot,
         );
+        settleStopped();
         return false;
       }
 
@@ -1350,13 +1832,13 @@ class AuthStateManager extends _$AuthStateManager {
         storage: storage,
         token: tokenStr,
         user: user,
-        canCommit: () => !_authAttemptSuperseded(attemptRevision),
+        canCommit: () => !superseded(),
         commitPersistenceAndPublish: ({required publish}) {
           return storage.commitServerConfigCandidateSession(
             candidate: serverConfig,
             transactionId: snapshot.transactionId,
             token: tokenStr,
-            canCommit: () => !_authAttemptSuperseded(attemptRevision),
+            canCommit: () => !superseded(),
             publish: () async {
               await publish();
               ref.invalidate(serverConfigsProvider);
@@ -1693,6 +2175,17 @@ class AuthStateManager extends _$AuthStateManager {
         _resolveAbortedAuthAttempt(attemptRevision);
         return false;
       }
+      final step = _unfinishedSignInStep(response);
+      if (step != null) {
+        _pendingTwoStep = _PendingTwoStepSignIn(
+          serverId: ownership.serverConfig.id,
+          authType: 'credentials',
+          username: username,
+          password: password,
+          rememberCredentials: rememberCredentials,
+        );
+        throw OpenWebUiTwoStepRequired(step);
+      }
 
       // Extract and validate token
       final token = response['token'] ?? response['access_token'];
@@ -1744,6 +2237,10 @@ class AuthStateManager extends _$AuthStateManager {
       DebugLogger.auth('Login successful');
       return true;
     } catch (e, stack) {
+      if (e is OpenWebUiTwoStepRequired) {
+        _settleAtTwoStep();
+        rethrow;
+      }
       final failureMessage = _safeLoginFailureMessage(
         e,
         credentialRequest: true,
@@ -1817,6 +2314,17 @@ class AuthStateManager extends _$AuthStateManager {
 
       // Check if notifier is still mounted after async call
       if (!ref.mounted) return false;
+      final step = _unfinishedSignInStep(response);
+      if (step != null) {
+        _pendingTwoStep = _PendingTwoStepSignIn(
+          serverId: ownership.serverConfig.id,
+          authType: 'ldap',
+          username: username,
+          password: password,
+          rememberCredentials: rememberCredentials,
+        );
+        throw OpenWebUiTwoStepRequired(step);
+      }
 
       // Extract and validate token
       final token = response['token'] ?? response['access_token'];
@@ -1870,6 +2378,10 @@ class AuthStateManager extends _$AuthStateManager {
       DebugLogger.auth('LDAP login successful');
       return true;
     } catch (e, stack) {
+      if (e is OpenWebUiTwoStepRequired) {
+        _settleAtTwoStep();
+        rethrow;
+      }
       final failureMessage = _safeLoginFailureMessage(
         e,
         credentialRequest: true,
@@ -1908,10 +2420,12 @@ class AuthStateManager extends _$AuthStateManager {
 
   Future<User> _validateIssuedToken(ApiService api, String token) async {
     try {
-      return await api.getCurrentUser(
+      final user = await api.getCurrentUser(
         suppressAuthFailureNotification: true,
         candidateAuthToken: token,
       );
+      _recordValidatedIdentity(token, user);
+      return user;
     } catch (error, stackTrace) {
       Error.throwWithStackTrace(
         Exception(_loginValidationMessage(error)),
@@ -1975,6 +2489,12 @@ class AuthStateManager extends _$AuthStateManager {
         text.contains('ldap authentication is not enabled');
     if (ldapDisabled) {
       return 'LDAP authentication is not enabled';
+    }
+    if (text.contains('twostepverificationrequired')) {
+      return 'twoStepVerificationRequired';
+    }
+    if (text.contains('accountpendingapproval')) {
+      return 'accountPendingApproval';
     }
 
     if (statusCode == 401 ||
@@ -2371,6 +2891,9 @@ class AuthStateManager extends _$AuthStateManager {
     String password,
   ) async {
     final response = await api.login(username, password);
+    if (_unfinishedSignInStep(response) != null) {
+      throw Exception('twoStepVerificationRequired');
+    }
     final token = response['token'] ?? response['access_token'];
     if (token == null || token.toString().trim().isEmpty) {
       throw Exception('No authentication token received');
@@ -2383,6 +2906,182 @@ class AuthStateManager extends _$AuthStateManager {
 
     final user = await _validateIssuedToken(api, tokenStr);
     return (token: tokenStr, user: user);
+  }
+
+  /// Open WebUI 0.12 answers a password or LDAP sign-in with a `next_step`
+  /// and no session when two-step verification is on: the account must
+  /// enroll an authenticator, verify a code, or redeem an administrator's
+  /// recovery token, or it is still waiting for approval. Returns the step to
+  /// take, throws for an account awaiting approval, and returns null for a
+  /// session.
+  OpenWebUiTwoStepChallenge? _unfinishedSignInStep(
+    Map<String, dynamic> response,
+  ) {
+    if (response['token'] != null) return null;
+    if (response['next_step'] == 'pending') {
+      throw Exception('accountPendingApproval');
+    }
+    return OpenWebUiTwoStepChallenge.fromJson(response);
+  }
+
+  /// A sign-in that stopped at a second step is not a failure: settle it
+  /// signed out, with no error, for the sign-in page to ask for the code.
+  void _settleAtTwoStep() {
+    _updateApiServiceToken(null);
+    _update(
+      (current) => current.copyWith(
+        status: AuthStatus.unauthenticated,
+        isLoading: false,
+        clearError: true,
+        clearToken: true,
+      ),
+    );
+  }
+
+  /// The API client of the server a pending two-step sign-in began on.
+  ApiService _twoStepApi() {
+    final pending = _pendingTwoStep;
+    final api = ref.read(apiServiceProvider);
+    if (pending == null ||
+        api == null ||
+        api.serverConfig.id != pending.serverId) {
+      throw const OpenWebUiTwoStepException(OpenWebUiTwoStepFailure.expired);
+    }
+    return api;
+  }
+
+  /// The secret to add to an authenticator app for an `enroll` step.
+  Future<OpenWebUiTwoStepSetup> startTwoStepEnrollment(
+    OpenWebUiTwoStepChallenge challenge,
+  ) => _twoStepApi().startTwoStepEnrollment(challenge.challengeToken);
+
+  /// Answers a `verify` or `enroll` step with a [code]; for `verify`, a
+  /// recovery code when [recovery] is set. The session it returns is not
+  /// signed in to until [finishTwoStepSignIn].
+  Future<OpenWebUiTwoStepSession> submitTwoStepCode(
+    OpenWebUiTwoStepChallenge challenge,
+    String code, {
+    bool recovery = false,
+  }) {
+    final api = _twoStepApi();
+    return switch (challenge.kind) {
+      OpenWebUiTwoStepKind.enroll => api.confirmTwoStepEnrollment(
+        challenge.challengeToken,
+        code.trim(),
+      ),
+      OpenWebUiTwoStepKind.verify => api.verifyTwoStepCode(
+        challenge.challengeToken,
+        code.trim(),
+        recovery: recovery,
+      ),
+      OpenWebUiTwoStepKind.recover => throw ArgumentError.value(
+        challenge.kind,
+        'challenge',
+        'A recover step takes a recovery token',
+      ),
+    };
+  }
+
+  /// Redeems an administrator's recovery token for a `recover` step,
+  /// answering with the `enroll` step for a new authenticator.
+  Future<OpenWebUiTwoStepChallenge> redeemTwoStepResetToken(
+    OpenWebUiTwoStepChallenge challenge,
+    String resetToken,
+  ) => _twoStepApi().redeemTwoStepResetToken(
+    challenge.challengeToken,
+    resetToken.trim(),
+  );
+
+  /// Signs in with the session a second step issued, as the password or LDAP
+  /// sign-in it finishes would have, remembering what that sign-in was asked
+  /// to remember.
+  Future<bool> finishTwoStepSignIn(OpenWebUiTwoStepSession session) async {
+    final pending = _pendingTwoStep;
+    _beginAuthAttempt();
+    // Kept until the session is signed in to, so a failed attempt can retry.
+    _pendingTwoStep = pending;
+    _update(
+      (current) => current.copyWith(
+        status: AuthStatus.loading,
+        isLoading: true,
+        clearError: true,
+      ),
+    );
+
+    final attemptRevision = _authAttemptRevision;
+    try {
+      final api = ref.read(apiServiceProvider);
+      if (api == null) {
+        throw Exception('No server connection available');
+      }
+      if (pending == null || api.serverConfig.id != pending.serverId) {
+        throw Exception(
+          'Server configuration changed during authentication. Please retry.',
+        );
+      }
+      final storage = ref.read(optimizedStorageServiceProvider);
+      final ownership = await _captureLoginServerOwnership(
+        storage,
+        api,
+        requireActive: true,
+      );
+      if (_authAttemptSuperseded(attemptRevision)) {
+        _resolveAbortedAuthAttempt(attemptRevision);
+        return false;
+      }
+
+      final token = session.token;
+      if (!_isValidTokenFormat(token)) {
+        throw Exception('Invalid authentication token format');
+      }
+      _acceptFreshlyIssuedServerToken(token, source: 'two-step');
+      final user = await _validateIssuedToken(api, token);
+      if (_authAttemptSuperseded(attemptRevision)) {
+        _resolveAbortedAuthAttempt(attemptRevision);
+        return false;
+      }
+
+      final committed = await _commitValidatedExistingServerSession(
+        storage: storage,
+        ownership: ownership,
+        token: token,
+        user: user,
+        attemptRevision: attemptRevision,
+        rememberedCredentials: pending.rememberedCredentials(
+          serverId: ownership.serverConfig.id,
+          token: token,
+        ),
+      );
+      if (!committed) {
+        _resolveAbortedAuthAttempt(attemptRevision);
+        return false;
+      }
+      if (identical(_pendingTwoStep, pending)) _pendingTwoStep = null;
+
+      DebugLogger.auth('Two-step sign-in successful');
+      return true;
+    } catch (e, stack) {
+      // The code was right; a session the server then refuses means the
+      // sign-in must start again, not that the password was wrong.
+      final failureMessage = _isConfirmedAuthFailure(e)
+          ? 'twoStepSessionRejected'
+          : _safeLoginFailureMessage(e);
+      _logAuthenticationFailure('two-step-login-failed', e, stackTrace: stack);
+      if (_authAttemptSuperseded(attemptRevision)) {
+        _resolveAbortedAuthAttempt(attemptRevision);
+      } else if (e is! _AuthPublicationRolledBack) {
+        _updateApiServiceToken(null);
+        _update(
+          (current) => current.copyWith(
+            status: AuthStatus.error,
+            error: failureMessage,
+            isLoading: false,
+            clearToken: true,
+          ),
+        );
+      }
+      Error.throwWithStackTrace(Exception(failureMessage), stack);
+    }
   }
 
   Future<bool> _commitSilentLoginResult({
@@ -2524,13 +3223,23 @@ class AuthStateManager extends _$AuthStateManager {
         errorText.contains('invalid token format') ||
         errorText.contains('token cannot be empty');
 
+    // A saved password cannot answer a second step, and a server that holds
+    // the account for approval answers it the same way on every attempt;
+    // under two-step verification each attempt also counts toward the
+    // account's sign-in limit. Treat both as terminal, so the user lands on
+    // sign-in, where the second step can be taken, instead of retrying.
+    final isUnfinishedSignIn =
+        errorText.contains('twostepverificationrequired') ||
+        errorText.contains('accountpendingapproval');
+
     if ((!isNetworkError &&
             (statusCode == 400 ||
                 statusCode == 401 ||
                 statusCode == 403 ||
                 errorText.contains('401 unauthorized') ||
                 errorText.contains('authentication failed'))) ||
-        isInvalidSavedToken) {
+        isInvalidSavedToken ||
+        isUnfinishedSignIn) {
       // A confirmed auth failure means the saved secret is bad: clear it so it
       // isn't retried on every cold start (the background bootstrap path turns a
       // bare `false` into a generic unauthenticated state otherwise). Only bail
@@ -2655,6 +3364,71 @@ class AuthStateManager extends _$AuthStateManager {
         clearError: false,
       ),
     );
+  }
+
+  /// Checks the session a connection issue kept, on the address its server
+  /// is reached through now, and signs back in only if the server accepts
+  /// it there as the same user. Anything else leaves the issue shown and the
+  /// session kept, for Retry. Returns whether it signed back in.
+  ///
+  /// A proxy turning requests away shows a connection issue. A check of the
+  /// server's addresses moving to another one asks for this: the client is
+  /// rebuilt for it, and nothing else would look at the session again.
+  /// Once for each issue: an address refusing the session too would move
+  /// the server back, and the check there would be refused again.
+  Future<bool> recheckSessionAfterRouteChange() async {
+    final kept = _current;
+    final token = kept.token;
+    final user = kept.user;
+    if (_connectionIssueRechecked ||
+        kept.status != AuthStatus.error ||
+        token == null ||
+        token.isEmpty ||
+        user == null) {
+      return false;
+    }
+    _connectionIssueRechecked = true;
+    final attemptRevision = _authAttemptRevision;
+    final safetyEpoch = _sessionSafetyEpoch;
+    bool stillKept() =>
+        ref.mounted &&
+        _authAttemptRevision == attemptRevision &&
+        _sessionSafetyEpoch == safetyEpoch &&
+        _current.status == AuthStatus.error &&
+        _current.token == token;
+    try {
+      // The client follows the address moved to once this settles.
+      await ref.read(activeServerProvider.future);
+      if (!stillKept()) return false;
+      final api = ref.read(apiServiceProvider);
+      if (api == null || api.authToken != token) return false;
+      final accepted = await api.getCurrentUser(
+        suppressAuthFailureNotification: true,
+        authSnapshot: api.captureAuthSnapshot(),
+      );
+      // An address moved to meanwhile has not been asked: the answer speaks
+      // only for the client that got it.
+      if (!stillKept() ||
+          !identical(ref.read(apiServiceProvider), api) ||
+          accepted.id != user.id) {
+        return false;
+      }
+      _recordValidatedIdentity(token, accepted);
+      _update(
+        (current) => current.copyWith(
+          status: AuthStatus.authenticated,
+          user: accepted,
+          isLoading: false,
+          clearError: true,
+        ),
+        cache: true,
+      );
+      DebugLogger.auth('session-rechecked-on-new-route', scope: 'auth/state');
+      return true;
+    } catch (error) {
+      _logAuthenticationFailure('session-recheck-on-new-route-failed', error);
+      return false;
+    }
   }
 
   /// Handle token invalidation (called by API service for explicit token expiry)
@@ -2890,6 +3664,21 @@ class AuthStateManager extends _$AuthStateManager {
     final logoutApi = ref.read(apiServiceProvider);
     final logoutAuthSnapshot = logoutApi?.captureAuthSnapshot();
     final logoutToken = logoutApi?.authToken;
+    // The plain logout deletes the account's chats, as logout always has.
+    // Its record and settings stay, to sign in to again. Read now, with
+    // nothing awaited: the account in use, else the one stored as active
+    // while that is still loading. A refresh keeps the account it is leaving
+    // as its value until then, so loading is what tells.
+    final storedActiveId = PreferencesStore.getString(
+      PreferenceKeys.activeServerId,
+    );
+    final activeServer = ref.read(activeServerProvider);
+    final loggedOutAccountId = clearAllAppData
+        ? null
+        : (activeServer.isLoading ? null : activeServer.asData?.value?.id) ??
+              (storedActiveId == null || storedActiveId.isEmpty
+                  ? null
+                  : storedActiveId);
     final attemptRevision = _beginAuthAttempt();
     _update(
       (current) =>
@@ -2909,6 +3698,25 @@ class AuthStateManager extends _$AuthStateManager {
     var completeLocalCleanup = false;
     var finalizationYieldedOwnership = false;
     Object? terminalFailure;
+
+    // Once its sign-in is gone, and while its database is still open, so the
+    // purge keeps it closed until its files are gone.
+    Future<void> purgeLoggedOutAccountData() async {
+      final accountId = loggedOutAccountId;
+      if (accountId == null) return;
+      try {
+        await _accountStorageIsolation.purgeAccount(
+          accountId,
+          keepsRecord: true,
+        );
+      } catch (error, stackTrace) {
+        _logAuthenticationFailure(
+          'logout-data-purge-failed',
+          error,
+          stackTrace: stackTrace,
+        );
+      }
+    }
 
     Future<bool> clearAuthDataForCurrentOwnership() async {
       final storage = ref.read(optimizedStorageServiceProvider);
@@ -2981,7 +3789,9 @@ class AuthStateManager extends _$AuthStateManager {
             preserveServerDetails: keepServerDetails,
           );
         } else {
-          cleared = await storage.clearAuthDataIf(
+          // The plain logout signs the active account out and leaves every
+          // other saved account signed in.
+          cleared = await storage.clearActiveAccountAuthDataIf(
             canClear: () => !_newerCommittedSessionOwnsAuthData(
               attemptRevision,
               remotelyRevokedToken: revokedToken,
@@ -3055,6 +3865,7 @@ class AuthStateManager extends _$AuthStateManager {
         DebugLogger.auth('Logout cleanup yielded to a committed newer session');
         return FullAppDataClearOutcome.ownershipYielded;
       }
+      await purgeLoggedOutAccountData();
 
       DebugLogger.auth(
         clearAllAppData
@@ -3080,6 +3891,7 @@ class AuthStateManager extends _$AuthStateManager {
             );
             return FullAppDataClearOutcome.ownershipYielded;
           }
+          await purgeLoggedOutAccountData();
         } catch (clearError) {
           _logAuthenticationFailure('logout-clear-failed', clearError);
           terminalFailure = clearError;
@@ -3250,6 +4062,15 @@ class AuthStateManager extends _$AuthStateManager {
       }
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
+  }
+
+  /// Notes that the server accepted [token] as [user], so the storage
+  /// barrier may carry that user's account database over to this token.
+  void _recordValidatedIdentity(String token, User user) {
+    if (!ref.mounted) return;
+    ref
+        .read(openWebUiValidatedIdentityLedgerProvider)
+        .record(token: token, userId: user.id);
   }
 
   /// Preload the default model as soon as authentication succeeds.

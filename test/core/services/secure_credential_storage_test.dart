@@ -9,8 +9,10 @@ import 'package:conduit_core/conduit_core.dart';
 const _credentialsKey = 'user_credentials_v2';
 const _authTokenKey = 'auth_token_v2';
 const _serverConfigsKey = 'server_configs_v2';
-const _hermesApiKey = 'hermes_api_key_v1';
-const _hermesSessionKey = 'hermes_session_key_v1';
+const _registryKey = 'openwebui_registry_v1';
+const _hermesConnection = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const _hermesApiKey = 'hermes_api_key_v1:$_hermesConnection';
+const _hermesSessionKey = 'hermes_session_key_v1:$_hermesConnection';
 
 void main() {
   late _FakeSecureStorage fake;
@@ -279,12 +281,20 @@ void main() {
   });
 
   group('server configs', () {
-    test('saveServerConfigs round-trips the saved JSON', () async {
-      const configsJson = '[{"id":"a"}]';
+    test('saveOpenWebUiRegistry round-trips the saved JSON', () async {
+      const registryJson = '{"version":1,"servers":[],"accounts":[]}';
 
-      await storage.saveServerConfigs(configsJson);
+      await storage.saveOpenWebUiRegistry(registryJson);
 
-      expect(await storage.getServerConfigs(), configsJson);
+      expect(await storage.getOpenWebUiRegistry(), registryJson);
+      expect(fake.store[_registryKey], registryJson);
+    });
+
+    test('getOpenWebUiRegistry throws on read error', () async {
+      fake.store[_registryKey] = '{}';
+      fake.failReadsFor.add(_registryKey);
+
+      await expectLater(storage.getOpenWebUiRegistry(), throwsStateError);
     });
 
     test('getServerConfigs throws on read error', () async {
@@ -293,6 +303,16 @@ void main() {
 
       await expectLater(storage.getServerConfigs(), throwsStateError);
     });
+
+    test('deleteLegacyServerConfigs removes only the legacy list', () async {
+      fake.store[_serverConfigsKey] = '[{"id":"a"}]';
+      fake.store[_registryKey] = '{}';
+
+      await storage.deleteLegacyServerConfigs();
+
+      expect(fake.store.containsKey(_serverConfigsKey), isFalse);
+      expect(fake.store[_registryKey], '{}');
+    });
   });
 
   group('Hermes keys', () {
@@ -300,22 +320,64 @@ void main() {
       fake.store[_hermesApiKey] = 'api-key';
       fake.store[_hermesSessionKey] = 'session-key';
 
-      expect(await storage.getHermesApiKey(), 'api-key');
-      expect(await storage.getHermesSessionKey(), 'session-key');
+      expect(await storage.getHermesApiKey(_hermesConnection), 'api-key');
+      expect(
+        await storage.getHermesSessionKey(_hermesConnection),
+        'session-key',
+      );
+    });
+
+    test('scopes secrets to their connection', () async {
+      const other = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      await storage.saveHermesApiKey(_hermesConnection, 'first');
+      await storage.saveHermesApiKey(other, 'second');
+
+      expect(fake.store[_hermesApiKey], 'first');
+      expect(fake.store['hermes_api_key_v1:$other'], 'second');
+      expect(fake.store.containsKey('hermes_api_key_v1'), isFalse);
+
+      await storage.deleteHermesConnectionSecrets(_hermesConnection);
+      expect(fake.store.containsKey(_hermesApiKey), isFalse);
+      expect(await storage.getHermesApiKey(other), 'second');
+    });
+
+    test('rejects connection ids that could address another key', () {
+      expect(
+        () => storage.getHermesApiKey('x:hermes_session_key_v1'),
+        throwsArgumentError,
+      );
+      expect(() => storage.getHermesApiKey(''), throwsArgumentError);
+    });
+
+    test('reads and deletes legacy unscoped secrets for migration', () async {
+      fake.store['hermes_api_key_v1'] = 'legacy';
+
+      expect(
+        await storage.readLegacyHermesSecret(HermesSecretKind.apiKey),
+        'legacy',
+      );
+      await storage.deleteLegacyHermesSecret(HermesSecretKind.apiKey);
+      expect(fake.store.containsKey('hermes_api_key_v1'), isFalse);
     });
 
     test('does not mask keychain read failures as missing keys', () async {
       fake.failReadsFor.addAll({_hermesApiKey, _hermesSessionKey});
 
-      await expectLater(storage.getHermesApiKey(), throwsStateError);
-      await expectLater(storage.getHermesSessionKey(), throwsStateError);
+      await expectLater(
+        storage.getHermesApiKey(_hermesConnection),
+        throwsStateError,
+      );
+      await expectLater(
+        storage.getHermesSessionKey(_hermesConnection),
+        throwsStateError,
+      );
     });
 
     test('retries a transient keychain read failure once', () async {
       fake.store[_hermesApiKey] = 'api-key';
       fake.remainingReadFailures[_hermesApiKey] = 1;
 
-      expect(await storage.getHermesApiKey(), 'api-key');
+      expect(await storage.getHermesApiKey(_hermesConnection), 'api-key');
     });
   });
 
