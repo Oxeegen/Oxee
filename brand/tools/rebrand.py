@@ -11,6 +11,12 @@ Two kinds of rewrite, both idempotent:
   matching the strings they check.
 * Identity. Bundle identifiers, the app group, the URL scheme, the Apple team
   and the links that point at the upstream project, from brand/brand.json.
+* Agent name. Upstream's agent backend, "Hermes" or "Hermes Agent", is
+  Oxeegen's own fork, "Oxee Hermes". Every translation (ARB values, every
+  language), and a whole code literal whose renamed text is an English
+  translation (the default connection and model name "Hermes Agent"; tests,
+  so they keep matching what the widgets show). Other code literals keep the
+  short name: English-only messages, protocol values, test data.
 
 Run from the repository root after every upstream merge:
 
@@ -39,6 +45,8 @@ NAME = BRAND["appName"]
 UPSTREAM_NAME = BRAND["upstreamAppName"]
 BUNDLE_ID = BRAND["bundleId"]
 UPSTREAM_BUNDLE_ID = BRAND["upstreamBundleId"]
+HERMES_NAME = BRAND["hermesName"]
+UPSTREAM_HERMES_NAME = BRAND["upstreamHermesName"]
 
 # Whole word only: "Conduit's" and "Conduit-Chat" match, "ConduitWidget",
 # "askConduit" and "conduit_core" do not.
@@ -51,6 +59,18 @@ EXCLUDED_SUFFIXES = (".g.dart", ".freezed.dart", ".g.swift", ".mocks.dart")
 
 def rename_word(text: str) -> str:
     return WORD.sub(NAME, text)
+
+
+# "Hermes Agent" (and the titles "Agent Hermes" / "Agente Hermes") is the
+# product's full name, so all of it becomes "Oxee Hermes"; any other
+# whole-word "Hermes" gains the prefix. Never twice: "Oxee Hermes" is left.
+_H = re.escape(UPSTREAM_HERMES_NAME)
+HERMES_FULL = re.compile(r"(?<![A-Za-z0-9_$])(?:" + _H + r"[ -]Agent|Agente? " + _H + r")(?![A-Za-z0-9_])")
+HERMES_WORD = re.compile(r"(?<![A-Za-z0-9_$])(?<!" + re.escape(NAME) + r" )" + _H + r"(?![A-Za-z0-9_])")
+
+
+def rename_hermes(text: str) -> str:
+    return HERMES_WORD.sub(HERMES_NAME, HERMES_FULL.sub(HERMES_NAME, text))
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +225,7 @@ class _Scanner:
         return n
 
 
-def rewrite_string_literals(src: str, lang: str) -> str:
+def rewrite_string_literals(src: str, lang: str, rename: Callable[[str], str] = rename_word) -> str:
     spans = _Scanner(src, lang).run()
     out = []
     last = 0
@@ -213,7 +233,7 @@ def rewrite_string_literals(src: str, lang: str) -> str:
         if start < last:
             continue
         out.append(src[last:start])
-        out.append(rename_word(src[start:end]))
+        out.append(rename(src[start:end]))
         last = end
     out.append(src[last:])
     return "".join(out)
@@ -232,8 +252,59 @@ def rewrite_arb(src: str) -> str:
     for idx, line in enumerate(lines):
         m = ARB_ENTRY.match(line)
         if m:
-            lines[idx] = m.group(1) + rename_word(m.group(3)) + m.group(4)
+            lines[idx] = m.group(1) + rename_hermes(rename_word(m.group(3))) + m.group(4)
     return "\n".join(lines)
+
+
+def _english_translations() -> frozenset[str]:
+    """The English ARB's values as Oxee ships them (rewritten in memory, so
+    the answer does not depend on the order files are processed in)."""
+    src = (ROOT / "lib/l10n/app_en.arb").read_text(encoding="utf-8").replace("\r\n", "\n")
+    values = set()
+    for line in rewrite_arb(src).split("\n"):
+        m = ARB_ENTRY.match(line)
+        if m:
+            values.add(json.loads('"' + m.group(3) + '"'))
+    return frozenset(values)
+
+
+_EN_VALUES: frozenset[str] | None = None
+
+
+def rename_hermes_literal(text: str) -> str:
+    """A whole code literal naming Hermes, renamed when the renamed text is
+    one of the English translations; any other literal is left as written
+    (messages built in code, protocol values, test data). A bare "Hermes" is
+    data too (a model or chat name), save in HERMES_TAB_TESTS."""
+    global _EN_VALUES
+    if _EN_VALUES is None:
+        _EN_VALUES = _english_translations()
+    if text == UPSTREAM_HERMES_NAME:
+        return text
+    renamed = rename_hermes(text)
+    if renamed != text and renamed in _EN_VALUES:
+        return renamed
+    return text
+
+
+def rewrite_dart_literals(src: str) -> str:
+    src = rewrite_string_literals(src, "dart")
+    return rewrite_string_literals(src, "dart", rename_hermes_literal)
+
+
+# Tests where a bare "Hermes" is the agent's sidebar tab, labelled by the
+# translation "sidebarHermesTab".
+HERMES_TAB_TESTS = {
+    "test/features/navigation/widgets/sidebar_page_test.dart",
+    "test/features/navigation/widgets/sidebar_page_test_support.dart",
+    "test/features/navigation/widgets/sliding_sidebar_test.dart",
+}
+
+
+def apply_hermes_tab_tests(rel: str, text: str) -> str:
+    if rel not in HERMES_TAB_TESTS:
+        return text
+    return rewrite_string_literals(text, "dart", lambda s: HERMES_NAME if s == UPSTREAM_HERMES_NAME else s)
 
 
 def rewrite_dot_strings(src: str) -> str:
@@ -373,7 +444,7 @@ class Rule:
 
 RULES = [
     Rule(("lib/**/*.dart", "packages/*/lib/**/*.dart", "test/**/*.dart", "packages/*/test/**/*.dart", "integration_test/**/*.dart"),
-         lambda s: rewrite_string_literals(s, "dart")),
+         rewrite_dart_literals),
     Rule(("ios/Runner/**/*.swift", "ios/ShareExtension/**/*.swift", "ios/ConduitWidget/**/*.swift", "ios/RunnerTests/**/*.swift"),
          lambda s: rewrite_string_literals(s, "swift")),
     Rule(("android/app/src/**/*.kt",), lambda s: rewrite_string_literals(s, "kotlin")),
@@ -383,6 +454,10 @@ RULES = [
     Rule(("ios/Runner/Info.plist", "ios/ShareExtension/Info.plist", "ios/ConduitWidget/Info.plist"), rewrite_plist),
     Rule(("android/app/src/**/res/**/*.xml", "android/app/src/**/AndroidManifest.xml"), rewrite_android_xml),
     Rule(("ios/Runner.xcodeproj/project.pbxproj",), rewrite_pbxproj),
+    # Developer guide for Open WebUI function authors: the product name in
+    # its prose follows the app's messages. The protocol value the app sends,
+    # "client": "conduit", is lowercase and stays.
+    Rule(("docs/open-webui-functions.md",), rename_word),
 ]
 
 
@@ -474,6 +549,7 @@ def transform(path: Path, rewrites: list[Callable[[str], str]]) -> tuple[str, st
         text = rewrite(text)
     rel = path.relative_to(ROOT).as_posix()
     text = apply_locale_fixes(rel, text)
+    text = apply_hermes_tab_tests(rel, text)
     text = fix_english_articles(rel, text)
     text = apply_identity(rel, text)
     if crlf:

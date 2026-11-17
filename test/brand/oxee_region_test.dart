@@ -81,8 +81,9 @@ void main() {
       expect(find.text('Oxeegen FR'), findsOneWidget);
       expect(find.text('United States · ai.oxeegen.com'), findsOneWidget);
       expect(find.text('France · ia.oxeegen.fr'), findsOneWidget);
-      // Upstream's other backends are not offered.
-      expect(find.text('Hermes Agent'), findsNothing);
+      // First launch is Oxeegen only: Oxee Hermes is added from Settings,
+      // and upstream's other backends are not offered.
+      expect(find.text('Oxee Hermes'), findsNothing);
       expect(find.text('Connect directly'), findsNothing);
     });
 

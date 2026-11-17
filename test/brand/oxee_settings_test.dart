@@ -55,7 +55,33 @@ void main() {
       ]);
     });
 
-    test('the Accounts page keeps Oxeegen accounts only', () {
+    test('About keeps its group when the donations share it, without the '
+        'footer asking for support', () {
+      final sections = oxeeNativeRootSections(
+        [
+          NativeSheetSectionConfig(items: [_item('accounts')]),
+          NativeSheetSectionConfig(
+            footer: 'Your support helps keep it that way.',
+            items: [
+              _item(NativeSheetRoutes.helpAbout),
+              _item('buy-me-a-coffee'),
+              _item('github-sponsors'),
+            ],
+          ),
+        ],
+        region: _item(oxeeRegionNativeSheetItemId),
+      );
+
+      check(
+        sections.map((s) => s.items.map((i) => i.id).toList()).toList(),
+      ).deepEquals([
+        ['accounts', oxeeRegionNativeSheetItemId],
+        [NativeSheetRoutes.helpAbout],
+      ]);
+      check(sections.last.footer).isNull();
+    });
+
+    test('the Accounts page keeps Oxeegen accounts and Oxee Hermes', () {
       final detail = oxeeNativeAccountsDetail(
         NativeSheetDetailConfig(
           id: 'accounts',
@@ -75,7 +101,7 @@ void main() {
       check(detail.trailingActionId).equals('account-add');
       check(
         detail.sections.expand((s) => s.items).map((i) => i.id).toList(),
-      ).deepEquals(['account-server:us']);
+      ).deepEquals(['account-server:us', 'accounts-hermes']);
     });
 
     test('About has no release notes', () {

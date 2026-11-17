@@ -40,6 +40,14 @@ Each region keeps its own accounts and chats. You can stay signed in to
 both and switch between them in Settings; nothing is copied from one region
 to the other.
 
+## Oxee Hermes
+
+Oxee also connects to **Oxee Hermes** agents: agents that use tools,
+remember past sessions and run scheduled jobs. Add one in **Settings →
+Accounts → Add Account → Oxee Hermes** with its server address and API key.
+Its conversations get their own tab in the sidebar, next to your Oxeegen
+chats.
+
 ## What you get
 
 ### Chat built for mobile
@@ -87,7 +95,8 @@ Don't have an account yet? Contact [Oxeegen](https://www.oxeegen.com).
   device so they open instantly; notes and drafts also work offline.
 - Sign-in tokens are kept in the Keychain on iOS and the Keystore on Android.
 - No third-party analytics or advertising SDKs.
-- The app talks only to the Oxeegen region you chose.
+- The app talks only to the Oxeegen region you chose, and to the Oxee Hermes
+  servers you add.
 
 Full details in [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
 

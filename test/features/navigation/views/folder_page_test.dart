@@ -1,4 +1,6 @@
 import 'dart:async';
+
+import '../../../support/native_database.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -38,9 +40,12 @@ import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit_core/features/chat/providers/context_attachments_provider.dart';
 import 'package:conduit/features/chat/services/file_attachment_service.dart';
 import 'package:conduit/features/chat/views/chat_page.dart';
+import 'package:conduit/features/chat/widgets/composer_overflow_menu.dart';
 import 'package:conduit/features/chat/widgets/model_selector_sheet.dart';
 import 'package:conduit/features/chat/widgets/modern_chat_input.dart';
+import 'package:conduit/features/navigation/utils/chat_list_back.dart';
 import 'package:conduit/features/navigation/views/folder_page.dart';
+import 'package:conduit/features/navigation/widgets/responsive_drawer_layout.dart';
 import 'package:conduit/features/workspace/models/workspace_capabilities.dart';
 import 'package:conduit/features/workspace/providers/workspace_capabilities_provider.dart';
 import 'package:conduit/features/navigation/widgets/folder_project_settings_sheet.dart';
@@ -52,14 +57,19 @@ import 'package:conduit/shared/utils/conversation_context_menu.dart';
 import 'package:conduit/shared/theme/app_theme.dart';
 import 'package:conduit/shared/theme/tweakcn_themes.dart';
 import 'package:conduit/shared/widgets/conduit_components.dart';
+import 'package:conduit/shared/widgets/legacy_design_compatibility.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
-import 'package:flutter/services.dart' show MethodChannel;
+import 'package:flutter/services.dart' show MethodChannel, SystemChannels;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+
+import '../../../support/native_platform_views.dart';
 
 void main() {
   test('pasted attachments acknowledge before terminal uploads', () async {
@@ -269,58 +279,83 @@ void main() {
     FlutterError.onError = originalFlutterErrorOnError;
   });
 
-  testWidgets('edit folder menu action loads and saves folder updates', (
-    tester,
-  ) async {
-    final originalErrorWidgetBuilder = ErrorWidget.builder;
-    final originalFlutterErrorOnError = FlutterError.onError;
-    addTearDown(() async {
+  testWidgets(
+    'edit folder menu action loads and saves folder updates',
+    (tester) async {
+      final originalErrorWidgetBuilder = ErrorWidget.builder;
+      final originalFlutterErrorOnError = FlutterError.onError;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        ErrorWidget.builder = originalErrorWidgetBuilder;
+        FlutterError.onError = originalFlutterErrorOnError;
+      });
+
+      PlatformUiCapabilities.debugPlatformOverride = defaultTargetPlatform;
+      PlatformUiCapabilities.debugIOSMajorVersionOverride = 18;
+      PlatformUiCapabilities.debugNativeIOS26Override = false;
+      addTearDown(PlatformUiCapabilities.resetDebugOverrides);
+      final api = _FakeFolderApiService();
+
+      await tester.pumpWidget(
+        _buildHarness(
+          api: api,
+          useCupertino: defaultTargetPlatform == TargetPlatform.iOS,
+          folders: const [Folder(id: 'work', name: 'Work')],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('folder-page-overflow-button')),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Edit Folder'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('folder-edit-name-field')),
+        findsOneWidget,
+      );
+      expect(find.text('Server Work'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const ValueKey<String>('folder-edit-name-field')),
+        'Renamed Work',
+      );
+      final formContext = tester.element(
+        find.byKey(const ValueKey<String>('folder-edit-name-field')),
+      );
+      final savedMessage = AppLocalizations.of(formContext)!.saved;
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        expect(ScaffoldMessenger.maybeOf(formContext), isNull);
+      }
+      await tester.ensureVisible(find.text('Save'));
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(api.lastUpdatedName, 'Renamed Work');
+      expect(api.lastUpdatedMeta?['icon'], 'briefcase');
+      expect(api.lastUpdatedData, isNull);
+      expect(find.text('Renamed Work'), findsOneWidget);
+
+      expect(
+        find.byKey(const ValueKey<String>('folder-edit-name-field')),
+        findsNothing,
+      );
+      expect(find.text(savedMessage), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text(savedMessage), findsOneWidget);
+
       await tester.pumpWidget(const SizedBox.shrink());
       ErrorWidget.builder = originalErrorWidgetBuilder;
       FlutterError.onError = originalFlutterErrorOnError;
-    });
-
-    final api = _FakeFolderApiService();
-
-    await tester.pumpWidget(
-      _buildHarness(
-        api: api,
-        folders: const [Folder(id: 'work', name: 'Work')],
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(
-      find.byKey(const ValueKey<String>('folder-page-overflow-button')),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Edit Folder'));
-    await tester.pumpAndSettle();
-
-    expect(
-      find.byKey(const ValueKey<String>('folder-edit-name-field')),
-      findsOneWidget,
-    );
-    expect(find.text('Server Work'), findsOneWidget);
-
-    await tester.enterText(
-      find.byKey(const ValueKey<String>('folder-edit-name-field')),
-      'Renamed Work',
-    );
-    await tester.ensureVisible(find.text('Save'));
-    await tester.tap(find.text('Save'));
-    await tester.pumpAndSettle();
-
-    expect(api.lastUpdatedName, 'Renamed Work');
-    expect(api.lastUpdatedMeta?['icon'], 'briefcase');
-    expect(api.lastUpdatedData, isNull);
-    expect(find.text('Renamed Work'), findsOneWidget);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    ErrorWidget.builder = originalErrorWidgetBuilder;
-    FlutterError.onError = originalFlutterErrorOnError;
-  });
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.android,
+      TargetPlatform.iOS,
+    }),
+  );
 
   group('folder Share folder', () {
     Future<void> openFolderMenu(
@@ -364,7 +399,7 @@ void main() {
         folder: const Folder(id: 'work', name: 'Work'),
       );
 
-      expect(find.text('Share folder'), findsOneWidget);
+      expect(find.text('Share Folder'), findsOneWidget);
       expect(find.text('Edit Folder'), findsOneWidget);
     });
 
@@ -382,8 +417,8 @@ void main() {
         ),
       );
 
-      expect(find.text('Project settings'), findsOneWidget);
-      expect(find.text('Share folder'), findsNothing);
+      expect(find.text('Project Settings'), findsOneWidget);
+      expect(find.text('Share Folder'), findsNothing);
       expect(find.text('Edit Folder'), findsNothing);
       expect(find.text('System Prompt'), findsNothing);
     });
@@ -402,7 +437,7 @@ void main() {
         ),
       );
 
-      expect(find.text('Share folder'), findsOneWidget);
+      expect(find.text('Share Folder'), findsOneWidget);
       expect(find.text('Edit Folder'), findsNothing);
     });
 
@@ -421,61 +456,86 @@ void main() {
         find.byKey(const ValueKey<String>('folder-page-overflow-button')),
         findsNothing,
       );
-      expect(find.text('Share folder'), findsNothing);
+      expect(find.text('Share Folder'), findsNothing);
     });
   });
 
-  testWidgets('system prompt menu action loads and saves prompt updates', (
-    tester,
-  ) async {
-    final originalErrorWidgetBuilder = ErrorWidget.builder;
-    final originalFlutterErrorOnError = FlutterError.onError;
-    addTearDown(() async {
+  testWidgets(
+    'system prompt menu action loads and saves prompt updates',
+    (tester) async {
+      final originalErrorWidgetBuilder = ErrorWidget.builder;
+      final originalFlutterErrorOnError = FlutterError.onError;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        ErrorWidget.builder = originalErrorWidgetBuilder;
+        FlutterError.onError = originalFlutterErrorOnError;
+      });
+
+      PlatformUiCapabilities.debugPlatformOverride = defaultTargetPlatform;
+      PlatformUiCapabilities.debugIOSMajorVersionOverride = 18;
+      PlatformUiCapabilities.debugNativeIOS26Override = false;
+      addTearDown(PlatformUiCapabilities.resetDebugOverrides);
+      final api = _FakeFolderApiService();
+
+      await tester.pumpWidget(
+        _buildHarness(
+          api: api,
+          useCupertino: defaultTargetPlatform == TargetPlatform.iOS,
+          folders: const [Folder(id: 'work', name: 'Work')],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('folder-page-overflow-button')),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('System Prompt'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('folder-system-prompt-field')),
+        findsOneWidget,
+      );
+      expect(find.text('Be helpful'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const ValueKey<String>('folder-system-prompt-field')),
+        'Be concise',
+      );
+      final formContext = tester.element(
+        find.byKey(const ValueKey<String>('folder-system-prompt-field')),
+      );
+      final savedMessage = AppLocalizations.of(formContext)!.saved;
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        expect(ScaffoldMessenger.maybeOf(formContext), isNull);
+      }
+      await tester.ensureVisible(find.text('Save'));
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(api.lastUpdatedName, isNull);
+      expect(api.lastUpdatedMeta, isNull);
+      expect(api.lastUpdatedData?['system_prompt'], 'Be concise');
+
+      expect(
+        find.byKey(const ValueKey<String>('folder-system-prompt-field')),
+        findsNothing,
+      );
+      expect(find.text(savedMessage), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text(savedMessage), findsOneWidget);
+
       await tester.pumpWidget(const SizedBox.shrink());
       ErrorWidget.builder = originalErrorWidgetBuilder;
       FlutterError.onError = originalFlutterErrorOnError;
-    });
-
-    final api = _FakeFolderApiService();
-
-    await tester.pumpWidget(
-      _buildHarness(
-        api: api,
-        folders: const [Folder(id: 'work', name: 'Work')],
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(
-      find.byKey(const ValueKey<String>('folder-page-overflow-button')),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('System Prompt'));
-    await tester.pumpAndSettle();
-
-    expect(
-      find.byKey(const ValueKey<String>('folder-system-prompt-field')),
-      findsOneWidget,
-    );
-    expect(find.text('Be helpful'), findsOneWidget);
-
-    await tester.enterText(
-      find.byKey(const ValueKey<String>('folder-system-prompt-field')),
-      'Be concise',
-    );
-    await tester.ensureVisible(find.text('Save'));
-    await tester.tap(find.text('Save'));
-    await tester.pumpAndSettle();
-
-    expect(api.lastUpdatedName, isNull);
-    expect(api.lastUpdatedMeta, isNull);
-    expect(api.lastUpdatedData?['system_prompt'], 'Be concise');
-
-    await tester.pumpWidget(const SizedBox.shrink());
-    ErrorWidget.builder = originalErrorWidgetBuilder;
-    FlutterError.onError = originalFlutterErrorOnError;
-  });
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.android,
+      TargetPlatform.iOS,
+    }),
+  );
 
   testWidgets('new chat button clears folder context for a global chat', (
     tester,
@@ -510,6 +570,118 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     ErrorWidget.builder = originalErrorWidgetBuilder;
     FlutterError.onError = originalFlutterErrorOnError;
+  });
+
+  group('back on a folder page (#852)', () {
+    Future<
+      ({GlobalKey<ResponsiveDrawerLayoutState> chatList, List<String> exits})
+    >
+    mountUnderList(WidgetTester tester, {required bool android}) async {
+      tester.view.physicalSize = const Size(400, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      debugChatBackIsAndroidOverride = android;
+      addTearDown(() => debugChatBackIsAndroidOverride = null);
+      final exits = <String>[];
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'SystemNavigator.pop') exits.add('exit');
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      final originalErrorWidgetBuilder = ErrorWidget.builder;
+      final originalFlutterErrorOnError = FlutterError.onError;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        ErrorWidget.builder = originalErrorWidgetBuilder;
+        FlutterError.onError = originalFlutterErrorOnError;
+      });
+
+      final container = _createContainer(
+        folders: const [Folder(id: 'work', name: 'Work')],
+      );
+      addTearDown(container.dispose);
+      final chatList = GlobalKey<ResponsiveDrawerLayoutState>();
+      await tester.pumpWidget(
+        _buildHarnessFromContainer(container, chatList: chatList),
+      );
+      await tester.pumpAndSettle();
+      return (chatList: chatList, exits: exits);
+    }
+
+    Future<void> back(WidgetTester tester) async {
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+    }
+
+    final l10n = lookupAppLocalizations(const Locale('en'));
+
+    testWidgets('opens the chat list, then asks to close', (tester) async {
+      final rig = await mountUnderList(tester, android: true);
+
+      await back(tester);
+      expect(rig.chatList.currentState!.isOpen, isTrue);
+      expect(find.text(l10n.endYourSession), findsNothing);
+
+      await back(tester);
+      expect(find.text(l10n.endYourSession), findsOneWidget);
+      expect(rig.chatList.currentState!.isOpen, isTrue);
+      await tester.tap(find.text(l10n.confirm));
+      await tester.pumpAndSettle();
+      expect(rig.exits, ['exit']);
+    });
+
+    testWidgets('closes the attachment panel before opening the list', (
+      tester,
+    ) async {
+      final rig = await mountUnderList(tester, android: true);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(ModernChatInput),
+          matching: find.byIcon(Icons.add),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(ComposerAttachmentKeyboard), findsOneWidget);
+
+      await back(tester);
+      expect(find.byType(ComposerAttachmentKeyboard), findsNothing);
+      expect(rig.chatList.currentState!.isOpen, isFalse);
+      expect(find.text(l10n.endYourSession), findsNothing);
+
+      await back(tester);
+      expect(rig.chatList.currentState!.isOpen, isTrue);
+    });
+
+    testWidgets('right after typing clears the composer for good', (
+      tester,
+    ) async {
+      final rig = await mountUnderList(tester, android: true);
+      final composer = find.descendant(
+        of: find.byType(ModernChatInput),
+        matching: find.byType(EditableText),
+      );
+      await tester.showKeyboard(composer);
+      await tester.enterText(composer, 'Draft');
+
+      await back(tester);
+      expect(tester.widget<EditableText>(composer).focusNode.hasFocus, isFalse);
+      expect(rig.chatList.currentState!.isOpen, isFalse);
+
+      await back(tester);
+      expect(rig.chatList.currentState!.isOpen, isTrue);
+    });
+
+    testWidgets('is left alone without a system back button', (tester) async {
+      final rig = await mountUnderList(tester, android: false);
+
+      await back(tester);
+
+      expect(rig.chatList.currentState!.isOpen, isFalse);
+      expect(find.text(l10n.endYourSession), findsNothing);
+    });
   });
 
   testWidgets('opening a folder page primes a fresh folder draft', (
@@ -790,11 +962,14 @@ void main() {
     expect(container.read(selectedFilterIdsProvider), isEmpty);
 
     await tester.pumpWidget(const SizedBox.shrink());
-    ErrorWidget.builder = originalErrorWidgetBuilder;
+      await tester.pumpAndSettle();
+      await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+      ErrorWidget.builder = originalErrorWidgetBuilder;
     FlutterError.onError = originalFlutterErrorOnError;
   });
 
-  testWidgets('chat page mount defers the initial transcript reset', (
+  testWidgets('chat page mounts loaded messages without a provider mutation', (
     tester,
   ) async {
     final timestamp = DateTime(2026, 1, 1);
@@ -831,7 +1006,8 @@ void main() {
     await tester.pump();
 
     expect(tester.takeException(), isNull);
-    expect(container.read(chatTranscriptPagingProvider).loadedCount, 1);
+    expect(container.read(chatMessagesProvider).single.id, message.id);
+    expect(find.text('Hi'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     container.dispose();
   });
@@ -915,6 +1091,9 @@ void main() {
       expect(container.read(activeConversationProvider)?.id, conversation.id);
 
       await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
       ErrorWidget.builder = originalErrorWidgetBuilder;
       FlutterError.onError = originalFlutterErrorOnError;
     },
@@ -1071,6 +1250,7 @@ void main() {
       List<FileInfo> files = const <FileInfo>[],
       WorkspaceKnowledge Function()? knowledge,
       List<Override> overrides = const <Override>[],
+      bool branches = false,
     }) async {
       final originalErrorWidgetBuilder = ErrorWidget.builder;
       final originalFlutterErrorOnError = FlutterError.onError;
@@ -1080,6 +1260,7 @@ void main() {
         FlutterError.onError = originalFlutterErrorOnError;
       });
       if (native) {
+        stubNativePlatformViews();
         // The presenter iOS 26 devices use: CNBottomSheet supplies Flutter's
         // own Material, not the material_ui one these controls look up.
         PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
@@ -1098,7 +1279,7 @@ void main() {
       }
       addTearDown(tester.view.reset);
       db = AppDatabase(NativeDatabase.memory());
-      addTearDown(db.close);
+
       api = _ProjectApi(detail, fileStatus);
       addTearDown(api.dispose);
       await tester.runAsync(() => db.foldersDao.replaceServerFolders([raw]));
@@ -1131,7 +1312,11 @@ void main() {
         ],
         liveFolders: liveFolders,
       );
-      addTearDown(container.dispose);
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        container.dispose();
+        await pumpDatabaseOperation(tester, db.close);
+      });
       // The app has resolved its active server long before a menu can be
       // opened; an account is only captured against a resolved server.
       container.listen(activeServerProvider, (_, _) {});
@@ -1165,7 +1350,9 @@ void main() {
           ),
         );
       } else {
-        await tester.pumpWidget(_buildHarnessFromContainer(container));
+        await tester.pumpWidget(
+          _buildHarnessFromContainer(container, branches: branches),
+        );
       }
       await tester.pumpAndSettle();
       if (liveFolders) await settle(tester);
@@ -1181,7 +1368,7 @@ void main() {
       } else {
         await tester.tap(overflow());
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Project settings'));
+        await tester.tap(find.text('Project Settings'));
       }
       await settle(tester);
     }
@@ -1235,13 +1422,13 @@ void main() {
             name: 'an owner',
             permission: null,
             role: 'admin',
-            items: ['Edit Folder', 'Project settings'],
+            items: ['Edit Folder', 'Project Settings'],
           ),
           (
             name: 'a write grant',
             permission: 'write',
             role: 'admin',
-            items: ['Project settings'],
+            items: ['Project Settings'],
           ),
           (name: 'a read grant', permission: 'read', role: 'user', items: []),
         ];
@@ -1263,7 +1450,7 @@ void main() {
           for (final label in [
             'Edit Folder',
             'System Prompt',
-            'Project settings',
+            'Project Settings',
           ])
             if (find.text(label).evaluate().isNotEmpty) label,
         ], menuCase.items);
@@ -1737,6 +1924,7 @@ void main() {
       Future<void> openComparing(
         WidgetTester tester, {
         List<Override> overrides = const <Override>[],
+        bool branches = false,
       }) async {
         overrides = [isOnlineProvider.overrideWithValue(true), ...overrides];
         await open(
@@ -1748,17 +1936,18 @@ void main() {
           ),
           liveFolders: true,
           overrides: overrides,
+          branches: branches,
         );
         await settle(tester);
         await settle(tester);
       }
 
       Future<List<String>> chatIds(WidgetTester tester) async {
-        final chats = await tester.runAsync(
-          () => db.chatsDao.watchChatList().first,
+        final chats = await pumpDatabaseOperation(
+          tester, () => db.chatsDao.watchChatList().first,
         );
         return [
-          for (final chat in chats!)
+          for (final chat in chats)
             if (chat.id.startsWith('local:')) chat.id,
         ];
       }
@@ -1852,14 +2041,17 @@ void main() {
       });
 
       group('while the account settings hold the admission', () {
-        Future<void> sendHeld(WidgetTester tester) async {
-          await openComparing(tester);
+        Future<void> sendHeld(
+          WidgetTester tester, {
+          bool branches = false,
+        }) async {
+          await openComparing(tester, branches: branches);
           api.holdSettings = Completer<void>();
           await enterDraft(tester, 'Compare these two');
           await tester.tap(sendButton());
           await tester.pump();
-          await tester.runAsync(
-            () => api.settingsEntered.future.timeout(
+          await pumpDatabaseOperation(
+            tester, () => api.settingsEntered.future.timeout(
               const Duration(seconds: 10),
             ),
           );
@@ -1925,6 +2117,20 @@ void main() {
           await sendHeld(tester);
           NavigationService.router.go('/elsewhere');
           await tester.pumpAndSettle();
+
+          await release(tester);
+
+          await expectTurnAdmittedInWorkOnce(tester);
+          expect(NavigationService.currentRoute, '/elsewhere');
+        });
+
+        testWidgets('a page kept in a branch left for another does not '
+            'take the user to the chat', (tester) async {
+          await sendHeld(tester, branches: true);
+          NavigationService.router.go('/elsewhere');
+          await tester.pumpAndSettle();
+          // Still mounted, in the branch no longer shown.
+          expect(find.byType(FolderPage, skipOffstage: false), findsOneWidget);
 
           await release(tester);
 
@@ -2046,11 +2252,11 @@ void main() {
       expect(
         find.descendant(
           of: find.byType(FolderProjectSettingsSheet),
-          matching: find.text('Add model'),
+          matching: find.text('Add Model'),
         ),
         findsOneWidget,
       );
-      expect(find.text('Project settings'), findsNothing);
+      expect(find.text('Project Settings'), findsNothing);
       // Nothing checked yet: nothing to add.
       expect(
         tester
@@ -2062,7 +2268,7 @@ void main() {
       await tester.tap(key('folder-project-picker-cancel'));
       await settle(tester);
       expect(key('folder-project-form'), findsOneWidget);
-      expect(find.text('Project settings'), findsWidgets);
+      expect(find.text('Project Settings'), findsWidgets);
     });
 
     testWidgets('Cancel sends nothing', (tester) async {
@@ -2077,7 +2283,7 @@ void main() {
 
       // An edit is never dropped without asking; Keep editing keeps it.
       expect(find.text('Discard changes?'), findsOneWidget);
-      await tester.tap(find.text('Keep editing'));
+      await tester.tap(find.text('Keep Editing'));
       await settle(tester);
       expect(key('folder-project-model-1'), findsNothing);
       expect(key('folder-project-save'), findsOneWidget);
@@ -2363,6 +2569,9 @@ void main() {
         tester.view.viewInsets = FakeViewPadding.zero;
         tester.view.padding = const FakeViewPadding(top: 62, bottom: 34);
         await tester.pumpAndSettle();
+        final savedMessage = AppLocalizations.of(
+          tester.element(key('folder-project-form')),
+        )!.saved;
         await tester.tap(key('folder-project-save'));
         await settle(tester);
 
@@ -2378,6 +2587,8 @@ void main() {
         expect(data['model_ids'], ['retired', 'm-a', 'm-b']);
         expect(data['system_prompt'], 'Answer in French');
         expect(data['custom'], {'k': 1});
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(find.text(savedMessage), findsOneWidget);
       },
     );
   });
@@ -2388,6 +2599,7 @@ Widget _buildHarness({
   List<Conversation> conversations = const <Conversation>[],
   List<Folder> folders = const <Folder>[],
   AppSettings settings = const AppSettings(),
+  bool useCupertino = false,
 }) {
   final container = _createContainer(
     api: api,
@@ -2396,7 +2608,7 @@ Widget _buildHarness({
     settings: settings,
   );
   addTearDown(container.dispose);
-  return _buildHarnessFromContainer(container);
+  return _buildHarnessFromContainer(container, useCupertino: useCupertino);
 }
 
 ProviderContainer _createContainer({
@@ -2454,41 +2666,88 @@ ProviderContainer _createContainer({
 
 Widget _buildHarnessFromContainer(
   ProviderContainer container, {
+  bool useCupertino = false,
   Listenable? routerRefreshListenable,
+  // Puts the folder under the chat list, as the app's shell route does.
+  GlobalKey<ResponsiveDrawerLayoutState>? chatList,
+  // Puts the folder and the chat in one branch of an indexed shell, and
+  // `/elsewhere` in another, as the app's router does, so leaving the folder
+  // keeps it mounted out of sight.
+  bool branches = false,
 }) {
+  final shellRoutes = <RouteBase>[
+    GoRoute(
+      path: '/folder/:id',
+      name: RouteNames.folder,
+      builder: (context, state) {
+        final folderId = state.pathParameters['id']!;
+        return FolderPage(folderId: folderId);
+      },
+    ),
+    GoRoute(
+      path: '/chat',
+      name: RouteNames.chat,
+      builder: (context, state) => const Scaffold(body: SizedBox.shrink()),
+    ),
+  ];
   final router = GoRouter(
     initialLocation: '/folder/work',
     refreshListenable: routerRefreshListenable,
     routes: [
-      GoRoute(
-        path: '/folder/:id',
-        name: RouteNames.folder,
-        builder: (context, state) {
-          final folderId = state.pathParameters['id']!;
-          return FolderPage(folderId: folderId);
-        },
-      ),
-      GoRoute(
-        path: '/chat',
-        name: RouteNames.chat,
-        builder: (context, state) => const Scaffold(body: SizedBox.shrink()),
-      ),
-      GoRoute(
-        path: '/elsewhere',
-        builder: (context, state) => const Scaffold(body: SizedBox.shrink()),
-      ),
+      if (branches)
+        StatefulShellRoute.indexedStack(
+          builder: (context, state, shell) => shell,
+          branches: [
+            StatefulShellBranch(initialLocation: '/chat', routes: shellRoutes),
+            StatefulShellBranch(
+              routes: [
+                GoRoute(
+                  path: '/elsewhere',
+                  builder: (context, state) =>
+                      const Scaffold(body: SizedBox.shrink()),
+                ),
+              ],
+            ),
+          ],
+        )
+      else if (chatList == null)
+        ...shellRoutes
+      else
+        ShellRoute(
+          builder: (context, state, child) => ResponsiveDrawerLayout(
+            key: chatList,
+            maxFraction: 1.0,
+            edgeFraction: 1.0,
+            drawer: const Text('Chat list'),
+            child: child,
+          ),
+          routes: shellRoutes,
+        ),
+      if (!branches)
+        GoRoute(
+          path: '/elsewhere',
+          builder: (context, state) => const Scaffold(body: SizedBox.shrink()),
+        ),
     ],
   );
   NavigationService.attachRouter(router);
 
   return UncontrolledProviderScope(
     container: container,
-    child: MaterialApp.router(
-      theme: AppTheme.light(TweakcnThemes.t3Chat),
-      localizationsDelegates: conduitLocalizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,
-      routerConfig: router,
-    ),
+    child: useCupertino
+        ? CupertinoApp.router(
+            localizationsDelegates: conduitLocalizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            builder: (context, child) =>
+                LegacyDesignCompatibility(child: child!),
+            routerConfig: router,
+          )
+        : MaterialApp.router(
+            theme: AppTheme.light(TweakcnThemes.t3Chat),
+            localizationsDelegates: conduitLocalizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            routerConfig: router,
+          ),
   );
 }
 

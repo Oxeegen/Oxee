@@ -11,12 +11,15 @@ anything the layer owns, and before taking an upstream release.
 | --- | --- |
 | Product name everywhere users see it (14 languages, iOS and Android resources, Siri/App Intents, permission prompts) | `tools/rebrand.py`, generated, never edited by hand |
 | Identity: `com.oxeegen.oxee`, `group.com.oxeegen.oxee`, `oxee://`, Oxeegen repo links | `brand.json` + `tools/rebrand.py` |
-| Only backend: Oxeegen Intelligence, US (`ai.oxeegen.com`) or FR (`ia.oxeegen.fr`) | `lib/brand/`, hooked into the router and both settings menus |
-| No Hermes, Direct connections, Apple on-device/PCC entry points | the same hooks; upstream's code for them stays, unused |
+| Backends: Oxeegen Intelligence, US (`ai.oxeegen.com`) or FR (`ia.oxeegen.fr`), first; Oxee Hermes (upstream's Hermes Agent, Oxeegen's fork) can be added in Settings → Accounts → Add Account | `lib/brand/`, hooked into the router, the account sheet and both settings menus |
+| "Hermes" / "Hermes Agent" reads "Oxee Hermes" (translations, the default connection and model name) | `tools/rebrand.py` |
+| No Direct connections, Apple on-device/PCC or LibreChat entry points | the same hooks, and LibreChat switched off app-wide (`oxeeProviderOverrides`); upstream's code for them stays, unused |
 | No donations, tip prompts or upstream release notes | hooks listed below |
-| Icons (app, Android adaptive, splash, widget and notification glyph) | `tools/make_icons.py` |
+| Icons (app, Android adaptive, splash, widget and notification glyph), and the Oxee mark where upstream shows the Open WebUI logo or its own icon in the app (`assets/icons/open_webui*.png`, `app_icon_square.png`) | `tools/make_icons.py` |
 | CarPlay voice and Private Cloud Compute entitlements removed | `tools/rebrand.py`; Apple grants them per team on request |
 | README, French README (`docs/README.fr.md`), privacy policy, NOTICE, build docs, issue templates | written for Oxee; "keep ours" on merges |
+| `docs/open-webui-functions.md` (guide for Open WebUI function authors) | `tools/rebrand.py` renames the product in its prose; the protocol value `"client": "conduit"` stays |
+| No upstream donation links or Pullfrog agent workflow (`.github/FUNDING.yml`, `.github/workflows/pullfrog.yml`) | deleted; `tools/check_brand.py` fails if they come back |
 
 What is deliberately **not** renamed: Dart package names (`conduit`,
 `conduit_core`, ...), Kotlin package / Android namespace
@@ -31,7 +34,7 @@ device see) is `com.oxeegen.oxee`.
 | Path | Purpose |
 | --- | --- |
 | `brand.json` | Every identity value: name, bundle id, app group, URL scheme, Apple team, repo, store links, the two regions. |
-| `tools/rebrand.py` | Rewrites user-visible "Conduit" to "Oxee" inside string literals (Dart, Swift, Kotlin; comments and identifiers untouched), ARB values, `.strings`, plists, Android resources and Xcode display names; applies `brand.json`; fixes Korean particles and Czech/Slovak declension. Idempotent. `--check` lists what it would change. |
+| `tools/rebrand.py` | Rewrites user-visible "Conduit" to "Oxee" inside string literals (Dart, Swift, Kotlin; comments and identifiers untouched), ARB values, `.strings`, plists, Android resources and Xcode display names; applies `brand.json`; fixes Korean particles and Czech/Slovak declension. Renames Hermes to "Oxee Hermes" in every ARB value, and in a whole Dart literal only when the renamed text is an English translation (a bare "Hermes" in tests is data, except in the sidebar tab tests it lists). Idempotent. `--check` lists what it would change. |
 | `tools/check_brand.py` | Fails if a hook was lost or removed upstream code came back, if `rebrand.py --check` is dirty, or if the regions in Dart and `brand.json` differ. Runs in CI and before every release build. |
 | `tools/flutter_test.py` | `flutter test` over every test file except `upstream-tests-replaced.txt`. |
 | `upstream-tests-replaced.txt` | Upstream test files that assert behaviour Oxee replaces, each with its reason. A listed file that disappears fails the run. |
@@ -40,9 +43,9 @@ device see) is `com.oxeegen.oxee`.
 | `tools/ios_certificate.py` | Run once: creates the Apple Distribution certificate through the API and stores it in GitHub secrets without printing it. |
 | `tools/ios_signing.py` | CI: App Store profiles through the API, throwaway keychain, manual Release signing, ExportOptions. |
 | `assets/` | `oxee-icon-1024.png` (store icon, README), `oxee-mark-1024.png`, `oxee-mark.svg`. |
-| `../lib/brand/oxee_brand.dart` | Regions, the strings the layer adds (English and French), the region switcher, the iOS native-sheet row. |
-| `../lib/brand/oxee_region_page.dart` | First-run / change-server screen. Health check and Open WebUI check against the fixed region URL, then upstream's sign-in page. |
-| `../test/brand/oxee_region_test.dart` | Region URLs, `brand.json` agreement, the picker in English and French, selection of the saved region. |
+| `../lib/brand/oxee_brand.dart` | Regions, the strings the layer adds (English and French), the region switcher, the iOS native-sheet row, `oxeeProviderOverrides` (LibreChat off). |
+| `../lib/brand/oxee_region_page.dart` | First-run / change-server screen. Health check and Open WebUI check against the fixed region URL, then upstream's sign-in page. Also `OxeeRegionAddChoices`, the account sheet's Oxeegen tab. |
+| `../test/brand/` | Region URLs, `brand.json` agreement, the picker in English and French, selection of the saved region; the native Settings adjustments; the account sheet's tabs. |
 
 ## Hooks in upstream files
 
@@ -53,11 +56,11 @@ one (and the absence of what it removed).
 | --- | --- |
 | `lib/core/router/app_router.dart` | `backendChooser`, `serverConnection`, `addServer` and `login` routes build `OxeeRegionPage` (`addServer` in adding mode); `extra` is the region to connect to at once. |
 | `lib/features/profile/views/profile_page.dart` | Region row in the account card; no donation section. |
-| `lib/features/profile/widgets/account_actions.dart` | `showAddAccountSheet` opens the region picker (`openOxeeRegionAddAccount`) instead of upstream's sheet with Hermes and Direct tabs. Every "add account" path goes through it. |
-| `lib/features/profile/views/manage_accounts_page.dart` | No Hermes or Direct cards (`oxeeOffersOtherBackends`). |
+| `lib/features/profile/widgets/account_sheet.dart` | Add Account sheet: tabs Oxeegen (`OxeeRegionAddChoices`: a region, then upstream's sign-in, adding the account) and Oxee Hermes (upstream's Hermes form); no Direct tab (`oxeeOffersOtherBackends`). Every "add account" path opens it. |
+| `lib/features/profile/views/manage_accounts_page.dart` | No Direct card (`oxeeOffersOtherBackends`); the Hermes card shows, LibreChat's stays out while LibreChat is off. |
 | `lib/features/navigation/widgets/sidebar_user_pill.dart` | iOS 26 native Settings root: `oxeeNativeRootSections` adds the Region row and drops the donation section; no support items. |
-| `lib/core/services/native_sheet_hydration_service.dart` | The root it rebuilds goes through `oxeeNativeRootSections` too; native Accounts page through `oxeeNativeAccountsDetail` (no Hermes/Direct); About rows through `oxeeNativeAboutItems` (no release notes). |
-| `lib/main.dart` | Routes the native-sheet region row to `showOxeeRegionSwitcher`; no `ReleaseNotesCoordinator` (upstream's "What's new" popup). |
+| `lib/core/services/native_sheet_hydration_service.dart` | The root it rebuilds goes through `oxeeNativeRootSections` too; native Accounts page through `oxeeNativeAccountsDetail` (no Direct); About rows through `oxeeNativeAboutItems` (no release notes). |
+| `lib/main.dart` | `oxeeProviderOverrides` in the app's provider container (LibreChat off); routes the native-sheet region row to `showOxeeRegionSwitcher`; no `ReleaseNotesCoordinator` (upstream's "What's new" popup). |
 | `lib/core/utils/native_sheet_utils.dart` | Unedited apart from the repo link (`rebrand.py`): Oxee adjusts what its builders return, at the call sites, so upstream's tests of them keep passing. |
 | `lib/features/profile/views/about_page.dart` | No release-notes row (repo link via `rebrand.py`). |
 | `.github/workflows/release.yml` | Guarded to `cogwheel0/conduit`: upstream's release never runs here. |
@@ -115,11 +118,13 @@ flutter analyze
 python brand/tools/flutter_test.py
 ```
 
-New upstream entry points to Hermes, Direct connections or Apple models (a
-new settings row, a new onboarding path) need a hook of their own: search the
-merge diff for `RouteNames.hermesSettings`, `RouteNames.directConnections`,
-`Routes.backendChooser` and `buyMeACoffee`. New donation or review prompts
-likewise.
+New upstream entry points to Direct connections, Apple models or another
+backend (a new settings row, a new onboarding path, a new account-sheet tab)
+need a hook of their own: search the merge diff for
+`RouteNames.directConnections`, `AccountKind`, `Routes.backendChooser` and
+`buyMeACoffee`. New donation or review prompts likewise. Hermes entry points
+are fine: Oxee offers Oxee Hermes. A new upstream test whose literal is a
+bare "Hermes" tab label goes into `HERMES_TAB_TESTS` in `rebrand.py`.
 
 Public docs (README, French README, CONTRIBUTING if added, release notes, repo
 description) talk about Oxee only: no Conduit, upstream or fork. `LICENSE` is
