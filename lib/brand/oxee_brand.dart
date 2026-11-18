@@ -5,12 +5,15 @@
 // Platform UI seam (tool/platform_ui_lint.dart): no material_ui or
 // cupertino_ui imports here; widgets come from flutter/widgets.dart.
 
+import 'package:conduit_core/features/librechat/providers/librechat_providers.dart'
+    show libreChatBackendEnabledProvider;
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/providers/openwebui_accounts_controller.dart'
     show accountAdditionOriginProvider;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_riverpod/misc.dart' show ProviderListenable;
+import 'package:flutter_riverpod/misc.dart'
+    show Override, ProviderListenable;
 import 'package:go_router/go_router.dart';
 
 import '../core/services/native_sheet_bridge.dart';
@@ -19,11 +22,21 @@ import '../features/profile/widgets/account_actions.dart'
 import '../shared/services/navigation_service.dart';
 import '../shared/widgets/themed_dialogs.dart';
 
-/// Upstream's other backends (Hermes, Direct, Apple) stay in the code but
-/// are not offered. A final, not a const, so the code it guards is still
-/// analyzed and compiled rather than reported as dead.
+/// Oxee offers Oxeegen Intelligence accounts and Oxee Hermes connections.
+/// Upstream's other backends (Direct providers, Apple's models, LibreChat)
+/// stay in the code but are not offered. A final, not a const, so the code it
+/// guards is still analyzed and compiled rather than reported as dead.
+/// LibreChat is switched off at the root instead (main.dart), which hides
+/// every LibreChat entry upstream gates on `libreChatBackendEnabledProvider`.
 // ignore: prefer_const_declarations
 final bool oxeeOffersOtherBackends = false;
+
+/// Values Oxee sets for the whole app (main.dart's provider container).
+/// LibreChat is off: upstream then neither offers it (account sheet,
+/// backend chooser) nor shows its cards (Accounts, native Accounts page).
+final List<Override> oxeeProviderOverrides = [
+  libreChatBackendEnabledProvider.overrideWithValue(false),
+];
 
 /// An Oxeegen Intelligence deployment. Keep in step with brand/brand.json;
 /// brand/tools/check_brand.py compares the two.
@@ -105,6 +118,14 @@ class OxeeStrings {
 
   String get regionsSectionTitle => 'Oxeegen Intelligence';
 
+  /// The account sheet's tab for an Oxeegen Intelligence account (next to
+  /// Oxee Hermes).
+  String get accountKindTitle => 'Oxeegen';
+
+  String get addAccountRegionPrompt => _fr
+      ? 'Choisissez la région du compte à ajouter.'
+      : 'Choose the region of the account to add.';
+
   String get regionTitle => _fr ? 'Région' : 'Region';
 
   String regionSubtitle(OxeeRegion region) => switch (region) {
@@ -167,11 +188,19 @@ void openOxeeRegionAddAccount(
   BuildContext context,
   WidgetRef ref, [
   OxeeRegion? region,
-]) {
+]) => beginOxeeRegionAddAccount(ref, GoRouter.of(context), region);
+
+/// [openOxeeRegionAddAccount] for callers that close what they were shown in
+/// first (the account sheet): take the router before closing, then call this.
+void beginOxeeRegionAddAccount(
+  WidgetRef ref,
+  GoRouter router,
+  OxeeRegion? region,
+) {
   ref
       .read(accountAdditionOriginProvider.notifier)
       .begin(ref.read(settledActiveAccountIdProvider));
-  context.goNamed(RouteNames.addServer, extra: region);
+  router.goNamed(RouteNames.addServer, extra: region);
 }
 
 /// Switches to the other region: to its saved account when there is one,
@@ -244,19 +273,35 @@ NativeSheetItemConfig buildOxeeRegionNativeSheetItem(
 // so upstream's builders stay unedited.
 // ---------------------------------------------------------------------------
 
-bool _isDonationSection(NativeSheetSectionConfig section) => section.items.any(
-  (item) => item.id == 'buy-me-a-coffee' || item.id == 'github-sponsors',
-);
+bool _isDonationItem(NativeSheetItemConfig item) =>
+    item.id == 'buy-me-a-coffee' || item.id == 'github-sponsors';
 
-/// The Settings root: no donation section, and the Region row under the
-/// account card.
+/// [section] without its donation rows, and without the footer asking for
+/// support that comes with them; null when nothing else was in it.
+NativeSheetSectionConfig? _withoutDonations(NativeSheetSectionConfig section) {
+  if (!section.items.any(_isDonationItem)) return section;
+  final items = [
+    for (final item in section.items)
+      if (!_isDonationItem(item)) item,
+  ];
+  if (items.isEmpty) return null;
+  return NativeSheetSectionConfig(
+    title: section.title,
+    reorderActionId: section.reorderActionId,
+    items: items,
+  );
+}
+
+/// The Settings root: no donation rows (since upstream 4.3.1 they share
+/// About's group, whose support footer goes with them), and the Region row
+/// under the account card.
 List<NativeSheetSectionConfig> oxeeNativeRootSections(
   List<NativeSheetSectionConfig> sections, {
   required NativeSheetItemConfig region,
 }) {
   final kept = [
     for (final section in sections)
-      if (!_isDonationSection(section)) section,
+      if (_withoutDonations(section) case final trimmed?) trimmed,
   ];
   if (kept.isEmpty) return kept;
   final card = kept.first;
@@ -264,6 +309,7 @@ List<NativeSheetSectionConfig> oxeeNativeRootSections(
     NativeSheetSectionConfig(
       title: card.title,
       footer: card.footer,
+      reorderActionId: card.reorderActionId,
       items: [...card.items.take(1), region, ...card.items.skip(1)],
     ),
     ...kept.skip(1),
@@ -279,14 +325,12 @@ List<NativeSheetItemConfig> oxeeNativeAboutItems(
     if (item.id != NativeSheetRoutes.releaseNotesManual) item,
 ];
 
-bool _isOtherBackendSection(NativeSheetSectionConfig section) =>
-    section.items.any(
-      (item) =>
-          item.id == 'accounts-hermes' ||
-          item.id == NativeSheetRoutes.directConnections,
-    );
+bool _isOtherBackendSection(NativeSheetSectionConfig section) => section.items
+    .any((item) => item.id == NativeSheetRoutes.directConnections);
 
-/// The Accounts page: Oxeegen accounts only, no Hermes or Direct cards.
+/// The Accounts page: Oxeegen accounts and Oxee Hermes; no Direct card.
+/// (Upstream leaves LibreChat's card out itself while LibreChat is off and
+/// has no saved account, as [oxeeProviderOverrides] makes it.)
 NativeSheetDetailConfig oxeeNativeAccountsDetail(NativeSheetDetailConfig d) =>
     NativeSheetDetailConfig(
       id: d.id,

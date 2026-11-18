@@ -282,6 +282,66 @@ class _OxeeRegionPageState extends ConsumerState<OxeeRegionPage> {
   }
 }
 
+/// The account sheet's Oxeegen tab: one row per region. A tap closes the
+/// sheet and adds an account in that region (the region picker connects to
+/// it at once and opens its sign-in).
+class OxeeRegionAddChoices extends ConsumerWidget {
+  const OxeeRegionAddChoices({super.key, required this.close});
+
+  /// Closes the account sheet.
+  final VoidCallback close;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = context.conduitTheme;
+    final strings = OxeeStrings.of(context);
+    return Column(
+      key: const ValueKey<String>('oxee-region-add-choices'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: Spacing.xs),
+          child: Text(
+            strings.addAccountRegionPrompt,
+            style: AppTypography.bodyMediumStyle.copyWith(
+              color: theme.textSecondary,
+            ),
+          ),
+        ),
+        const SizedBox(height: Spacing.md),
+        InsetGroupedList(
+          title: strings.regionsSectionTitle,
+          dividerIndent: _dividerIndent,
+          children: [
+            for (final region in OxeeRegion.values)
+              UtilitySelectionRow(
+                key: ValueKey<String>('oxee-region-add-${region.name}'),
+                leading: _RegionFlag(region: region),
+                title: region.label,
+                subtitle: strings.regionSubtitle(region),
+                selected: false,
+                showSelectionIndicator: false,
+                trailing: Icon(
+                  context.usesCupertinoChrome
+                      ? CupertinoIcons.chevron_forward
+                      : Icons.chevron_right,
+                  color: theme.iconSecondary,
+                  size: IconSize.small,
+                ),
+                onTap: () {
+                  // The sheet's context goes with the sheet.
+                  final router = GoRouter.of(context);
+                  close();
+                  beginOxeeRegionAddAccount(ref, router, region);
+                },
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
 const double _flagSize = 40;
 const double _dividerIndent = Spacing.md + _flagSize + Spacing.sm + Spacing.xs;
 

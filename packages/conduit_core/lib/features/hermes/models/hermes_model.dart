@@ -82,7 +82,7 @@ Model hermesSyntheticModel({String? name}) {
   final trimmed = name?.trim();
   final model = Model(
     id: kHermesDefaultModelId,
-    name: trimmed == null || trimmed.isEmpty ? 'Hermes Agent' : trimmed,
+    name: trimmed == null || trimmed.isEmpty ? 'Oxee Hermes' : trimmed,
     description: 'Your self-hosted Hermes agent',
     supportsStreaming: true,
     metadata: const {
@@ -123,6 +123,34 @@ Model hermesDesktopModel({
   );
   _locallyMintedHermesModels[model] = true;
   return model;
+}
+
+/// The picker entry a chat returns to when the user keeps its current model
+/// over a switch Hermes held: the Hermes model this app last applied to the
+/// session ([previousModel] from [previousProvider]), or else the connection's
+/// configured default, which sends no switch at all. Null when [models] has
+/// neither.
+Model? hermesModelKeptOverSwitch(
+  Iterable<Model> models, {
+  String? previousModel,
+  String? previousProvider,
+}) {
+  final hermes = models.where(isHermesModel).toList(growable: false);
+  if (previousModel != null) {
+    for (final model in hermes) {
+      final metadata = model.metadata;
+      if (metadata?['hermesConfiguredDefault'] != true &&
+          metadata?['hermesModelId'] == previousModel &&
+          (previousProvider == null ||
+              metadata?['hermesProvider'] == previousProvider)) {
+        return model;
+      }
+    }
+  }
+  for (final model in hermes) {
+    if (model.metadata?['hermesConfiguredDefault'] == true) return model;
+  }
+  return null;
 }
 
 bool? hermesFastTierSelection({

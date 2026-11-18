@@ -3286,7 +3286,7 @@ class _FakeTextToSpeechService implements VoiceModeSpeech {
   Future<bool> initialize({
     String? deviceVoice,
     String? serverVoice,
-    double speechRate = 0.5,
+    double speed = 1.0,
     double pitch = 1.0,
     double volume = 1.0,
     TtsEngine engine = TtsEngine.device,
@@ -3703,6 +3703,9 @@ final class _RealtimeAudio implements RealtimePcmAudioPort {
 
   @override
   void endResponse(String responseId) {}
+
+  @override
+  void setPlaybackPaused(bool paused) {}
 
   @override
   Future<List<RealtimeRenderedItem>> clear(int clearId) async => const [];

@@ -230,6 +230,16 @@ class SettingsService {
     return _putPreference(_highContrastKey, value);
   }
 
+  /// Whether the optional sliding sidebar replaces the tabbed layout.
+  static Future<bool> getSlidingSidebarEnabled() {
+    return Future.value(
+      _getPreference<bool>(PreferenceKeys.slidingSidebarEnabled) ?? false,
+    );
+  }
+
+  static Future<void> setSlidingSidebarEnabled(bool value) =>
+      _putPreference(PreferenceKeys.slidingSidebarEnabled, value);
+
   /// Get dark mode preference
   static Future<bool> getDarkMode() {
     final value = _getPreference<bool>(_darkModeKey);
@@ -283,6 +293,7 @@ class SettingsService {
   /// Save all settings
   static Future<void> saveSettings(AppSettings settings) async {
     if (!PreferencesStore.isReady) return;
+    // The layout has its own setter so stale bulk snapshots cannot undo it.
     final updates = <String, Object?>{
       _reduceMotionKey: settings.reduceMotion,
       _animationSpeedKey: settings.animationSpeed,
@@ -297,7 +308,7 @@ class SettingsService {
       _socketTransportModeKey: settings.socketTransportMode,
       _quickPillsKey: settings.quickPills.toList(),
       _sendOnEnterKey: settings.sendOnEnter,
-      PreferenceKeys.ttsSpeechRate: settings.ttsSpeechRate,
+      PreferenceKeys.ttsSpeed: settings.ttsSpeed,
       PreferenceKeys.ttsPitch: settings.ttsPitch,
       PreferenceKeys.ttsVolume: settings.ttsVolume,
       PreferenceKeys.ttsEngine: settings.ttsEngine.name,
@@ -381,7 +392,7 @@ class SettingsService {
     required String ttsServerVoiceIdKey,
     required String ttsServerVoiceNameKey,
   }) async {
-    // Web search preferences are written only by their own setters, so a
+    // Web search and composer appearance are written by their own setters, so a
     // bulk save of a stale snapshot can't undo a concurrent change.
     await PreferencesStore.putAll(scopedUpdates);
 
@@ -735,8 +746,14 @@ class SettingsService {
       citationShowTitles:
           get<bool>(PreferenceKeys.citationShowTitles) ??
           false,
+      citationBackground: get<bool>(PreferenceKeys.citationBackground) ?? true,
       highContrast: get<bool>(_highContrastKey) ?? false,
+      computerEnabled: get<bool>(PreferenceKeys.computerEnabled) ?? true,
+      showComposerNotesButton:
+          get<bool>(PreferenceKeys.showComposerNotesButton) ?? true,
       darkMode: get<bool>(_darkModeKey) ?? true,
+      slidingSidebarEnabled:
+          get<bool>(PreferenceKeys.slidingSidebarEnabled) ?? false,
       defaultModel: get<String>(_defaultModelKey),
       openRouterImageGenerationModel: get<String>(
         _openRouterImageGenerationModelKey,
@@ -763,12 +780,17 @@ class SettingsService {
       chatImageGenerationEnabled: get<bool>(
         _chatImageGenerationEnabledKey,
       ),
+      inlineMessageActions: getStringList(PreferenceKeys.inlineMessageActions)
+          ?.toSet()
+          .toList(),
       sendOnEnter: get<bool>(_sendOnEnterKey) ?? false,
       ttsVoice: get<String>(PreferenceKeys.ttsVoice),
       ttsVoiceName: get<String>(PreferenceKeys.ttsVoiceName),
-      ttsSpeechRate:
-          get<num>(PreferenceKeys.ttsSpeechRate)?.toDouble() ??
-          0.5,
+      ttsSpeed:
+          get<num>(PreferenceKeys.ttsSpeed)?.toDouble() ??
+          ttsSpeedFromLegacyRate(
+            get<num>(PreferenceKeys.ttsSpeechRate)?.toDouble(),
+          ),
       ttsPitch:
           get<num>(PreferenceKeys.ttsPitch)?.toDouble() ?? 1.0,
       ttsVolume:
@@ -849,14 +871,35 @@ class _DefaultValue {
   const _DefaultValue();
 }
 
+/// Actions shown before customization; null settings retain the adaptive layout.
+const defaultInlineMessageActions = ['copy', 'tts', 'regenerate'];
+
 /// Data class for app settings
+/// The speech speeds offered, as multiples of the voice's own pace.
+const List<double> ttsSpeedPresets = [0.75, 1.0, 1.25, 1.5, 2.0];
+
+/// The offered speed nearest [speed].
+double nearestTtsSpeed(double speed) => ttsSpeedPresets.reduce(
+  (best, next) => (next - speed).abs() < (best - speed).abs() ? next : best,
+);
+
+/// The speed for the device engine [rate] an older install saved, where 0.5
+/// was the voice's own pace; the voice's own pace when none was saved.
+double ttsSpeedFromLegacyRate(double? rate) =>
+    rate == null ? 1.0 : nearestTtsSpeed(rate * 2);
+
 class AppSettings {
   final bool reduceMotion;
   final double animationSpeed;
   final bool disableHapticsWhileStreaming;
   final bool citationShowTitles;
+  /// Whether inline citations use the filled Sources badge surface.
+  final bool citationBackground;
   final bool highContrast;
+  final bool computerEnabled;
+  final bool showComposerNotesButton;
   final bool darkMode;
+  final bool slidingSidebarEnabled;
   final String? defaultModel;
   final String? openRouterImageGenerationModel;
   final String? voiceLocaleId;
@@ -868,12 +911,17 @@ class AppSettings {
   final List<String> quickPills; // e.g., ['web','image']
   final bool? chatWebSearchEnabled;
   final bool? chatImageGenerationEnabled;
+
+  /// Null preserves the default layout; an empty list puts every action in More.
+  final List<String>? inlineMessageActions;
   final bool sendOnEnter;
   final SttPreference sttPreference;
   final String? sttLanguageCode;
   final String? ttsVoice;
   final String? ttsVoiceName;
-  final double ttsSpeechRate;
+  /// How fast speech plays, as a multiple of the voice's own pace: cloud and
+  /// device voices alike, for read-aloud and calls.
+  final double ttsSpeed;
   final double ttsPitch;
   final double ttsVolume;
   final TtsEngine ttsEngine;
@@ -907,8 +955,12 @@ class AppSettings {
     this.animationSpeed = 1.0,
     this.disableHapticsWhileStreaming = false,
     this.citationShowTitles = false,
+    this.citationBackground = true,
     this.highContrast = false,
+    this.computerEnabled = true,
+    this.showComposerNotesButton = true,
     this.darkMode = true,
+    this.slidingSidebarEnabled = false,
     this.defaultModel,
     this.openRouterImageGenerationModel,
     this.voiceLocaleId,
@@ -920,12 +972,13 @@ class AppSettings {
     this.quickPills = const [],
     this.chatWebSearchEnabled,
     this.chatImageGenerationEnabled,
+    this.inlineMessageActions,
     this.sendOnEnter = false,
     this.sttPreference = SttPreference.deviceOnly,
     this.sttLanguageCode,
     this.ttsVoice,
     this.ttsVoiceName,
-    this.ttsSpeechRate = 0.5,
+    this.ttsSpeed = 1.0,
     this.ttsPitch = 1.0,
     this.ttsVolume = 1.0,
     this.ttsEngine = TtsEngine.device,
@@ -954,8 +1007,12 @@ class AppSettings {
     double? animationSpeed,
     bool? disableHapticsWhileStreaming,
     bool? citationShowTitles,
+    bool? citationBackground,
     bool? highContrast,
+    bool? computerEnabled,
+    bool? showComposerNotesButton,
     bool? darkMode,
+    bool? slidingSidebarEnabled,
     Object? defaultModel = const _DefaultValue(),
     Object? openRouterImageGenerationModel = const _DefaultValue(),
     Object? voiceLocaleId = const _DefaultValue(),
@@ -967,12 +1024,13 @@ class AppSettings {
     List<String>? quickPills,
     bool? chatWebSearchEnabled,
     bool? chatImageGenerationEnabled,
+    Object? inlineMessageActions = const _DefaultValue(),
     bool? sendOnEnter,
     SttPreference? sttPreference,
     Object? sttLanguageCode = const _DefaultValue(),
     Object? ttsVoice = const _DefaultValue(),
     Object? ttsVoiceName = const _DefaultValue(),
-    double? ttsSpeechRate,
+    double? ttsSpeed,
     double? ttsPitch,
     double? ttsVolume,
     TtsEngine? ttsEngine,
@@ -1001,8 +1059,14 @@ class AppSettings {
       disableHapticsWhileStreaming:
           disableHapticsWhileStreaming ?? this.disableHapticsWhileStreaming,
       citationShowTitles: citationShowTitles ?? this.citationShowTitles,
+      citationBackground: citationBackground ?? this.citationBackground,
       highContrast: highContrast ?? this.highContrast,
+      computerEnabled: computerEnabled ?? this.computerEnabled,
+      showComposerNotesButton:
+          showComposerNotesButton ?? this.showComposerNotesButton,
       darkMode: darkMode ?? this.darkMode,
+      slidingSidebarEnabled:
+          slidingSidebarEnabled ?? this.slidingSidebarEnabled,
       defaultModel: defaultModel is _DefaultValue
           ? this.defaultModel
           : defaultModel as String?,
@@ -1022,6 +1086,9 @@ class AppSettings {
       chatWebSearchEnabled: chatWebSearchEnabled ?? this.chatWebSearchEnabled,
       chatImageGenerationEnabled:
           chatImageGenerationEnabled ?? this.chatImageGenerationEnabled,
+      inlineMessageActions: inlineMessageActions is _DefaultValue
+          ? this.inlineMessageActions
+          : inlineMessageActions as List<String>?,
       sendOnEnter: sendOnEnter ?? this.sendOnEnter,
       sttPreference: sttPreference ?? this.sttPreference,
       sttLanguageCode: sttLanguageCode is _DefaultValue
@@ -1031,7 +1098,7 @@ class AppSettings {
       ttsVoiceName: ttsVoiceName is _DefaultValue
           ? this.ttsVoiceName
           : ttsVoiceName as String?,
-      ttsSpeechRate: ttsSpeechRate ?? this.ttsSpeechRate,
+      ttsSpeed: ttsSpeed ?? this.ttsSpeed,
       ttsPitch: ttsPitch ?? this.ttsPitch,
       ttsVolume: ttsVolume ?? this.ttsVolume,
       ttsEngine: ttsEngine ?? this.ttsEngine,
@@ -1079,8 +1146,12 @@ class AppSettings {
         other.animationSpeed == animationSpeed &&
         other.disableHapticsWhileStreaming == disableHapticsWhileStreaming &&
         other.citationShowTitles == citationShowTitles &&
+        other.citationBackground == citationBackground &&
         other.highContrast == highContrast &&
+        other.computerEnabled == computerEnabled &&
+        other.showComposerNotesButton == showComposerNotesButton &&
         other.darkMode == darkMode &&
+        other.slidingSidebarEnabled == slidingSidebarEnabled &&
         other.defaultModel == defaultModel &&
         other.openRouterImageGenerationModel ==
             openRouterImageGenerationModel &&
@@ -1093,10 +1164,11 @@ class AppSettings {
         other.chatImageGenerationEnabled == chatImageGenerationEnabled &&
         other.sttPreference == sttPreference &&
         other.sttLanguageCode == sttLanguageCode &&
+        _listEqualsNullable(other.inlineMessageActions, inlineMessageActions) &&
         other.sendOnEnter == sendOnEnter &&
         other.ttsVoice == ttsVoice &&
         other.ttsVoiceName == ttsVoiceName &&
-        other.ttsSpeechRate == ttsSpeechRate &&
+        other.ttsSpeed == ttsSpeed &&
         other.ttsPitch == ttsPitch &&
         other.ttsVolume == ttsVolume &&
         other.ttsEngine == ttsEngine &&
@@ -1129,8 +1201,12 @@ class AppSettings {
       animationSpeed,
       disableHapticsWhileStreaming,
       citationShowTitles,
+      citationBackground,
       highContrast,
+      computerEnabled,
+      showComposerNotesButton,
       darkMode,
+      slidingSidebarEnabled,
       defaultModel,
       openRouterImageGenerationModel,
       voiceLocaleId,
@@ -1145,7 +1221,7 @@ class AppSettings {
       sendOnEnter,
       ttsVoice,
       ttsVoiceName,
-      ttsSpeechRate,
+      ttsSpeed,
       ttsPitch,
       ttsVolume,
       ttsEngine,
@@ -1166,11 +1242,17 @@ class AppSettings {
       webSearchSafeSearch,
       webSearchRegion,
       directVoiceProvider,
+      inlineMessageActions == null
+          ? null
+          : Object.hashAll(inlineMessageActions!),
       Object.hashAllUnordered(quickPills),
       Object.hashAll(pinnedModels),
     ]);
   }
 }
+
+bool _listEqualsNullable(List<String>? a, List<String>? b) =>
+    a == null || b == null ? a == b : _listEquals(a, b);
 
 bool _listEquals(List<String> a, List<String> b) {
   if (identical(a, b)) return true;
@@ -1236,6 +1318,16 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     state = state.copyWith(citationShowTitles: value);
     await SettingsService._putPreference(
       PreferenceKeys.citationShowTitles,
+      value,
+    );
+  }
+
+  Future<void> setCitationBackground(bool value) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(citationBackground: value);
+    // Bulk saves may contain an older snapshot of this appearance setting.
+    await SettingsService._putPreference(
+      PreferenceKeys.citationBackground,
       value,
     );
   }
@@ -1330,9 +1422,30 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     if (next != state) state = next;
   }
 
+  Future<void> setComputerEnabled(bool value) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(computerEnabled: value);
+    await SettingsService._putPreference(PreferenceKeys.computerEnabled, value);
+  }
+
+  Future<void> setShowComposerNotesButton(bool value) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(showComposerNotesButton: value);
+    await SettingsService._putPreference(
+      PreferenceKeys.showComposerNotesButton,
+      value,
+    );
+  }
+
   Future<void> setHighContrast(bool value) async {
     state = state.copyWith(highContrast: value);
     await SettingsService.setHighContrast(value);
+  }
+
+  Future<void> setSlidingSidebarEnabled(bool value) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(slidingSidebarEnabled: value);
+    await SettingsService.setSlidingSidebarEnabled(value);
   }
 
   Future<void> setDarkMode(bool value) async {
@@ -1385,6 +1498,27 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
       state = state.copyWith(socketTransportMode: sanitized);
     }
     await SettingsService.setSocketTransportMode(sanitized);
+  }
+
+  Future<void> setInlineMessageActions(List<String>? actions) async {
+    await _pendingLoad;
+    if (!ref.mounted) return;
+    final saved = actions == null ? null : List<String>.unmodifiable(actions.toSet());
+    state = state.copyWith(inlineMessageActions: saved);
+    await SettingsService._putOrRemove(
+      PreferenceKeys.inlineMessageActions,
+      saved,
+    );
+  }
+
+  Future<void> setMessageActionVisible(String id, bool visible) async {
+    await _pendingLoad;
+    if (!ref.mounted) return;
+    final current = state.inlineMessageActions;
+    if (current == null) return;
+    final selected = {...current};
+    visible ? selected.add(id) : selected.remove(id);
+    return setInlineMessageActions(selected.toList());
   }
 
   Future<void> setQuickPills(List<String> pills) async {
@@ -1540,8 +1674,8 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     await SettingsService.saveSettings(state);
   }
 
-  Future<void> setTtsSpeechRate(double rate) async {
-    state = state.copyWith(ttsSpeechRate: rate);
+  Future<void> setTtsSpeed(double speed) async {
+    state = state.copyWith(ttsSpeed: speed);
     await SettingsService.saveSettings(state);
   }
 
@@ -1598,11 +1732,24 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
   }
 
   Future<void> resetToDefaults() async {
+    await SettingsService._putOrRemove(PreferenceKeys.citationBackground, null);
     const defaultSettings = AppSettings();
+    await SettingsService._putOrRemove(PreferenceKeys.computerEnabled, null);
+    await SettingsService._putOrRemove(
+      PreferenceKeys.showComposerNotesButton,
+      null,
+    );
     await SettingsService.saveSettings(defaultSettings);
+    await SettingsService.setSlidingSidebarEnabled(
+      defaultSettings.slidingSidebarEnabled,
+    );
     // Written only by its own setter, so the bulk save leaves it.
     await SettingsService._putOrRemove(
       PreferenceKeys.directVoiceProvider,
+      null,
+    );
+    await SettingsService._putOrRemove(
+      PreferenceKeys.inlineMessageActions,
       null,
     );
     state = defaultSettings;

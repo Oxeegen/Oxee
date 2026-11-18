@@ -42,6 +42,7 @@ final class BridgeCallEngine implements RealtimeCallEngine {
     this.pingInterval = const Duration(seconds: 10),
     this.pongTimeout = const Duration(seconds: 45),
     this.heldAnswerWait = const Duration(seconds: 8),
+    this.transcriptWait = const Duration(seconds: 10),
   }) : _transport = transport,
        _audio = audio,
        _host = host,
@@ -61,6 +62,11 @@ final class BridgeCallEngine implements RealtimeCallEngine {
   /// its writes.
   final Duration heldAnswerWait;
 
+  /// How long the voice stays held after the user stops speaking while the
+  /// words are transcribed. A transcript that never comes would otherwise
+  /// keep it silent, and nothing more could be asked of it.
+  final Duration transcriptWait;
+
   final _states = StreamController<RealtimeCallState>.broadcast();
   var _state = const RealtimeCallState();
 
@@ -69,6 +75,7 @@ final class BridgeCallEngine implements RealtimeCallEngine {
   var _paused = false;
   final _subscriptions = <StreamSubscription<Object?>>[];
   Timer? _pingTimer;
+  Timer? _transcriptTimer;
   var _pingsSincePong = 0;
 
   var _receivingSpeech = '';
@@ -86,6 +93,12 @@ final class BridgeCallEngine implements RealtimeCallEngine {
   final _animationCalls = <String>{};
   final _responses = <String, _Response>{};
   final _inputs = <String, _Input>{};
+
+  /// When each segment of speech began, as a count, until it is transcribed:
+  /// transcripts can arrive out of that order.
+  final _spokenAt = <String, int>{};
+  var _spoken = 0;
+
   final _calls = <String, _Turn>{};
   _Turn? _pending;
 
@@ -232,11 +245,22 @@ final class BridgeCallEngine implements RealtimeCallEngine {
       return;
     }
     if (command['type'] == 'bridge.respond' && command.containsKey('item_id')) {
+      // The newest reply hears every transcript, so older unsent ones are
+      // redundant, as in the web client: a sentence a short pause split in
+      // two is answered once. The words they held are saved with this one,
+      // in the order they were said.
+      final input = _inputs[command['item_id']];
+      if (input != null) {
+        for (final queued in _commands) {
+          if (_inputs[queued['item_id']] case final earlier?) {
+            input.takeOver(earlier);
+          }
+        }
+      }
       // Answering the user comes before speaking statuses and results.
-      final index = _commands.indexWhere(
-        (queued) => !queued.containsKey('item_id'),
-      );
-      _commands.insert(index < 0 ? _commands.length : index, command);
+      _commands
+        ..removeWhere((queued) => queued.containsKey('item_id'))
+        ..insert(0, command);
     } else {
       _commands.add(command);
     }
@@ -307,12 +331,17 @@ final class BridgeCallEngine implements RealtimeCallEngine {
         _pingsSincePong = 0;
         return;
       case 'input_audio_buffer.speech_started':
+        if (_state.muted) return;
         _receivingSpeech = _string(event['item_id']);
-        _update(_state.copyWith(userSpeaking: !_state.muted));
-        _stopSpeaking();
+        _spokenAt.putIfAbsent(_receivingSpeech, () => _spoken++);
+        _update(_state.copyWith(userSpeaking: true));
+        // Detected speech may be only noise: hold the voice, and stop it
+        // once the words are transcribed.
+        _audio.setPlaybackPaused(true);
       case 'input_audio_buffer.speech_stopped':
         if (_receivingSpeech == event['item_id']) {
           _update(_state.copyWith(userSpeaking: false));
+          _awaitTranscript(_receivingSpeech);
         }
       case 'conversation.item.input_audio_transcription.completed' ||
           'conversation.item.input_audio_transcription.failed':
@@ -387,10 +416,13 @@ final class BridgeCallEngine implements RealtimeCallEngine {
       _update(_state.copyWith(userSpeaking: false));
     }
     if (_inputs.containsKey(itemId)) return;
+    final spokenAt = _spokenAt.remove(itemId) ?? _spoken++;
     final failed =
         event['type'] == 'conversation.item.input_audio_transcription.failed';
     final transcript = event['transcript'];
     final text = !failed && transcript is String ? transcript.trim() : '';
+    if (text.isNotEmpty) _stopSpeaking();
+    if (_receivingSpeech.isEmpty) _audio.setPlaybackPaused(false);
     if (text.isEmpty) {
       // Silence is not a request, and must not get a reply.
       if (failed) {
@@ -399,9 +431,21 @@ final class BridgeCallEngine implements RealtimeCallEngine {
       _flush();
       return;
     }
-    _inputs[itemId] = _Input(itemId, text);
+    _inputs[itemId] = _Input(itemId, text, spokenAt);
     _update(_state.copyWith(userCaption: text));
     _enqueue(BridgeCommands.respondToInput(itemId));
+  }
+
+  /// Lets the held voice go on when [itemId]'s transcript does not arrive
+  /// within [transcriptWait].
+  void _awaitTranscript(String itemId) {
+    _transcriptTimer?.cancel();
+    _transcriptTimer = Timer(transcriptWait, () {
+      if (!_connected || _receivingSpeech != itemId) return;
+      _receivingSpeech = '';
+      _audio.setPlaybackPaused(false);
+      _flush();
+    });
   }
 
   void _onFunctionCall(
@@ -414,10 +458,7 @@ final class BridgeCallEngine implements RealtimeCallEngine {
     if (item['name'] == 'play_animation') {
       // Conduit draws no avatar; a gesture never interrupts the call.
       if (!_animationCalls.add(callId)) return;
-      final cancelled =
-          response == null ||
-          _interrupted.contains(responseId) ||
-          _receivingSpeech.isNotEmpty;
+      final cancelled = response == null || _interrupted.contains(responseId);
       if (response != null && !cancelled) response.animationFailed = true;
       _send(
         BridgeCommands.animationResult(
@@ -574,6 +615,13 @@ final class BridgeCallEngine implements RealtimeCallEngine {
   void _onResponseDone(String id, Object? status) {
     if (_activeResponse == id) _activeResponse = '';
     _responseRequested = false;
+    // Open WebUI 0.12.0 has the voice cancel its own reply once speech
+    // starts, so the held rest of it is never resumed.
+    if (status == 'cancelled' &&
+        _receivingSpeech.isNotEmpty &&
+        !_interrupted.contains(id)) {
+      _stopSpeaking();
+    }
     _audio.endResponse(id);
     final response = _responses[id];
     if (response != null) {
@@ -778,8 +826,10 @@ final class BridgeCallEngine implements RealtimeCallEngine {
     if (muted) {
       _send(BridgeCommands.clearInput);
       // The cleared speech brings no transcript, so a reply waiting for it
-      // would wait until the user spoke again.
+      // would wait until the user spoke again, and a held voice would stay
+      // silent.
       _receivingSpeech = '';
+      _audio.setPlaybackPaused(false);
       _flush();
     }
   }
@@ -808,6 +858,7 @@ final class BridgeCallEngine implements RealtimeCallEngine {
     _connected = false;
     _saveHeldExchanges();
     _pingTimer?.cancel();
+    _transcriptTimer?.cancel();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -871,10 +922,27 @@ final class _Response {
 
 /// The user's transcribed words.
 final class _Input {
-  _Input(this.itemId, this.text);
+  _Input(this.itemId, String text, int spokenAt)
+    : _segments = [(spokenAt: spokenAt, text: text)];
 
   final String itemId;
-  final String text;
+
+  /// Each segment's words with when it began (see
+  /// [BridgeCallEngine._spokenAt]), in that order: this input's own, and
+  /// those of earlier inputs the reply to this one also answers. They stay
+  /// apart so that segments taken on later still fall into place.
+  final List<({int spokenAt, String text})> _segments;
+
+  /// What was said, in the order it was said.
+  String get text => [for (final segment in _segments) segment.text].join(' ');
+
+  /// Takes on the words of [earlier], which is not answered on its own: the
+  /// reply to this input answers them too.
+  void takeOver(_Input earlier) {
+    _segments
+      ..addAll(earlier._segments)
+      ..sort((a, b) => a.spokenAt.compareTo(b.spokenAt));
+  }
 
   /// Saved into the chat, or handed to it as a turn.
   var persisted = false;

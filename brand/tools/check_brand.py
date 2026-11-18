@@ -31,20 +31,22 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
          "ServerConnectionPage(\n          addingAccount: true,"],
     ),
     "lib/features/profile/views/profile_page.dart": (
-        ["showOxeeRegionSwitcher(context, ref)"],
-        ["_buildDonationSection", "cogwheel0"],
+        ["key: const Key('oxee-region-entry')", "showOxeeRegionSwitcher(context, ref)"],
+        ["_buildDonationSection", "cogwheel0", "launchExternalLink"],
     ),
-    "lib/features/profile/widgets/account_actions.dart": (
-        ["openOxeeRegionAddAccount(context, ref);"],
+    "lib/features/profile/widgets/account_sheet.dart": (
+        ["OxeeStrings.of(context).accountKindTitle",
+         "if (oxeeOffersOtherBackends || _kind == AccountKind.direct)",
+         ": OxeeRegionAddChoices(close: close)"],
         [],
     ),
     "lib/features/profile/views/manage_accounts_page.dart": (
-        ["if (oxeeOffersOtherBackends) ...["],
+        ["if (oxeeOffersOtherBackends) ...[\n          const _DirectCard(),"],
         [],
     ),
     "lib/features/navigation/widgets/sidebar_user_pill.dart": (
         ["oxeeNativeRootSections(", "buildOxeeRegionNativeSheetItem(context, ref.read)"],
-        ["supportItems: supportItems", "buy-me-a-coffee"],
+        ["supportItems: supportItems", "supportTitle: l10n.supportConduit", "buy-me-a-coffee"],
     ),
     "lib/core/services/native_sheet_hydration_service.dart": (
         ["oxeeNativeAccountsDetail(buildNativeAccountsDetail(",
@@ -53,8 +55,12 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
         [],
     ),
     "lib/main.dart": (
-        ["event.id == oxeeRegionNativeSheetItemId"],
+        ["event.id == oxeeRegionNativeSheetItemId", "...oxeeProviderOverrides,"],
         ["ReleaseNotesCoordinator("],
+    ),
+    "lib/brand/oxee_brand.dart": (
+        ["libreChatBackendEnabledProvider.overrideWithValue(false)"],
+        [],
     ),
     "lib/core/utils/native_sheet_utils.dart": (
         [],
@@ -74,7 +80,9 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
     ),
 }
 
-MUST_NOT_EXIST = [".github/FUNDING.yml"]
+# Upstream's donation links and its Pullfrog agent workflow (manual runs
+# with upstream's AI provider keys) have no place in Oxee.
+MUST_NOT_EXIST = [".github/FUNDING.yml", ".github/workflows/pullfrog.yml"]
 
 
 def main() -> int:

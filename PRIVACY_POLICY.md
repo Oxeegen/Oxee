@@ -1,11 +1,11 @@
 # Oxee Privacy Policy
 
-Effective date: 2026-09-28
+Effective date: 2026-11-17
 
 Oxee is the mobile app for Oxeegen Intelligence, published by Oxeegen. The
 app is a client: it connects to the Oxeegen Intelligence region you choose
-(Oxeegen US, `ai.oxeegen.com`, or Oxeegen FR, `ia.oxeegen.fr`) and to nothing
-else on your behalf. This policy describes how the app handles data on your
+(Oxeegen US, `ai.oxeegen.com`, or Oxeegen FR, `ia.oxeegen.fr`), to the Oxee
+Hermes servers you add, if any, and to nothing else on your behalf. This policy describes how the app handles data on your
 device. What Oxeegen Intelligence does with the content you send it is
 governed by your Oxeegen account terms and Oxeegen's privacy policy.
 
@@ -37,7 +37,8 @@ governed by your Oxeegen account terms and Oxeegen's privacy policy.
 - **Network**: requests go directly from your device to the Oxeegen
   Intelligence region of the account in use. You can be signed in to both
   regions; each account's data stays with its region and is not copied to
-  the other.
+  the other. Conversations with an Oxee Hermes agent go directly to the Oxee
+  Hermes server you added; its API key is kept in platform secure storage.
 
 ## Permissions
 

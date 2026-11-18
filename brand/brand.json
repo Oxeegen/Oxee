@@ -3,6 +3,8 @@
   "upstreamAppName": "Conduit",
   "bundleId": "com.oxeegen.oxee",
   "upstreamBundleId": "app.cogwheel.conduit",
+  "hermesName": "Oxee Hermes",
+  "upstreamHermesName": "Hermes",
   "appGroupId": "group.com.oxeegen.oxee",
   "debugAppGroupId": "group.com.oxeegen.oxee.debug",
   "urlScheme": "oxee",

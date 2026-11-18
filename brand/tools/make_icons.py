@@ -99,6 +99,24 @@ def adaptive_monochrome(size: int) -> Image.Image:
     return silhouette
 
 
+def template_silhouette(size: int, share: float) -> Image.Image:
+    """The mark in black on transparent: a template image the app tints."""
+    layer = on_canvas(size, share)
+    silhouette = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    silhouette.putalpha(layer.getchannel("A"))
+    return silhouette
+
+
+def in_app_logos() -> int:
+    """Where upstream shows the Open WebUI logo for the Open WebUI backend
+    (Oxee's Oxeegen Intelligence) or its own app icon, Oxee shows the mark."""
+    icons = ROOT / "assets/icons"
+    replace(icons / "open_webui.png", on_canvas(500, 0.92))
+    replace(icons / "open_webui_tab.png", template_silhouette(192, 0.96))
+    replace(icons / "app_icon_square.png", app_icon(240))
+    return 3
+
+
 def replace(path: Path, image: Image.Image) -> None:
     before = Image.open(path)
     if before.size != image.size:
@@ -205,6 +223,7 @@ def main() -> None:
 
     replace(ROOT / "assets/icons/icon.png", on_canvas(512, 0.8))
     count += 1
+    count += in_app_logos()
 
     write_vectors()
     print(f"make_icons: {count} raster icons regenerated from {MASTER.name}, vectors written")

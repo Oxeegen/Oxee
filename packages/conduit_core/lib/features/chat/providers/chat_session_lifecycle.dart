@@ -15,12 +15,16 @@ void resetDirectRunsForNewChat(dynamic ref) {
   }
 }
 
-/// Toggle filters and the code interpreter are composer state, not defaults
+/// Toggle filters and the code interpreter are composer state, not choices
 /// that should cross a conversation boundary when the same model remains
-/// selected.
+/// selected. The next conversation starts from the model's default filters,
+/// as on Open WebUI.
 void clearSelectedFiltersForConversationBoundary(dynamic ref) {
-  ref.read(selectedFilterIdsProvider.notifier).clear();
+  ref.read(selectedFilterIdsProvider.notifier).reset();
   ref.read(codeInterpreterEnabledProvider.notifier).clear();
+  // The tools, terminal and features the user picked belong to the chat they
+  // were picked in.
+  ref.read(chatPicksSessionProvider.notifier).newConversation();
 }
 
 /// Returns only selected toggle filters exposed by [model].

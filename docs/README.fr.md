@@ -41,6 +41,14 @@ Chaque région a ses propres comptes et conversations. Vous pouvez rester
 connecté aux deux et passer de l'une à l'autre dans les Réglages ; rien n'est
 copié d'une région à l'autre.
 
+## Oxee Hermes
+
+Oxee se connecte aussi aux agents **Oxee Hermes** : des agents qui utilisent
+des outils, se souviennent des sessions passées et exécutent des tâches
+planifiées. Ajoutez-en un dans **Réglages → Comptes → Ajouter un compte →
+Oxee Hermes** avec l'adresse de son serveur et sa clé d'API. Ses conversations
+ont leur propre onglet dans la barre latérale, à côté de vos chats Oxeegen.
+
 ## Ce que vous obtenez
 
 ### Une conversation pensée pour le mobile
@@ -92,7 +100,8 @@ Pas encore de compte ? Contactez [Oxeegen](https://www.oxeegen.com).
 - Les jetons de connexion sont conservés dans le trousseau (Keychain) sur iOS
   et le Keystore sur Android.
 - Aucun SDK tiers d'analyse ou de publicité.
-- L'application ne communique qu'avec la région Oxeegen que vous avez choisie.
+- L'application ne communique qu'avec la région Oxeegen que vous avez choisie
+  et avec les serveurs Oxee Hermes que vous ajoutez.
 
 Tous les détails dans [PRIVACY_POLICY.md](../PRIVACY_POLICY.md) (en anglais).
 

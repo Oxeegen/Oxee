@@ -308,7 +308,7 @@ void main() {
       );
 
       check(models.where(isHermesModel)).length.equals(2);
-      check(models[1].name).equals('Hermes Agent');
+      check(models[1].name).equals('Oxee Hermes');
       check(models[1].metadata?['hermesConfiguredDefault']).equals(true);
       check(models[2]).identicalTo(configured);
       check(configured.metadata?['hermesConfiguredDefault']).equals(false);
@@ -338,7 +338,7 @@ void main() {
       final models = await container.read(modelsProvider.future);
 
       check(models).length.equals(2);
-      check(models.first.name).equals('Hermes Agent');
+      check(models.first.name).equals('Oxee Hermes');
       check(models.last).identicalTo(discovered);
     });
 
