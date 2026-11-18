@@ -307,6 +307,43 @@ def apply_hermes_tab_tests(rel: str, text: str) -> str:
     return rewrite_string_literals(text, "dart", lambda s: HERMES_NAME if s == UPSTREAM_HERMES_NAME else s)
 
 
+_HERMES_PHRASES: list[str] | None = None
+
+
+def rename_hermes_messages(text: str) -> str:
+    """A test literal that quotes a translation inside a longer message
+    ("Delivery: Save in Hermes, Bot Chat: ..."): renamed when every Hermes in
+    it then sits inside an English translation longer than the name itself.
+    Model and chat names stay as written."""
+    global _HERMES_PHRASES, _EN_VALUES
+    renamed = rename_hermes(text)
+    if renamed == text:
+        return text
+    if _HERMES_PHRASES is None:
+        if _EN_VALUES is None:
+            _EN_VALUES = _english_translations()
+        _HERMES_PHRASES = [v for v in _EN_VALUES if HERMES_NAME in v and v != HERMES_NAME and "{" not in v]
+    covered = [False] * len(renamed)
+    for phrase in _HERMES_PHRASES:
+        start = renamed.find(phrase)
+        while start >= 0:
+            covered[start:start + len(phrase)] = [True] * len(phrase)
+            start = renamed.find(phrase, start + 1)
+    for m in re.finditer(re.escape(HERMES_NAME), renamed):
+        if not covered[m.start()]:
+            return text
+    return renamed
+
+
+TEST_DIRS = re.compile(r"^(?:test/|integration_test/|packages/[^/]+/test/)")
+
+
+def apply_hermes_test_messages(rel: str, text: str) -> str:
+    if not (TEST_DIRS.match(rel) and rel.endswith(".dart")):
+        return text
+    return rewrite_string_literals(text, "dart", rename_hermes_messages)
+
+
 def rewrite_dot_strings(src: str) -> str:
     """Keys too: they are the English source text of the Swift literals."""
     out = []
@@ -458,6 +495,8 @@ RULES = [
     # its prose follows the app's messages. The protocol value the app sends,
     # "client": "conduit", is lowercase and stays.
     Rule(("docs/open-webui-functions.md",), rename_word),
+    # The User-Agents pinned for LibreChat end with the app's product token.
+    Rule(("packages/conduit_core/test/features/librechat/fixtures/user_agents.txt",), rename_word),
 ]
 
 
@@ -550,6 +589,7 @@ def transform(path: Path, rewrites: list[Callable[[str], str]]) -> tuple[str, st
     rel = path.relative_to(ROOT).as_posix()
     text = apply_locale_fixes(rel, text)
     text = apply_hermes_tab_tests(rel, text)
+    text = apply_hermes_test_messages(rel, text)
     text = fix_english_articles(rel, text)
     text = apply_identity(rel, text)
     if crlf:

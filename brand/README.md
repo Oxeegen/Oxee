@@ -34,7 +34,7 @@ device see) is `com.oxeegen.oxee`.
 | Path | Purpose |
 | --- | --- |
 | `brand.json` | Every identity value: name, bundle id, app group, URL scheme, Apple team, repo, store links, the two regions. |
-| `tools/rebrand.py` | Rewrites user-visible "Conduit" to "Oxee" inside string literals (Dart, Swift, Kotlin; comments and identifiers untouched), ARB values, `.strings`, plists, Android resources and Xcode display names; applies `brand.json`; fixes Korean particles and Czech/Slovak declension. Renames Hermes to "Oxee Hermes" in every ARB value, and in a whole Dart literal only when the renamed text is an English translation (a bare "Hermes" in tests is data, except in the sidebar tab tests it lists). Idempotent. `--check` lists what it would change. |
+| `tools/rebrand.py` | Rewrites user-visible "Conduit" to "Oxee" inside string literals (Dart, Swift, Kotlin; comments and identifiers untouched), ARB values, `.strings`, plists, Android resources and Xcode display names; applies `brand.json`; fixes Korean particles and Czech/Slovak declension. Renames Hermes to "Oxee Hermes" in every ARB value, and in a whole Dart literal only when the renamed text is an English translation; in tests also a longer message quoting such a translation ("Delivery: Save in Hermes, ..."). A bare "Hermes" in tests is data, except in the sidebar tab tests it lists. Idempotent. `--check` lists what it would change. |
 | `tools/check_brand.py` | Fails if a hook was lost or removed upstream code came back, if `rebrand.py --check` is dirty, or if the regions in Dart and `brand.json` differ. Runs in CI and before every release build. |
 | `tools/flutter_test.py` | `flutter test` over every test file except `upstream-tests-replaced.txt`. |
 | `upstream-tests-replaced.txt` | Upstream test files that assert behaviour Oxee replaces, each with its reason. A listed file that disappears fails the run. |
@@ -124,7 +124,8 @@ need a hook of their own: search the merge diff for
 `RouteNames.directConnections`, `AccountKind`, `Routes.backendChooser` and
 `buyMeACoffee`. New donation or review prompts likewise. Hermes entry points
 are fine: Oxee offers Oxee Hermes. A new upstream test whose literal is a
-bare "Hermes" tab label goes into `HERMES_TAB_TESTS` in `rebrand.py`.
+bare "Hermes" tab label goes into `HERMES_TAB_TESTS` in `rebrand.py`. Fixtures
+that carry the product token (LibreChat's pinned User-Agents) get a `Rule`.
 
 Public docs (README, French README, CONTRIBUTING if added, release notes, repo
 description) talk about Oxee only: no Conduit, upstream or fork. `LICENSE` is
