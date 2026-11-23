@@ -221,7 +221,7 @@ jobs:
       # A test build runs App Store Connect's upload checks without
       # uploading, so a build Apple would refuse (e.g. ITMS-90035) fails here
       # rather than when publishing.
-      - name: TestFlight (test build: validate only)
+      - name: TestFlight upload (test build - validation only)
         if: steps.signing.outcome == 'success'
         run: |
           id=$(printf '%s' "$ASC_KEY_ID" | tr -d '[:space:]')
