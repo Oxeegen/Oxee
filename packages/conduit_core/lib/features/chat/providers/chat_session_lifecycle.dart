@@ -44,8 +44,37 @@ List<String> selectedFilterIdsForModel(dynamic ref, Model model) {
       .toList(growable: false);
 }
 
+/// Takes the composer's files, to retire later; see
+/// [composerTrayCaptureProvider].
+void Function() _captureComposerTray(dynamic ref) =>
+    (ref.read(composerTrayCaptureProvider) as void Function() Function())();
+
+/// Empties the composer's tray when a new chat starts on Hermes or leaves a
+/// Hermes chat. The tray outlives a chat, so files picked for one Hermes chat
+/// were already attached in the next. A new chat whose model comes from the
+/// default restore is settled by [restoreDefaultModelForNewChat].
+void clearHermesTrayForNewChat(dynamic ref, {Model? next}) {
+  final current = ref.read(selectedModelProvider) as Model?;
+  if ((next != null && isHermesModel(next)) ||
+      (current != null && isHermesModel(current))) {
+    _captureComposerTray(ref)();
+  }
+}
+
+/// [restoreDefaultModel] for a new chat. When the default it picks is
+/// Hermes, the files the tray held as the chat began are retired; any
+/// attached while it was chosen, such as a share, stay with the new chat.
+Future<void> restoreDefaultModelForNewChat(dynamic ref) async {
+  final retirePreviousFiles = _captureComposerTray(ref);
+  await restoreDefaultModel(ref);
+  if (ref is Ref && !ref.mounted) return;
+  final selected = ref.read(selectedModelProvider) as Model?;
+  if (selected != null && isHermesModel(selected)) retirePreviousFiles();
+}
+
 // Start a new chat (unified function for both "New Chat" button and home screen)
 void startNewChat(dynamic ref, {Model? modelForNewConversation}) {
+  clearHermesTrayForNewChat(ref, next: modelForNewConversation);
   resetHermesForNewChat(ref);
   resetDirectRunsForNewChat(ref);
   clearSelectedFiltersForConversationBoundary(ref);
@@ -72,7 +101,7 @@ void startNewChat(dynamic ref, {Model? modelForNewConversation}) {
         .set(modelForNewConversation, allowHidden: true);
   } else {
     // Reset to default model for new conversations (fixes #296)
-    restoreDefaultModel(ref);
+    restoreDefaultModelForNewChat(ref);
   }
 
   ref.read(temporaryChatEnabledProvider.notifier).startNewChat();
@@ -82,6 +111,7 @@ void startNewChat(dynamic ref, {Model? modelForNewConversation}) {
 /// this does NOT reset to the default model (which would race past and clobber
 /// the Hermes selection); it resolves and selects the Hermes model explicitly.
 Future<void> startNewHermesChat(dynamic ref) async {
+  _captureComposerTray(ref)();
   resetHermesForNewChat(ref);
   resetDirectRunsForNewChat(ref);
   clearSelectedFiltersForConversationBoundary(ref);
@@ -222,23 +252,13 @@ Future<void> restoreFolderDraftModel(dynamic ref, String folderId) async {
       !(ref.read(isManualModelSelectionProvider) as bool) &&
       identical(ref.read(selectedModelProvider), selectedAtStart);
 
-  var saved = const <String>[];
-  try {
-    final listed = await ref.read(foldersProvider.future) as List<Folder>;
-    final cached = listed.where((folder) => folder.id == folderId).firstOrNull;
-    saved = cached?.projectModelIds ?? saved;
-    if (cached != null && projectOwner != null && untouched()) {
-      // The server's folder list carries no project data, so the cached copy
-      // can predate an edit made elsewhere. The folder itself is the
-      // authority; when it cannot answer in good time the cache stands.
-      final current = await folders
-          .refreshProjectData(projectOwner, folderId)
-          .timeout(_folderDetailWait);
-      saved = current?.projectModelIds ?? saved;
-    }
-  } catch (_) {
-    // An unreadable folder list leaves the draft on the user's default.
-  }
+  final saved = await _folderSavedModelIds(
+    ref,
+    folderId,
+    folders: folders,
+    projectOwner: projectOwner,
+    keepGoing: untouched,
+  );
   if (!untouched()) return;
   if (saved.isEmpty) {
     await restoreDefaultModel(ref, isCurrent: untouched);
@@ -253,12 +273,7 @@ Future<void> restoreFolderDraftModel(dynamic ref, String folderId) async {
   }
   if (!untouched()) return;
 
-  final available = <String, Model>{
-    for (final model in folderDefaultModelCandidates(models)) model.id: model,
-  };
-  // One entry per saved slot the server still offers, in slot order. The same
-  // model saved twice is two slots.
-  final usable = saved.map((id) => available[id]).nonNulls.toList();
+  final usable = folderUsableDefaultModels(saved, models);
   final chosen = usable.firstOrNull;
   if (chosen != null) {
     ref.read(selectedModelProvider.notifier).set(chosen);
@@ -278,6 +293,96 @@ Future<void> restoreFolderDraftModel(dynamic ref, String folderId) async {
       !(ref.read(isManualModelSelectionProvider) as bool)) {
     ref.read(folderDraftModelNoticeProvider.notifier).set(folderId);
   }
+}
+
+/// A folder's saved default models (`data.model_ids`, in slot order): the
+/// cached row's, then the folder's own answer when it comes in good time
+/// and [keepGoing] still holds. None when the folder list cannot be read.
+Future<List<String>> _folderSavedModelIds(
+  dynamic ref,
+  String folderId, {
+  required Folders folders,
+  required FolderProjectOwner? projectOwner,
+  required bool Function() keepGoing,
+}) async {
+  var saved = const <String>[];
+  try {
+    final listed = await ref.read(foldersProvider.future) as List<Folder>;
+    final cached = listed.where((folder) => folder.id == folderId).firstOrNull;
+    saved = cached?.projectModelIds ?? saved;
+    if (cached != null && projectOwner != null && keepGoing()) {
+      // The server's folder list carries no project data, so the cached copy
+      // can predate an edit made elsewhere. The folder itself is the
+      // authority; when it cannot answer in good time the cache stands.
+      final current = await folders
+          .refreshProjectData(projectOwner, folderId)
+          .timeout(_folderDetailWait);
+      saved = current?.projectModelIds ?? saved;
+    }
+  } catch (_) {
+    // An unreadable folder list leaves the draft on the user's default.
+  }
+  return saved;
+}
+
+/// The models of [saved] this server still offers to a folder draft, one
+/// entry per saved slot, in slot order (the same model saved twice is two
+/// slots).
+List<Model> folderUsableDefaultModels(List<String> saved, List<Model> models) {
+  final available = <String, Model>{
+    for (final model in folderDefaultModelCandidates(models)) model.id: model,
+  };
+  return saved.map((id) => available[id]).nonNulls.toList();
+}
+
+/// What a new chat in [folderId] would start on, for a host that keeps its
+/// own selection per draft instead of the app-wide one
+/// [restoreFolderDraftModel] sets: [FolderDefaultModels.usable] are the
+/// folder's saved defaults this server offers, in slot order (the first is
+/// the draft's model), and [FolderDefaultModels.missing] says the folder
+/// saved some but none is offered, as [folderDraftModelNoticeProvider] does.
+/// Selects nothing.
+Future<FolderDefaultModels> resolveFolderDefaultModels(
+  dynamic ref,
+  String folderId,
+) async {
+  const none = FolderDefaultModels(usable: <Model>[]);
+  // The account asked for: one signed in meanwhile has other folders and
+  // models, so the answer is none rather than a mix of the two.
+  final owner = captureOpenWebUiConversationSelectionOwner(ref);
+  if (owner == null) return none;
+  bool sameAccount() =>
+      openWebUiConversationSelectionOwnerIsCurrent(ref, owner);
+  final folders = ref.read(foldersProvider.notifier) as Folders;
+  final saved = await _folderSavedModelIds(
+    ref,
+    folderId,
+    folders: folders,
+    projectOwner: folders.captureProjectOwner(),
+    keepGoing: sameAccount,
+  );
+  if (saved.isEmpty || !sameAccount()) return none;
+  var models = const <Model>[];
+  try {
+    models = await ref.read(modelsProvider.future) as List<Model>;
+  } catch (_) {
+    // No model list: nothing can be matched, and nothing is claimed missing.
+    return none;
+  }
+  if (!sameAccount()) return none;
+  final usable = folderUsableDefaultModels(saved, models);
+  return FolderDefaultModels(
+    usable: List<Model>.unmodifiable(usable),
+    missing: usable.isEmpty && models.isNotEmpty,
+  );
+}
+
+/// See [resolveFolderDefaultModels].
+final class FolderDefaultModels {
+  const FolderDefaultModels({required this.usable, this.missing = false});
+
+  final List<Model> usable;
+  final bool missing;
 }
 
 /// Restores the selected model to the user's configured default model.

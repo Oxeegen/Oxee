@@ -3,11 +3,15 @@ import 'dart:convert';
 
 import 'package:checks/checks.dart';
 import 'package:conduit_core/database/app_database.dart';
+import 'package:conduit_core/database/daos/outbox_dao.dart'
+    show OutboxKind, kDeleteMessagesIdsKey;
 import 'package:conduit_core/database/mappers/chat_blob_mapper.dart';
 import 'package:conduit_core/database/mappers/conversation_assembler.dart'
     show
         kLocalConversationWorkerPayloadThreshold,
         kLocalConversationWorkerThreshold;
+import 'package:conduit_core/services/conversation_parsing.dart'
+    show parseFullConversationModel;
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:conduit_core/sync/chat_locks.dart';
 import 'package:conduit_core/sync/id_remapper.dart';
@@ -654,6 +658,401 @@ void main() {
       check(await db.syncMetaDao.getPullWatermark()).equals(200);
       check((await allChats()).map((c) => c.id)).deepEquals(['chat-1']);
     });
+  });
+
+  test('an answer stored while a pull reads the chat stays', () async {
+    final blob = blobFor('chat-1');
+    server.seedChat(id: 'chat-1', blob: blob, createdAt: 100, updatedAt: 150);
+    await pull.pullChat('chat-1');
+
+    final late = _LateReadClient(server);
+    final gate = Completer<void>();
+    late.readGate = gate.future;
+    pull = PullSync(client: late, db: db, locks: locks);
+    final pulling = pull.pullChat('chat-1');
+    await late.readTaken.future;
+    // The answer failed meanwhile. The server saved its error and then told
+    // this device, which stored the answer with it.
+    final messages = (blob['history'] as Map)['messages'] as Map;
+    final failed = <String, dynamic>{
+      ...messages['chat-1-m2'] as Map<String, dynamic>,
+      'error': {'content': 'Connection lost'},
+    };
+    server.seedChat(
+      id: 'chat-1',
+      blob: {
+        ...blob,
+        'history': {
+          'messages': {...messages, 'chat-1-m2': failed},
+          'currentId': 'chat-1-m2',
+        },
+      },
+      createdAt: 100,
+      updatedAt: 151,
+    );
+    await db.messagesDao.upsertLocalEchoTurn(
+      chatId: 'chat-1',
+      user: null,
+      assistant: MessageRowData(
+        id: 'chat-1-m2',
+        chatId: 'chat-1',
+        parentId: 'chat-1-m1',
+        role: 'assistant',
+        content: failed['content'] as String,
+        model: 'llama3',
+        createdAt: 1002,
+        orderIndex: -1,
+        payload: failed,
+      ),
+    );
+    gate.complete();
+    await pulling;
+
+    final answer = (await db.messagesDao.getForChat('chat-1'))
+        .singleWhere((row) => row.id == 'chat-1-m2');
+    check((jsonDecode(answer.payload) as Map)['error'])
+        .isA<Map<String, dynamic>>()['content']
+        .equals('Connection lost');
+  });
+
+  group('a chat listed but never opened, so its body was never fetched', () {
+    // The turn after `chat-1-m2`, as this device stores it.
+    Future<void> storeTurn(String answer) => db.messagesDao.upsertLocalEchoTurn(
+      chatId: 'chat-1',
+      user: const MessageRowData(
+        id: 'chat-1-m3',
+        chatId: 'chat-1',
+        parentId: null,
+        role: 'user',
+        content: 'message 3 of chat-1',
+        createdAt: 1003,
+        orderIndex: -1,
+        payload: {
+          'id': 'chat-1-m3',
+          'role': 'user',
+          'content': 'message 3 of chat-1',
+        },
+      ),
+      assistant: MessageRowData(
+        id: 'chat-1-m4',
+        chatId: 'chat-1',
+        parentId: 'chat-1-m3',
+        role: 'assistant',
+        content: answer,
+        model: 'llama3',
+        createdAt: 1004,
+        orderIndex: -1,
+        payload: {
+          'id': 'chat-1-m4',
+          'role': 'assistant',
+          'content': answer,
+          'model': 'llama3',
+        },
+      ),
+    );
+
+    setUp(() async {
+      await db.chatsDao.upsertEnvelopeStub(
+        id: 'chat-1',
+        title: 'Title chat-1',
+        createdAt: 100,
+        updatedAt: 150,
+      );
+      server.seedChat(
+        id: 'chat-1',
+        blob: blobFor('chat-1'),
+        createdAt: 100,
+        updatedAt: 150,
+      );
+    });
+
+    test('keeps an answer stored while a pull reads it', () async {
+      final late = _LateReadClient(server);
+      final gate = Completer<void>();
+      late.readGate = gate.future;
+      pull = PullSync(client: late, db: db, locks: locks);
+      final pulling = pull.pullChat('chat-1');
+      await late.readTaken.future;
+      // The server stored the next answer, and then this device did.
+      server.seedChat(
+        id: 'chat-1',
+        blob: blobFor('chat-1', messageCount: 4),
+        createdAt: 100,
+        updatedAt: 151,
+      );
+      await storeTurn('message 4 of chat-1');
+      gate.complete();
+      final pulled = await pulling;
+
+      check((await db.messagesDao.getForChat('chat-1')).map((row) => row.id))
+          .deepEquals(['chat-1-m1', 'chat-1-m2', 'chat-1-m3', 'chat-1-m4']);
+      check((await db.chatsDao.getChat('chat-1'))!.bodySynced).isTrue();
+      check(pulled!.messages.last.content).equals('message 4 of chat-1');
+    });
+
+    test('keeps a turn stored here while every read of it is made, and the '
+        "pull answers with the server's copy", () async {
+      final answers = ['Part of an answer', 'The whole answer'];
+      final hooked = _ChatHookClient(server)
+        ..whileChatLoads = (id) => storeTurn(answers.removeAt(0));
+      pull = PullSync(client: hooked, db: db, locks: locks);
+
+      final pulled = await pull.pullChat('chat-1');
+
+      final stored = await db.messagesDao.getForChat('chat-1');
+      check(stored.map((row) => row.id)).deepEquals(['chat-1-m3', 'chat-1-m4']);
+      check(stored.last.content).equals('The whole answer');
+      check((await db.chatsDao.getChat('chat-1'))!.bodySynced).isFalse();
+      // The stored rows are only the turn stored here, not the chat.
+      check(pulled!.messages.map((message) => message.id))
+          .deepEquals(['chat-1-m1', 'chat-1-m2']);
+    });
+
+    // The copy shows `answer-b`, kept beside `answer-a`.
+    void seedTwoAnswers() => server.seedChat(
+      id: 'chat-1',
+      blob: {
+        'title': 'Title chat-1',
+        'models': ['llama3'],
+        'history': {
+          'currentId': 'answer-b',
+          'messages': {
+            'chat-1-m1': {
+              'id': 'chat-1-m1',
+              'parentId': null,
+              'childrenIds': ['answer-a', 'answer-b'],
+              'role': 'user',
+              'content': 'message 1 of chat-1',
+              'timestamp': 1001,
+            },
+            for (final (id, content, timestamp) in [
+              ('answer-a', 'The first answer', 1002),
+              ('answer-b', 'The second answer', 1003),
+            ])
+              id: {
+                'id': id,
+                'parentId': 'chat-1-m1',
+                'childrenIds': <String>[],
+                'role': 'assistant',
+                'content': content,
+                'timestamp': timestamp,
+                'model': 'llama3',
+              },
+          },
+        },
+      },
+      createdAt: 100,
+      updatedAt: 150,
+    );
+
+    for (final landed in [false, true]) {
+      test(
+        "answers with the server's copy, after every read of it predates a "
+        'turn stored here, without an answer whose delete '
+        '${landed ? 'landed while it was read' : 'has not landed'}',
+        () async {
+          seedTwoAnswers();
+          if (!landed) {
+            await db.outboxDao.enqueue(
+              kind: OutboxKind.deleteMessages,
+              chatId: 'chat-1',
+              payload: {
+                kDeleteMessagesIdsKey: ['answer-b'],
+              },
+            );
+          }
+          final answers = ['Part of an answer', 'The whole answer'];
+          final hooked = _ChatHookClient(server)
+            ..whileChatLoads = (id) async {
+              await storeTurn(answers.removeAt(0));
+              // After the last copy was read.
+              if (landed && answers.isEmpty) {
+                db.chatsDao.noteMessageDeletesLanded('chat-1', ['answer-b']);
+              }
+            };
+          pull = PullSync(client: hooked, db: db, locks: locks);
+
+          final pulled = await pull.pullChat('chat-1');
+
+          check(pulled!.messages.map((message) => message.id))
+              .deepEquals(['chat-1-m1', 'answer-a']);
+          check(pulled.messages.last.versions).isEmpty();
+          check(
+            (await db.messagesDao.getForChat('chat-1')).map((row) => row.id),
+          ).deepEquals(['chat-1-m3', 'chat-1-m4']);
+        },
+      );
+    }
+
+    test('answers with a copy it parsed before an account-wide change ran, '
+        'never one it parsed after', () async {
+      final order = <String>[];
+      final parseTaken = Completer<void>();
+      final parseGate = Completer<void>();
+      final answers = ['Part of an answer', 'The whole answer'];
+      final hooked = _ChatHookClient(server)
+        ..whileChatLoads = (id) => storeTurn(answers.removeAt(0));
+      pull = PullSync(
+        client: hooked,
+        db: db,
+        locks: locks,
+        parseOffload: (envelope) async {
+          parseTaken.complete();
+          await parseGate.future;
+          order.add('parsed');
+          return parseFullConversationModel(envelope);
+        },
+      );
+
+      final opening = pull.pullChat('chat-1');
+      await parseTaken.future;
+      final change = locks.runBarrier(() async => order.add('change'));
+      parseGate.complete();
+      final pulled = await opening;
+      await change;
+
+      check(pulled).isNotNull();
+      check(order).deepEquals(['parsed', 'change']);
+    });
+
+    test("answers without an answer whose delete lands while the server's "
+        'copy is parsed', () async {
+      seedTwoAnswers();
+      final parseTaken = Completer<void>();
+      final parseGate = Completer<void>();
+      final answers = ['Part of an answer', 'The whole answer'];
+      final hooked = _ChatHookClient(server)
+        ..whileChatLoads = (id) => storeTurn(answers.removeAt(0));
+      pull = PullSync(
+        client: hooked,
+        db: db,
+        locks: locks,
+        parseOffload: (envelope) async {
+          if (!parseTaken.isCompleted) parseTaken.complete();
+          await parseGate.future;
+          return parseFullConversationModel(envelope);
+        },
+      );
+
+      final opening = pull.pullChat('chat-1');
+      await parseTaken.future;
+      db.chatsDao.noteMessageDeletesLanded('chat-1', ['answer-b']);
+      parseGate.complete();
+      final pulled = await opening;
+
+      check(pulled!.messages.map((message) => message.id))
+          .deepEquals(['chat-1-m1', 'answer-a']);
+    });
+
+    test('parses the copy off this isolate twice at most while deletes keep '
+        'landing', () async {
+      seedTwoAnswers();
+      var offloaded = 0;
+      final answers = ['Part of an answer', 'The whole answer'];
+      final hooked = _ChatHookClient(server)
+        ..whileChatLoads = (id) => storeTurn(answers.removeAt(0));
+      pull = PullSync(
+        client: hooked,
+        db: db,
+        locks: locks,
+        parseOffload: (envelope) async {
+          offloaded++;
+          // A delete lands during every parse off this isolate.
+          db.chatsDao.noteMessageDeletesLanded('chat-1', [
+            offloaded == 1 ? 'answer-b' : 'another-answer-$offloaded',
+          ]);
+          return parseFullConversationModel(envelope);
+        },
+      );
+
+      final pulled = await pull.pullChat('chat-1');
+
+      check(offloaded).equals(2);
+      check(pulled!.messages.map((message) => message.id))
+          .deepEquals(['chat-1-m1', 'answer-a']);
+    });
+
+    test('with a message of its own not sent yet, keeps a turn stored here '
+        'while every read of it is made', () async {
+      await db.chatsDao.appendMessagesWithUpdateOp(
+        chatId: 'chat-1',
+        messages: const [
+          MessageRowData(
+            id: 'unsent-user',
+            chatId: 'chat-1',
+            parentId: null,
+            role: 'user',
+            content: 'An unsent question',
+            createdAt: 1001,
+            orderIndex: 0,
+            payload: {
+              'id': 'unsent-user',
+              'role': 'user',
+              'content': 'An unsent question',
+            },
+          ),
+        ],
+        currentMessageId: 'unsent-user',
+        updatedAt: 151,
+        enqueueCompletion: false,
+      );
+      final answers = ['Part of an answer', 'The whole answer'];
+      final hooked = _ChatHookClient(server)
+        ..whileChatLoads = (id) => storeTurn(answers.removeAt(0));
+      pull = PullSync(client: hooked, db: db, locks: locks);
+
+      await pull.pullChat('chat-1');
+
+      final stored = await db.messagesDao.getForChat('chat-1');
+      check(stored.map((row) => row.id))
+          .deepEquals(['unsent-user', 'chat-1-m3', 'chat-1-m4']);
+      check(stored.last.content).equals('The whole answer');
+      final chat = (await db.chatsDao.getChat('chat-1'))!;
+      check(chat.dirty).isTrue();
+      check(chat.bodySynced).isFalse();
+    });
+  });
+
+  // A turn stored here doesn't stamp the server's copy as a push does, so
+  // a newer chat can't be allowed to carry the watermark past this one.
+  test('a chat every read of which predates a turn stored here holds the '
+      'watermark until a later cycle stores it', () async {
+    server.seedChat(
+      id: 'chat-a',
+      blob: blobFor('chat-a'),
+      createdAt: 100,
+      updatedAt: 100,
+    );
+    await pull.pullChat('chat-a');
+    await db.syncMetaDao.setPullWatermark(100);
+    server.seedChat(
+      id: 'chat-a',
+      blob: blobFor('chat-a'),
+      createdAt: 100,
+      updatedAt: 101,
+    );
+    server.seedChat(
+      id: 'chat-b',
+      blob: blobFor('chat-b'),
+      createdAt: 100,
+      updatedAt: 120,
+    );
+    final hooked = _ChatHookClient(server)
+      ..whileChatLoads = (id) async {
+        if (id == 'chat-a') db.chatsDao.noteLocalTurn('chat-a');
+      };
+    pull = PullSync(client: hooked, db: db, locks: locks);
+
+    final first = await pull.run();
+
+    check(first.watermarkAdvanced).isFalse();
+    check(await db.syncMetaDao.getPullWatermark()).equals(100);
+
+    hooked.whileChatLoads = null;
+    await pull.run();
+
+    check((await db.chatsDao.getChat('chat-a'))!.updatedAt).equals(101);
+    check(await db.syncMetaDao.getPullWatermark()).equals(120);
   });
 
   group('a model picked while a pull reads the chat', () {
@@ -1841,6 +2240,351 @@ void main() {
 
       check(result.success).isTrue();
       check(await db.chatsDao.getChat('y')).isNotNull();
+    });
+  });
+
+  // Open WebUI 0.13.4 pins and archives a chat without moving its
+  // `updated_at`, as the fake's toggles do, so no list page above the
+  // watermark shows either change.
+  group('pins and archives made elsewhere', () {
+    setUp(() {
+      pull = PullSync(
+        client: client,
+        db: db,
+        locks: locks,
+        readerAccountId: () => FakeOpenWebUiServer.userId,
+      );
+    });
+
+    void keepAcrossPulls() {
+      pull = PullSync(
+        client: client,
+        db: db,
+        locks: locks,
+        readerAccountId: () => FakeOpenWebUiServer.userId,
+        fetchMemo: PullFetchMemo(),
+      );
+    }
+
+    // 'older' sits below the watermark after the first cycle.
+    Future<void> seedOlderAndNewer({
+      bool olderArchived = false,
+      bool olderPinned = false,
+    }) async {
+      server.seedChat(
+        id: 'older',
+        blob: blobFor('older'),
+        createdAt: 100,
+        updatedAt: 100,
+        archived: olderArchived,
+        pinned: olderPinned,
+      );
+      server.seedChat(
+        id: 'newer',
+        blob: blobFor('newer'),
+        createdAt: 500,
+        updatedAt: 500,
+      );
+      await pull.run();
+      client.chatFetchStarts.clear();
+    }
+
+    Future<ChatRow> older() async => (await db.chatsDao.getChat('older'))!;
+
+    // Held here as archived after the first cycle, then deleted on the
+    // server, which answers 401 for it: the deletion reconcile removes it,
+    // and until then it keeps the archived counts apart.
+    void seedDeletedWhileArchived() => server.seedChat(
+      id: 'gone',
+      blob: blobFor('gone'),
+      createdAt: 100,
+      updatedAt: 100,
+      archived: true,
+    );
+    void deleteOnServer(String id) {
+      server.deleteChat(id);
+      client.failChatIds.add(id);
+    }
+
+    test('a chat pinned and then unpinned elsewhere follows', () async {
+      await seedOlderAndNewer();
+
+      server.togglePin('older');
+      final pinned = await pull.run();
+      check(pinned.success).isTrue();
+      check((await older()).pinned).isTrue();
+
+      server.togglePin('older');
+      await pull.run();
+      check((await older()).pinned).isFalse();
+    });
+
+    test('a chat archived elsewhere is archived, its body kept', () async {
+      await seedOlderAndNewer();
+
+      server.toggleArchive('older');
+      final result = await pull.run();
+
+      check(result.success).isTrue();
+      check((await older()).archived).isTrue();
+      check((await older()).bodySynced).isTrue();
+    });
+
+    test('a chat unarchived elsewhere comes back', () async {
+      await seedOlderAndNewer(olderArchived: true);
+      check((await older()).archived).isTrue();
+
+      server.toggleArchive('older');
+      await pull.run();
+
+      check((await older()).archived).isFalse();
+    });
+
+    test('a pin made here while the pinned list loads is kept', () async {
+      await seedOlderAndNewer();
+      // The list is answered before this device's pin reaches the server.
+      client.whilePinnedListLoads = () async {
+        server.togglePin('older');
+        await db.chatsDao.updateEnvelope('older', pinned: const Value(true));
+      };
+
+      await pull.run();
+
+      check((await older()).pinned).isTrue();
+    });
+
+    test('a chat deleted while archived is read for once, not on every '
+        'pull', () async {
+      pull = PullSync(
+        client: client,
+        db: db,
+        locks: locks,
+        readerAccountId: () => FakeOpenWebUiServer.userId,
+        fetchMemo: PullFetchMemo(),
+      );
+      await seedOlderAndNewer(olderArchived: true);
+      server.deleteChat('older');
+      // Open WebUI answers 401 for a chat it no longer has.
+      client.failChatIds.add('older');
+
+      final first = await pull.run();
+      await pull.run();
+
+      check(first.success).isTrue();
+      check(client.chatFetchStarts.where((id) => id == 'older')).length
+          .equals(1);
+    });
+
+    // Qodo #1206: an older shared chat, stored with no owner, lost its pin.
+    test("another user's chat keeps its owner's pin, its owner stored or "
+        'not', () async {
+      await seedOlderAndNewer();
+      // Reached through folders their owner shared; 'theirs-older' was
+      // stored before rows kept their owner.
+      for (final id in ['theirs', 'theirs-older']) {
+        server.seedChat(
+          id: id,
+          blob: blobFor(id),
+          createdAt: 100,
+          updatedAt: 100,
+          pinned: true,
+          ownerId: 'another-user',
+        );
+        await db.chatsDao.upsertEnvelopeStub(
+          id: id,
+          title: 'Shared with this account',
+          createdAt: 100,
+          updatedAt: 100,
+          pinned: true,
+        );
+      }
+      await (db.update(db.chats)..where((t) => t.id.equals('theirs'))).write(
+        const ChatsCompanion(userId: Value('another-user')),
+      );
+
+      await pull.run();
+
+      check((await db.chatsDao.getChat('theirs'))!.pinned).isTrue();
+      check((await db.chatsDao.getChat('theirs-older'))!.pinned).isTrue();
+    });
+
+    // Qodo #1206: absent from the pinned list, a chat archived elsewhere
+    // was unpinned here when the archived counts happened to agree.
+    test('a pinned chat archived elsewhere keeps its pin while the counts '
+        'agree', () async {
+      seedDeletedWhileArchived();
+      await seedOlderAndNewer(olderPinned: true);
+      deleteOnServer('gone');
+      server.toggleArchive('older');
+
+      await pull.run();
+
+      check((await older()).pinned).isTrue();
+      check((await older()).archived).isTrue();
+    });
+
+    // Pullfrog 4651751894, Greptile 4651759665: a failed read left the
+    // counts apart, and the memo kept every later pull from trying again.
+    test('a chat unarchived elsewhere comes back after reads that failed '
+        'on the way', () async {
+      keepAcrossPulls();
+      await seedOlderAndNewer(olderArchived: true);
+      server.toggleArchive('older');
+
+      client.failArchivedListPages.add(1);
+      await pull.run();
+      client.failArchivedListPages.clear();
+      // A timeout: the server still has the chat.
+      client.failChatIds.add('older');
+      await pull.run();
+      client.failChatIds.clear();
+      await pull.run();
+
+      check((await older()).archived).isFalse();
+    });
+
+    // Pullfrog 4651751894: an archive held back for a change made here
+    // meanwhile is taken on the next pull.
+    test('an archive held back for a change made here meanwhile is taken on '
+        'the next pull', () async {
+      keepAcrossPulls();
+      await seedOlderAndNewer();
+      server.toggleArchive('older');
+      client.whilePinnedListLoads = () => db.chatsDao.updateEnvelope(
+        'older',
+        title: const Value('Renamed here'),
+      );
+
+      await pull.run();
+      await pull.run();
+
+      check((await older()).archived).isTrue();
+    });
+
+    // Qodo #1206, CodeRabbit 4651783253: counts that moved and came back to
+    // a pair a full read had left apart were never read for again.
+    test('archived counts that move and come back are read again', () async {
+      keepAcrossPulls();
+      seedDeletedWhileArchived();
+      await seedOlderAndNewer();
+      deleteOnServer('gone');
+      // Server 0, here 1: the read leaves them apart.
+      await pull.run();
+      // The deletion reconcile removes 'gone': 0 and 0.
+      await db.chatsDao.purgeReconciledChat('gone');
+      await pull.run();
+      // 'older' archived here: 1 and 1.
+      server.toggleArchive('older');
+      await db.chatsDao.updateEnvelope('older', archived: const Value(true));
+      await pull.run();
+      // Unarchived elsewhere: 0 and 1 again.
+      server.toggleArchive('older');
+
+      await pull.run();
+
+      check((await older()).archived).isFalse();
+    });
+
+    // Qodo #1206: a push that landed after the pinned list was read had its
+    // pin put back to the list's.
+    test('a pin pushed while the pinned list loads is kept', () async {
+      await seedOlderAndNewer();
+      await db.chatsDao.updateEnvelopeWithOutbox(
+        'older',
+        pinned: const Value(true),
+        enqueue: false,
+      );
+      client.whilePinnedListLoads = () async {
+        server.togglePin('older');
+        db.chatsDao.notePushLanded('older');
+      };
+
+      await pull.run();
+
+      check((await older()).pinned).isTrue();
+    });
+
+    // Macroscope 4651754450: pinned here before the list was read and
+    // unpinned after, the chat was pinned again from the list.
+    test('a pin and an unpin made here around the pinned list are '
+        'kept', () async {
+      await seedOlderAndNewer();
+      client
+        ..whileArchivedCountLoads = () async {
+          server.togglePin('older');
+          await db.chatsDao.updateEnvelope('older', pinned: const Value(true));
+        }
+        ..whilePinnedListLoads = () async {
+          server.togglePin('older');
+          await db.chatsDao.updateEnvelope('older', pinned: const Value(false));
+        };
+
+      await pull.run();
+
+      check((await older()).pinned).isFalse();
+    });
+
+    // Greptile 4651759666: archived here after the count was read, the chat
+    // was missing from the pinned list and lost its pin.
+    test('a pinned chat archived here while the lists load keeps its '
+        'pin', () async {
+      await seedOlderAndNewer(olderPinned: true);
+      client.whileArchivedCountLoads = () async {
+        server.toggleArchive('older');
+        await db.chatsDao.updateEnvelope('older', archived: const Value(true));
+      };
+
+      await pull.run();
+
+      check((await older()).pinned).isTrue();
+      check((await older()).archived).isTrue();
+    });
+
+    // Pullfrog 4651760471: the read of a chat unarchived elsewhere, answered
+    // before a pin made here, put the pin back.
+    test('a pin made here while an unarchived chat is read is kept', () async {
+      final hooked = _ChatHookClient(server);
+      client = hooked;
+      pull = PullSync(
+        client: client,
+        db: db,
+        locks: locks,
+        readerAccountId: () => FakeOpenWebUiServer.userId,
+      );
+      await seedOlderAndNewer(olderArchived: true);
+      server.toggleArchive('older');
+      hooked.whileChatLoads = (id) async {
+        if (id != 'older') return;
+        hooked.whileChatLoads = null;
+        server.togglePin('older');
+        await db.chatsDao.updateEnvelope('older', pinned: const Value(true));
+      };
+
+      await pull.run();
+      check((await older()).pinned).isTrue();
+      await pull.run();
+
+      check((await older()).pinned).isTrue();
+      check((await older()).archived).isFalse();
+    });
+
+    test('a server that lists neither pulls as before', () async {
+      await seedOlderAndNewer();
+      client
+        ..failPinnedList = true
+        ..failArchivedCount = true;
+      server.seedChat(
+        id: 'newest',
+        blob: blobFor('newest'),
+        createdAt: 600,
+        updatedAt: 600,
+      );
+
+      final result = await pull.run();
+
+      check(result.success).isTrue();
+      check(result.watermarkAdvanced).isTrue();
+      check(await db.chatsDao.getChat('newest')).isNotNull();
     });
   });
 }

@@ -1,0 +1,22 @@
+{
+  "id": "j1",
+  "name": "Morning brief",
+  "prompt": "Summarise the news",
+  "schedule": "0 8 * * *",
+  "scheduleText": "Every day at 8:00 AM",
+  "cadence": {
+    "kind": "daily",
+    "hour": 8,
+    "minute": 0
+  },
+  "enabled": false,
+  "lastStatus": "ok",
+  "lastError": "none",
+  "lastRunAtMs": 1767225600000,
+  "nextRunAtMs": 1767312000000,
+  "deliver": [],
+  "catchUp": "default",
+  "running": false,
+  "stopping": false,
+  "deliveryKnown": true
+}

@@ -124,7 +124,23 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
     /// Ask the server for several answers in this one request. The first entry
     /// is the primary answer ([responseMessageId] and [model]).
     List<ChatCompletionTarget>? messageIds,
+
+    /// Whether [model] is one of the user's devices offers through Tether.
+    /// A refusal is read with it ([ChatCompletionHttpException.relay]).
+    bool viaTether = false,
+
+    /// The new answer of a regeneration whose question has an answer already.
+    /// Open WebUI 0.13.4 would hold it under a reply still running, as a new
+    /// message, and answer the held copy under new ids, leaving that answer
+    /// behind. Sent only to a server known to read it.
+    String? regenerationMessageId,
+
+    /// The session every request of this send goes as, captured here when
+    /// null. Once another session has replaced it, nothing more is sent and
+    /// the send ends as a stopped one does ([ChatCompletionStopped]).
+    ApiAuthSnapshot? authSnapshot,
   }) async {
+    final sender = authSnapshot ?? captureAuthSnapshot();
     // Generate unique IDs
     final messageId =
         (responseMessageId != null && responseMessageId.isNotEmpty)
@@ -140,15 +156,46 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
         (sessionIdOverride != null && sessionIdOverride.isNotEmpty)
         ? sessionIdOverride
         : null;
+    // Open WebUI 0.9+ runs a saved chat's reply on the server even without a
+    // socket session, and answers that request only once the reply has
+    // finished. The wait for its headers is then the whole reply, so it gets
+    // the reply's time rather than the client's 30 seconds.
+    final savedChatId = conversationId?.trim() ?? '';
+    final heldUntilReplyEnds =
+        sessionId == null &&
+        savedChatId.isNotEmpty &&
+        !savedChatId.startsWith('local:');
+    // A Stop that reached this send while it was preparing ([beginSend]),
+    // or that reaches it before its request goes out: the request is never
+    // sent. A request for several answers ([messageIds]) is the send of each:
+    // a Stop on any of them stops it.
+    final answerIds = <String>{
+      messageId,
+      for (final target in messageIds ?? const <ChatCompletionTarget>[])
+        target.messageId,
+    };
+    var stopped = false;
+    for (final id in answerIds) {
+      if (_sendsUnderWay.remove(id) ?? false) stopped = true;
+    }
+    bool stoppedOrReplaced() => stopped || !authSnapshotIsCurrent(sender);
+    if (stoppedOrReplaced()) {
+      throw ChatCompletionStopped(
+        RequestOptions(path: '/api/chat/completions'),
+      );
+    }
     CancelToken? activeCancelToken;
     Future<void> abort() async {
+      stopped = true;
       final cancelToken = activeCancelToken;
       if (cancelToken != null && !cancelToken.isCancelled) {
         cancelToken.cancel('User cancelled');
       }
     }
 
-    _streamCancelActions[messageId] = abort;
+    for (final id in answerIds) {
+      _streamCancelActions[id] = abort;
+    }
     var legacyPendingTurnPersisted = false;
 
     Future<void> ensureLegacyPendingTurnPersisted() async {
@@ -167,13 +214,49 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
         model: model,
         userMessage: userMessage,
         modelItem: modelItem,
+        authSnapshot: sender,
       );
       legacyPendingTurnPersisted = true;
     }
 
+    // A legacy server's pending-turn save runs without the request's cancel
+    // token: one that fails after a Stop is that Stop, not a retry.
+    Future<void> ensureLegacyPendingTurnPersistedUnlessStopped() async {
+      try {
+        await ensureLegacyPendingTurnPersisted();
+      } on Object {
+        if (stoppedOrReplaced()) {
+          throw ChatCompletionStopped(
+            RequestOptions(path: '/api/chat/completions'),
+          );
+        }
+        rethrow;
+      }
+    }
+
+    // Whether the server reads [regenerationMessageId] or passes it on to
+    // the provider is its version's to say. The version is the server's, the
+    // same for every account, so the read is not bound to [sender].
+    if (regenerationMessageId != null) await _readServerVersionIfUnknown();
+    var includeClientModelFields = _sendsClientModelFields ?? true;
+    // Another send can learn the version while this one waits on its refusal.
+    final versionUnknown = _sendsClientModelFields == null;
+
     Future<Response<ResponseBody>> postWithMetadataFormat(
       _ChatRequestMetadataFormat metadataFormat,
     ) async {
+      for (
+        var stopping = _chatStopsUnderWay[savedChatId];
+        stopping != null;
+        stopping = _chatStopsUnderWay[savedChatId]
+      ) {
+        await Future.wait(stopping.toList());
+      }
+      if (stoppedOrReplaced()) {
+        throw ChatCompletionStopped(
+          RequestOptions(path: '/api/chat/completions'),
+        );
+      }
       final data = _buildChatCompletionPayload(
         messages: messages,
         model: model,
@@ -200,7 +283,11 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
         variables: variables,
         files: files,
         messageIds: messageIds,
+        regenerationMessageId: _holdsMessages == true
+            ? regenerationMessageId
+            : null,
         metadataFormat: metadataFormat,
+        includeClientModelFields: includeClientModelFields,
       );
 
       _traceApi(
@@ -215,21 +302,64 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
       return _dio.post<ResponseBody>(
         '/api/chat/completions',
         data: data,
-        options: Options(
-          responseType: ResponseType.stream,
-          // Accept all non-5xx so we can inspect error bodies ourselves.
-          validateStatus: (status) => status != null && status < 600,
+        options: _withAuthSnapshot(
+          Options(
+            responseType: ResponseType.stream,
+            // Accept all non-5xx so we can inspect error bodies ourselves.
+            validateStatus: (status) => status != null && status < 600,
+            receiveTimeout: heldUntilReplyEnds
+                ? ApiService.heldCompletionReceiveTimeout
+                : null,
+          ),
+          sender,
         ),
         cancelToken: cancelToken,
       );
     }
 
+    // A held answer that outlives even that wait still belongs to a turn the
+    // server took and may still be running: its saved reply is waited for,
+    // and the turn is never sent again (a queued retry would POST it once
+    // more).
+    Future<Response<ResponseBody>?> post(
+      _ChatRequestMetadataFormat metadataFormat,
+    ) async {
+      try {
+        return await postWithMetadataFormat(metadataFormat);
+      } on DioException catch (error) {
+        // Cancelled by a Stop, or refused unsent once [sender] was replaced.
+        if (error.type == DioExceptionType.cancel && stoppedOrReplaced()) {
+          throw ChatCompletionStopped(error.requestOptions);
+        }
+        if (!heldUntilReplyEnds ||
+            error.type != DioExceptionType.receiveTimeout) {
+          rethrow;
+        }
+        DebugLogger.warning(
+          'held-completion-timeout',
+          scope: 'api/chat',
+          data: {'chatId': savedChatId, 'messageId': messageId},
+        );
+        return null;
+      }
+    }
+
+    ChatCompletionSession readSavedReply() => _awaitHeldReply(
+      chatId: savedChatId,
+      messageId: messageId,
+      sessionId: sessionId,
+      abort: abort,
+      authSnapshot: sender,
+    );
+
     var metadataFormat =
         _chatRequestMetadataFormat ?? _ChatRequestMetadataFormat.modernV09;
     if (metadataFormat == _ChatRequestMetadataFormat.legacyPreV09) {
-      await ensureLegacyPendingTurnPersisted();
+      await ensureLegacyPendingTurnPersistedUnlessStopped();
     }
-    var resp = await postWithMetadataFormat(metadataFormat);
+    final firstResponse = await post(metadataFormat);
+    if (firstResponse == null) return readSavedReply();
+    var resp = firstResponse;
     var status = resp.statusCode ?? 0;
 
     // Surface structured errors before transport binding.
@@ -237,9 +367,16 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
       final error = await _decodeChatCompletionError(resp);
       final shouldRetryWithLegacy =
           metadataFormat == _ChatRequestMetadataFormat.modernV09 &&
-          _isUnsupportedModernChatMetadataError(error);
+          _refusesRequestField(error, const ['user_message']);
+      // A server whose version is not known yet may be one that passes these
+      // on to a provider that refuses them.
+      final shouldRetryWithoutClientModelFields =
+          !shouldRetryWithLegacy &&
+          includeClientModelFields &&
+          versionUnknown &&
+          _refusesRequestField(error, const ['model_item', 'tool_servers']);
 
-      if (!shouldRetryWithLegacy) {
+      if (!shouldRetryWithLegacy && !shouldRetryWithoutClientModelFields) {
         return _recoverSavedReplyOrThrow(
           status: status,
           error: error,
@@ -247,18 +384,30 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
           sessionId: sessionId,
           conversationId: conversationId,
           abort: abort,
+          viaTether: viaTether,
+          authSnapshot: sender,
         );
       }
 
-      _traceApi(
-        'sendMessageSession: retrying with legacy pre-v0.9 chat metadata '
-        'after error: $error',
-      );
-
-      metadataFormat = _ChatRequestMetadataFormat.legacyPreV09;
-      _chatRequestMetadataFormat = metadataFormat;
-      await ensureLegacyPendingTurnPersisted();
-      resp = await postWithMetadataFormat(metadataFormat);
+      if (shouldRetryWithLegacy) {
+        _traceApi(
+          'sendMessageSession: retrying with legacy pre-v0.9 chat metadata '
+          'after error: $error',
+        );
+        metadataFormat = _ChatRequestMetadataFormat.legacyPreV09;
+        _chatRequestMetadataFormat = metadataFormat;
+        await ensureLegacyPendingTurnPersistedUnlessStopped();
+      } else {
+        _traceApi(
+          'sendMessageSession: retrying without model_item and tool_servers '
+          'after error: $error',
+        );
+        includeClientModelFields = false;
+        _sendsClientModelFields = false;
+      }
+      final retryResponse = await post(metadataFormat);
+      if (retryResponse == null) return readSavedReply();
+      resp = retryResponse;
       status = resp.statusCode ?? 0;
 
       if (status < 200 || status >= 300) {
@@ -270,19 +419,32 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
           sessionId: sessionId,
           conversationId: conversationId,
           abort: abort,
+          viaTether: viaTether,
+          authSnapshot: sender,
         );
       }
     } else {
       _chatRequestMetadataFormat ??= metadataFormat;
     }
 
-    final session = await classifyChatCompletionResponse(
-      resp,
-      messageId: messageId,
-      sessionId: sessionId,
-      conversationId: conversationId,
-      abort: abort,
-    );
+    final ChatCompletionSession session;
+    try {
+      session = await classifyChatCompletionResponse(
+        resp,
+        messageId: messageId,
+        sessionId: sessionId,
+        conversationId: conversationId,
+        abort: abort,
+      );
+    } on ChatCompletionHeld {
+      // Nothing streams, so no Stop is kept for its answers.
+      for (final id in answerIds) {
+        if (identical(_streamCancelActions[id], abort)) {
+          _streamCancelActions.remove(id);
+        }
+      }
+      rethrow;
+    }
     _traceApi(
       'sendMessageSession: transport=${session.transport.name}, '
       'taskId=${session.taskId}, messageId=${session.messageId}',
@@ -622,19 +784,27 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
   }
 
   // === Tasks control (parity with Web client) ===
-  Future<void> stopTask(String taskId) async {
-    try {
-      final response = await _dio.post('/api/tasks/stop/$taskId');
-      // A task the server does not hold is answered with HTTP 200 and
-      // `status: false`: the route succeeded, the stop did not.
-      final data = response.data;
-      if (data is Map && data['status'] == false) {
-        throw TaskStopNotAcknowledged(
-          data['message']?.toString() ?? 'Task $taskId was not stopped.',
-        );
-      }
-    } catch (e) {
-      rethrow;
+  Future<void> stopTask(String taskId) => stopTaskRaw(taskId);
+
+  /// POST `/api/tasks/stop/{id}`, which only an administrator may ask. Sent
+  /// with [authSnapshot], it goes only while that session is the current
+  /// one. Throws [TaskStopNotAcknowledged] when the server holds no such
+  /// task, and the request's error when it refuses the stop.
+  Future<void> stopTaskRaw(
+    String taskId, {
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
+    final response = await _dio.post(
+      '/api/tasks/stop/$taskId',
+      options: _withAuthSnapshot(Options(), authSnapshot),
+    );
+    // A task the server does not hold is answered with HTTP 200 and
+    // `status: false`: the route succeeded, the stop did not.
+    final data = response.data;
+    if (data is Map && data['status'] == false) {
+      throw TaskStopNotAcknowledged(
+        data['message']?.toString() ?? 'Task $taskId was not stopped.',
+      );
     }
   }
 
@@ -708,16 +878,8 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
   }
 
   Future<List<String>> getTaskIdsByChat(String chatId) async {
-    try {
-      final resp = await _dio.get('/api/tasks/chat/$chatId');
-      final data = resp.data;
-      if (data is Map && data['task_ids'] is List) {
-        return (data['task_ids'] as List).map((e) => e.toString()).toList();
-      }
-      return const [];
-    } catch (e) {
-      rethrow;
-    }
+    final resp = await _dio.get('/api/tasks/chat/$chatId');
+    return _chatTaskIds(resp.data, chatId);
   }
 
   Future<List<String>> resolveChatMessageToolCall({
@@ -799,9 +961,53 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
     }
   }
 
-  // Cancel an active streaming message by its messageId (client-side abort)
+  /// The send of the answer [messageId] is under way: from now until its
+  /// completion request is registered ([sendMessageSession]), a Stop
+  /// ([cancelStreamingMessage]) stays with it, and the request is never
+  /// sent. A send that starts afresh forgets an earlier Stop (a regenerate
+  /// keeps its answer's id); one that goes on ([adopt]: the outbox driving a
+  /// send admitted earlier) keeps it.
+  void beginSend(String messageId, {bool adopt = false}) {
+    if (adopt) {
+      _sendsUnderWay.putIfAbsent(messageId, () => false);
+    } else {
+      _sendsUnderWay[messageId] = false;
+    }
+  }
+
+  /// Whether a Stop reached the send of [messageId] before its request.
+  bool sendStopped(String messageId) => _sendsUnderWay[messageId] ?? false;
+
+  /// Runs [stop], a stop of [chatId]'s tasks decided on a read of the tasks
+  /// running there. Until it ends, a completion request for that chat
+  /// ([sendMessageSession]) waits: the chat's stop ends every task the
+  /// account runs in the chat, a task this request would start among them.
+  Future<T> holdingChatCompletions<T>(
+    String chatId,
+    Future<T> Function() stop,
+  ) {
+    final ended = Completer<void>();
+    final underWay = _chatStopsUnderWay.putIfAbsent(chatId, () => {})
+      ..add(ended.future);
+    return Future<T>.sync(stop).whenComplete(() {
+      underWay.remove(ended.future);
+      if (underWay.isEmpty && identical(_chatStopsUnderWay[chatId], underWay)) {
+        _chatStopsUnderWay.remove(chatId);
+      }
+      ended.complete();
+    });
+  }
+
+  /// The send of [messageId] ended before its request: its Stop goes too.
+  void endSend(String messageId) => _sendsUnderWay.remove(messageId);
+
+  // Cancel an active streaming message by its messageId (client-side abort),
+  // or the send of one still preparing ([beginSend]).
   void cancelStreamingMessage(String messageId) {
     try {
+      if (_sendsUnderWay.containsKey(messageId)) {
+        _sendsUnderWay[messageId] = true;
+      }
       final action = _streamCancelActions.remove(messageId);
       if (action != null) {
         action();
@@ -814,6 +1020,18 @@ mixin _ChatCompletionsApi on _ApiServiceBase {
   void clearStreamCancelToken(String messageId) {
     _streamCancelActions.remove(messageId);
   }
+}
+
+/// A completion request a Stop reached ([ApiService.cancelStreamingMessage]):
+/// stopped before it was sent ([ApiService.beginSend]), or cancelled on its
+/// way. A cancellation, as Dio reports one.
+final class ChatCompletionStopped extends DioException {
+  ChatCompletionStopped(RequestOptions requestOptions)
+    : super(
+        requestOptions: requestOptions,
+        type: DioExceptionType.cancel,
+        error: 'Stopped',
+      );
 }
 
 /// Open WebUI refused files for a knowledge base: too many in one upload,

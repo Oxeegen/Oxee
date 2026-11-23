@@ -590,7 +590,11 @@ Future<void> forgetMixedHermesConversationProvenance(
 /// this app bound the chat there (its stored binding, not the reply's
 /// server-held metadata alone) on the connection in use; null otherwise.
 /// A reopened mixed chat has no runtime binding, and still has its plan.
-final hermesTrustedMixedSessionProvider = Provider.autoDispose<String?>((ref) {
+final hermesTrustedMixedSessionProvider = Provider.autoDispose<String?>(
+  _hermesTrustedMixedSession,
+);
+
+String? _hermesTrustedMixedSession(Ref ref) {
   final conversation = ref.watch(activeConversationProvider);
   if (conversation == null || isNativeHermesConversation(conversation)) {
     return null;
@@ -644,7 +648,7 @@ final hermesTrustedMixedSessionProvider = Provider.autoDispose<String?>((ref) {
   } catch (_) {
     return null;
   }
-});
+}
 
 /// The inactive saved connection that owns the active mixed chat's last
 /// trusted Hermes session, or null.
@@ -1058,7 +1062,8 @@ void _bindHermesSessionToConversation(
     return;
   }
 
-  final nextConversationId = 'local:hermes_$normalizedSessionId';
+  final nextConversationId =
+      '$kHermesSessionConversationIdPrefix$normalizedSessionId';
   final now = DateTime.now();
   final selectedModel = ref.read(selectedModelProvider) as Model?;
   final messages = List<ChatMessage>.unmodifiable(<ChatMessage>[
@@ -1072,7 +1077,7 @@ void _bindHermesSessionToConversation(
     nextConversation = markNativeHermesConversation(
       Conversation(
         id: nextConversationId,
-        title: _deriveHermesSessionTitle(input),
+        title: _deriveHermesSessionTitle(input, ownerMessages),
         createdAt: now,
         updatedAt: now,
         model: selectedModel?.id,
@@ -1158,6 +1163,10 @@ Future<void> _dispatchHermesRunFromChat(
   /// still ends at [truncateSeenThroughRowId], as it did when it was chosen.
   int? truncateBeforeRowId,
   int? truncateSeenThroughRowId,
+
+  /// The turn replays a prompt the session already stores (a regenerate or
+  /// an edit): one kept off a model switch stays the session's.
+  bool replaysStoredPrompt = false,
 }) async {
   final releaseGeneration = holdLocalChatGeneration(ref);
   try {
@@ -1213,6 +1222,7 @@ Future<void> _dispatchHermesRunFromChat(
         onRunStarting: onRunStarting,
         truncateBeforeRowId: truncateBeforeRowId,
         truncateSeenThroughRowId: truncateSeenThroughRowId,
+        replaysStoredPrompt: replaysStoredPrompt,
       );
     } finally {
       await ownedDatabaseLease?.release();
@@ -1245,6 +1255,7 @@ Future<void> _dispatchOwnedHermesRunFromChat(
   required void Function()? onRunStarting,
   required int? truncateBeforeRowId,
   required int? truncateSeenThroughRowId,
+  required bool replaysStoredPrompt,
 }) async {
   final ChatMessagesNotifier notifier =
       ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier;
@@ -1475,6 +1486,7 @@ Future<void> _dispatchOwnedHermesRunFromChat(
       onRunStarting: onRunStarting,
       truncateBeforeRowId: truncateBeforeRowId,
       truncateSeenThroughRowId: truncateSeenThroughRowId,
+      replaysStoredPrompt: replaysStoredPrompt,
     );
   } finally {
     var primaryProjectionPersisted = !owner.usesOpenWebUiBackend;
@@ -1601,6 +1613,29 @@ Future<void> _deleteLateHermesSessionWithinDeadline(
       );
 }
 
+/// Tells the Hermes push plugin that Conduit started a reply in [sessionId],
+/// so it pushes when the reply finishes. Only an API server connection needs
+/// this: the plugin pushes Hermes dashboard (`mobile`) sessions on its own.
+/// A Hermes turn inside an Open WebUI chat is never watched: it belongs to
+/// that chat, which Open WebUI notifies about, and is not announced here
+/// either. Fire and forget; it never affects the turn.
+void _watchHermesSessionForPush(
+  dynamic ref,
+  HermesBackendService service,
+  String sessionId, {
+  required bool usesOpenWebUiBackend,
+}) {
+  if (usesOpenWebUiBackend || service is! HermesApiService) return;
+  final connectionId = service.config.connectionId;
+  if (connectionId == null || connectionId.isEmpty) return;
+  try {
+    final watch = ref.read(pushHermesSessionWatchProvider);
+    if (watch is PushHermesSessionWatch) watch(connectionId, sessionId);
+  } catch (_) {
+    // Push is best effort.
+  }
+}
+
 void _deleteLateHermesSessionBestEffort(
   HermesBackendService service,
   String sessionId, {
@@ -1657,9 +1692,13 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
   required void Function()? onRunStarting,
   required int? truncateBeforeRowId,
   required int? truncateSeenThroughRowId,
+  required bool replaysStoredPrompt,
 }) async {
   final configController =
       ref.read(hermesConfigProvider.notifier) as HermesConfigController;
+  // The connection this turn runs on. A switch cancels the run before it
+  // changes, so a turn that ends unstopped ended here.
+  final runConnectionId = ref.read(hermesActiveConnectionIdProvider) as String?;
   HermesRunKey currentRunKey() => owner.runKey(assistantMessageId);
   bool ownsRun() => registry.owns(currentRunKey(), cancelToken: cancelToken);
   bool cancelled() =>
@@ -1710,6 +1749,28 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
     }
   }
 
+  void persistFinalizedChange(String failure) {
+    final persistenceRevision = projection.persistenceRevision;
+    trackLatePersistence(() async {
+      try {
+        final persisted = await _persistCompletedHermesProjection(
+          ref,
+          owner: owner,
+          projectionStore: projectionStore,
+          projection: projection,
+          persistenceContext: persistenceContext,
+          allowCapturedContextAfterRevocation: allowCapturedDatabasePersistence,
+        );
+        if (persisted &&
+            projection.persistenceRevision == persistenceRevision) {
+          projectionStore.markDurablyPersisted(projection);
+        }
+      } catch (_) {
+        DebugLogger.error(failure, scope: 'hermes/transport');
+      }
+    }());
+  }
+
   void reportTerminalCleanupError(ChatMessageError error) {
     ChatMessage updater(ChatMessage message) => message.copyWith(error: error);
     final updatedLiveProjection = projectionStore.update(projection, updater);
@@ -1734,34 +1795,76 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
       // cleanup necessarily finishes. Persist the late cleanup diagnostic as
       // a second idempotent snapshot so an OpenWebUI-backed Hermes segment
       // cannot lose it on process restart.
-      final persistenceRevision = projection.persistenceRevision;
-      trackLatePersistence(() async {
-        try {
-          final persisted = await _persistCompletedHermesProjection(
-            ref,
-            owner: owner,
-            projectionStore: projectionStore,
-            projection: projection,
-            persistenceContext: persistenceContext,
-            allowCapturedContextAfterRevocation:
-                allowCapturedDatabasePersistence,
-          );
-          if (persisted &&
-              projection.persistenceRevision == persistenceRevision) {
-            projectionStore.markDurablyPersisted(projection);
-          }
-        } catch (_) {
-          DebugLogger.error(
-            'terminal-cleanup-persistence-failed',
-            scope: 'hermes/transport',
-          );
-        }
-      }());
+      persistFinalizedChange('terminal-cleanup-persistence-failed');
+    }
+  }
+
+  // A prompt kept off a model switch counts as sent once Hermes took it,
+  // even after a stop sealed its reply: only the marker leaves it then.
+  void markPromptAccepted() {
+    ChatMessage accepted(ChatMessage message) =>
+        message.metadata?[kHermesModelSwitchKeptKey] == true
+        ? message.copyWith(
+            metadata: {...?message.metadata}
+              ..remove(kHermesModelSwitchKeptKey),
+          )
+        : message;
+    if (projectionStore.update(projection, accepted)) {
+      if (owner.isActive(ref)) {
+        notifier.updateMessageById(assistantMessageId, accepted);
+      }
+      return;
+    }
+    if (!projectionStore.removeFinalizedMetadata(
+      projection,
+      kHermesModelSwitchKeptKey,
+    )) {
+      return;
+    }
+    if (owner.isActive(ref)) {
+      notifier.updateMessageById(assistantMessageId, accepted);
+    }
+    persistFinalizedChange('accepted-prompt-persistence-failed');
+  }
+
+  // Notifies about a turn that ended without being stopped, as a push for it
+  // would: the reply, or its failure. Only for a native Hermes chat; a Hermes
+  // turn inside an Open WebUI chat belongs to that chat.
+  var announcedFinish = false;
+  // Its own id: a regeneration runs into the same assistant message.
+  final turnRunId = const Uuid().v4();
+  void announceFinished() {
+    if (announcedFinish || owner.usesOpenWebUiBackend) return;
+    announcedFinish = true;
+    // A stop finishes the stream too; there is no reply to tell about.
+    if (registry.wasStopped(cancelToken)) return;
+    final connectionId = runConnectionId;
+    if (connectionId == null || connectionId.isEmpty) return;
+    try {
+      final message = projection.message;
+      final sessionId =
+          message.metadata?['hermesSessionId'] ?? capturedSessionId;
+      if (sessionId is! String || sessionId.isEmpty) return;
+      registry.announceCompletion(
+        HermesTurnCompletion(
+          connectionId: connectionId,
+          sessionId: sessionId,
+          message: message,
+          runId: turnRunId,
+          title: owner._conversationSnapshot?.title,
+        ),
+      );
+    } catch (_) {
+      DebugLogger.error(
+        'turn-completion-announce-failed',
+        scope: 'hermes/transport',
+      );
     }
   }
 
   void finishOwned() {
     if (!projectionStore.finalize(projection)) return;
+    announceFinished();
     if (!owner.isActive(ref)) return;
     notifier.finishStreamingMessage(
       assistantMessageId,
@@ -1785,8 +1888,12 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
 
   void failPreflight(Object error) {
     if (!registry.complete(currentRunKey(), cancelToken: cancelToken)) return;
-    ChatMessage updater(ChatMessage message) => message.copyWith(
-      error: ChatMessageError(content: chatErrorContentForException(error)),
+    ChatMessage updater(ChatMessage message) => hermesFailedMessage(
+      message,
+      chatErrorContentForException(error),
+      surface: error is HermesGatewaySignInRequired
+          ? hermesApiErrorSurface(error)
+          : null,
     );
     projectionStore.update(projection, updater);
     if (owner.isActive(ref)) {
@@ -1903,7 +2010,7 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
     try {
       // Title the session from the first user message when this is turn one.
       final title = existingMessages.isEmpty
-          ? _deriveHermesSessionTitle(input)
+          ? _deriveHermesSessionTitle(input, ownerMessages)
           : null;
       final createdSessionId = service is HermesDesktopTurnService
           ? await service.createDesktopSession(
@@ -1988,6 +2095,12 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
       input: input,
       ownerMessages: ownerMessages,
       sendHandle: sendHandle,
+    );
+    _watchHermesSessionForPush(
+      ref,
+      service,
+      sessionId,
+      usesOpenWebUiBackend: owner.usesOpenWebUiBackend,
     );
   }
 
@@ -2168,6 +2281,12 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
         );
         if (responseCreatedSession) {
           ref.invalidate(hermesSessionsProvider);
+          _watchHermesSessionForPush(
+            ref,
+            service,
+            establishedSessionId,
+            usesOpenWebUiBackend: owner.usesOpenWebUiBackend,
+          );
         }
       },
       onSessionRefused: markSessionRefused,
@@ -2232,9 +2351,28 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
             .read(composerTextInsertionProvider.notifier)
             .insert(targetId: chatComposerTextInsertionTargetId, text: text);
       },
+      onTurnAccepted: markPromptAccepted,
       // Kept on its model, the chat gets its message back to send there,
       // and its picker back to that model.
       onModelSwitchDeclined: (declined) {
+        final kept = hermesModelKeptOverSwitch(
+          ref.read(modelsProvider).value ?? const <Model>[],
+          previousModel: declined.previousModel,
+          previousProvider: declined.previousProvider,
+        );
+        // The note speaks for the model the chat stayed on. A prompt sent
+        // for the first time never reached the session, so history actions
+        // skip it; a replayed one is still the session's.
+        updateProjectedMessage(
+          (message) => message.copyWith(
+            model: kept?.id ?? message.model,
+            metadata: {
+              ...?message.metadata,
+              'modelName': ?kept?.name,
+              if (!replaysStoredPrompt) kHermesModelSwitchKeptKey: true,
+            },
+          ),
+        );
         if (!owner.isActive(ref)) return;
         // Given back only to an empty composer: a draft begun meanwhile is
         // left as it is, and the words stay in the chat to copy.
@@ -2245,11 +2383,6 @@ Future<void> _dispatchRegisteredHermesRunFromChat(
               text: input,
               onlyIntoEmpty: true,
             );
-        final kept = hermesModelKeptOverSwitch(
-          ref.read(modelsProvider).value ?? const <Model>[],
-          previousModel: declined.previousModel,
-          previousProvider: declined.previousProvider,
-        );
         if (kept != null) ref.read(selectedModelProvider.notifier).set(kept);
       },
       updateMessage: updateProjectedMessage,

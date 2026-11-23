@@ -51,6 +51,7 @@ import 'package:conduit_core/models/conversation.dart';
 import 'package:conduit_core/models/chat_message.dart';
 import 'package:conduit_core/models/account_metadata.dart';
 import 'package:conduit_core/models/backend_config.dart';
+import 'package:conduit_core/models/browser_sign_in_config.dart';
 import 'package:conduit_core/models/folder.dart';
 import 'package:conduit_core/models/file_info.dart';
 import 'package:conduit_core/models/server_about_info.dart';
@@ -78,17 +79,20 @@ import 'package:conduit_core/persistence/preferences_store.dart';
 import 'package:conduit_core/persistence/persistence_keys.dart';
 
 import 'package:conduit_core/utils/debug_logger.dart';
+import 'package:conduit_core/utils/list_loads.dart';
 
 import 'package:conduit_core/utils/server_version_compat.dart';
 
 import 'package:conduit_core/services/worker_manager.dart';
 
 import 'package:conduit_core/providers/chat_picks_session.dart';
+import 'package:conduit_core/features/tether/tether_devices.dart';
 import 'package:conduit_core/features/tools/providers/tools_providers.dart';
 import 'package:conduit_core/features/terminal/models/terminal_agent_model.dart';
 import 'package:conduit_core/features/hermes/models/hermes_model.dart';
 import 'package:conduit_core/features/hermes/models/hermes_config.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
+import 'package:conduit_core/features/push/providers/push_providers.dart';
 import 'package:conduit_core/features/hermes/services/hermes_session_provenance.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/direct_connections/providers/direct_mcp_providers.dart';
@@ -103,6 +107,7 @@ import 'package:conduit_core/providers/storage_providers.dart';
 import 'package:drift/drift.dart' show Value;
 
 import 'package:conduit_core/database/app_database.dart';
+import 'package:conduit_core/database/daos/chats_dao.dart' show ChatListEntry;
 
 import 'package:conduit_core/database/database_provider.dart';
 
@@ -125,6 +130,7 @@ export 'package:conduit_core/providers/storage_providers.dart';
 part 'app_providers_active_chats_sync.dart';
 part 'app_providers_active_conversation.dart';
 part 'app_providers_api_service.dart';
+part 'app_providers_chat_session.dart';
 part 'app_providers_conversation_identity.dart';
 part 'app_providers_conversations.dart';
 part 'app_providers_current_user.dart';
@@ -135,6 +141,7 @@ part 'app_providers_models.dart';
 part 'app_providers_openwebui_ownership.dart';
 part 'app_providers_search.dart';
 part 'app_providers_server_config.dart';
+part 'app_providers_shown_chats.dart';
 part 'app_providers_sign_out.dart';
 part 'app_providers_socket.dart';
 part 'app_providers_user_settings.dart';

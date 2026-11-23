@@ -11,15 +11,17 @@ anything the layer owns, and before taking an upstream release.
 | --- | --- |
 | Product name everywhere users see it (14 languages, iOS and Android resources, Siri/App Intents, permission prompts) | `tools/rebrand.py`, generated, never edited by hand |
 | Identity: `com.oxeegen.oxee`, `group.com.oxeegen.oxee`, `oxee://`, Oxeegen repo links | `brand.json` + `tools/rebrand.py` |
-| Backends: Oxeegen Intelligence, US (`ai.oxeegen.com`) or FR (`ia.oxeegen.fr`), first; Oxee Hermes (upstream's Hermes Agent, Oxeegen's fork) can be added in Settings → Accounts → Add Account | `lib/brand/`, hooked into the router, the account sheet and both settings menus |
+| Backends: Oxeegen Intelligence, US (`ai.oxeegen.com`) or FR (`ia.oxeegen.fr`), first; Oxee Hermes (upstream's Hermes Agent, Oxeegen's fork) can be added in Settings → Accounts → Add Account | `lib/brand/`, hooked into the router, the account sheet and Settings |
 | "Hermes" / "Hermes Agent" reads "Oxee Hermes" (translations, the default connection and model name) | `tools/rebrand.py` |
 | No Direct connections, Apple on-device/PCC or LibreChat entry points | the same hooks, and LibreChat switched off app-wide (`oxeeProviderOverrides`); upstream's code for them stays, unused |
 | No donations, tip prompts or upstream release notes | hooks listed below |
+| No push notifications yet: they need a relay to Apple and Google, which Oxeegen does not run. Settings leaves push out (`oxeePushSections`, back by itself in a build given `CONDUIT_PUSH_RELAY_URL`); the iOS app claims no `aps-environment` and the notification extension no App Group | `lib/brand/oxee_brand.dart`, `tools/rebrand.py` (`IDENTITY`) |
 | Icons (app, Android adaptive, splash, widget and notification glyph), and the Oxee mark where upstream shows the Open WebUI logo or its own icon in the app (`assets/icons/open_webui*.png`, `app_icon_square.png`) | `tools/make_icons.py` |
 | CarPlay voice and Private Cloud Compute entitlements removed | `tools/rebrand.py`; Apple grants them per team on request |
 | README, French README (`docs/README.fr.md`), privacy policy, NOTICE, build docs, issue templates | written for Oxee; "keep ours" on merges |
 | `docs/open-webui-functions.md` (guide for Open WebUI function authors) | `tools/rebrand.py` renames the product in its prose; the protocol value `"client": "conduit"` stays |
-| No upstream donation links or Pullfrog agent workflow (`.github/FUNDING.yml`, `.github/workflows/pullfrog.yml`) | deleted; `tools/check_brand.py` fails if they come back |
+| No upstream donation links, Pullfrog agent workflow, or desktop-app and Hermes-plugin workflows (`.github/FUNDING.yml`, `.github/workflows/pullfrog.yml`, `desktop.yml`, `release-desktop.yml`, `publish-hermes-plugin.yml`; Oxee is a phone app, and `release-desktop.yml` would run on every GitHub release) | deleted; `tools/check_brand.py` fails if they come back |
+| `packages/conduit_protocol` (the wire protocol of upstream's desktop app and daemon; its tests compare against goldens) | never rewritten by `tools/rebrand.py` |
 
 What is deliberately **not** renamed: Dart package names (`conduit`,
 `conduit_core`, ...), Kotlin package / Android namespace
@@ -42,6 +44,7 @@ device see) is `com.oxeegen.oxee`.
 | `tools/android_keystore.py` | Run once: creates the permanent Android signing key, stores it in GitHub secrets and writes a backup to Documents\Oxee signing keys. |
 | `tools/ios_certificate.py` | Run once: creates the Apple Distribution certificate through the API and stores it in GitHub secrets without printing it. |
 | `tools/ios_signing.py` | CI: App Store profiles through the API, throwaway keychain, manual Release signing, ExportOptions. |
+| `tools/onnxruntime_pods.py`, `vendor/` | CI: ONNX Runtime 1.22.0 for iOS (voice detection) without its dead download host. See "ONNX Runtime on iOS". |
 | `assets/` | `oxee-icon-1024.png` (store icon, README), `oxee-mark-1024.png`, `oxee-mark.svg`. |
 | `../lib/brand/oxee_brand.dart` | Regions, the strings the layer adds (English and French), the region switcher, the iOS native-sheet row, `oxeeProviderOverrides` (LibreChat off). |
 | `../lib/brand/oxee_region_page.dart` | First-run / change-server screen. Health check and Open WebUI check against the fixed region URL, then upstream's sign-in page. Also `OxeeRegionAddChoices`, the account sheet's Oxeegen tab. |
@@ -55,14 +58,14 @@ one (and the absence of what it removed).
 | File | Hook |
 | --- | --- |
 | `lib/core/router/app_router.dart` | `backendChooser`, `serverConnection`, `addServer` and `login` routes build `OxeeRegionPage` (`addServer` in adding mode); `extra` is the region to connect to at once. |
-| `lib/features/profile/views/profile_page.dart` | Region row in the account card; no donation section. |
 | `lib/features/profile/widgets/account_sheet.dart` | Add Account sheet: tabs Oxeegen (`OxeeRegionAddChoices`: a region, then upstream's sign-in, adding the account) and Oxee Hermes (upstream's Hermes form); no Direct tab (`oxeeOffersOtherBackends`). Every "add account" path opens it. |
-| `lib/features/profile/views/manage_accounts_page.dart` | No Direct card (`oxeeOffersOtherBackends`); the Hermes card shows, LibreChat's stays out while LibreChat is off. |
-| `lib/features/navigation/widgets/sidebar_user_pill.dart` | iOS 26 native Settings root: `oxeeNativeRootSections` adds the Region row and drops the donation section; no support items. |
-| `lib/core/services/native_sheet_hydration_service.dart` | The root it rebuilds goes through `oxeeNativeRootSections` too; native Accounts page through `oxeeNativeAccountsDetail` (no Direct); About rows through `oxeeNativeAboutItems` (no release notes). |
-| `lib/main.dart` | `oxeeProviderOverrides` in the app's provider container (LibreChat off); routes the native-sheet region row to `showOxeeRegionSwitcher`; no `ReleaseNotesCoordinator` (upstream's "What's new" popup). |
-| `lib/core/utils/native_sheet_utils.dart` | Unedited apart from the repo link (`rebrand.py`): Oxee adjusts what its builders return, at the call sites, so upstream's tests of them keep passing. |
-| `lib/features/profile/views/about_page.dart` | No release-notes row (repo link via `rebrand.py`). |
+| `lib/features/navigation/widgets/sidebar_user_pill.dart` | iOS 26 native Settings root: `oxeeNativeRootSections` adds the Region row and drops the donations; no support items. |
+| `lib/features/settings/views/settings_root_page.dart` | The Flutter Settings root (Android, and iOS when the native sheet cannot open), drawn from the same definitions since upstream 4.3.2: `oxeeNativeRootSections` too. |
+| `lib/core/services/native_sheet_hydration_service.dart` | The root it rebuilds goes through `oxeeNativeRootSections` too; the Accounts page through `oxeeNativeAccountsDetail` (no Direct); About rows through `oxeeNativeAboutItems` (no release notes); Notifications' push sections through `oxeePushSections`. These pages serve both Settings. |
+| `lib/features/settings/settings_controller.dart` | Routes the Region row (either Settings) to `showOxeeRegionSwitcher`. |
+| `lib/main.dart` | `oxeeProviderOverrides` in the app's provider container: LibreChat off, and `oxeeSettingsProvider` on, which turns the `oxeeNative*` / `oxeePushSections` adjustments on (off, upstream's tests of the same pages see upstream's rows); no `ReleaseNotesCoordinator` (upstream's "What's new" popup). |
+| `lib/core/utils/native_sheet_utils.dart` | Unedited: Oxee adjusts what its builders return, at the call sites, so upstream's tests of them keep passing. |
+| `packages/conduit_core/lib/features/support/support_links.dart` | About's repository link (`rebrand.py`). |
 | `.github/workflows/release.yml` | Guarded to `cogwheel0/conduit`: upstream's release never runs here. |
 | `.github/workflows/ci.yml` | Runs `check_brand.py` before the gates and `flutter_test.py` in place of `tool/run_test_shards.dart`. |
 
@@ -155,14 +158,38 @@ Without secrets both jobs still build (Android with a throwaway key, iOS
 unsigned): that proves the code compiles on both platforms but produces
 nothing installable on iPhone.
 
+Apple Silicon runners are sometimes all taken ("The job was not acquired by
+Runner"). Run the workflow with `ios_runner` set to `macos-26-intel`: same
+macOS and Xcode on Intel, slower but usually free.
+
+### ONNX Runtime on iOS
+
+The vendored vad plugin (voice detection) calls ONNX Runtime through FFI and
+pulls it in with the CocoaPods pods `onnxruntime-objc` and `onnxruntime-c`
+1.22.0. CocoaPods downloads them from download.onnxruntime.ai, dead since
+November 2026 (wrong certificate, then 404), and `github.com/microsoft/onnxruntime`
+is gone too. Before `pod install`, `tools/onnxruntime_pods.py` builds both pods
+from Microsoft's own copies and points the CI checkout's Podfile at them:
+
+- `onnxruntime-c`: the iOS xcframework and headers from the NuGet package
+  Microsoft.ML.OnnxRuntime 1.22.0, checked against nuget.org's SHA-512.
+- `onnxruntime-objc`: `vendor/onnxruntime-objc`, the sources of the same
+  release commit, committed (its README says where they came from).
+
+The podspecs repeat CocoaPods trunk's settings. When vad moves to another
+ONNX Runtime version, update the NuGet version and hash, and the vendored
+sources, together.
+
 ### iOS signing
 
 Distribution (App Store) signing only, done in CI by
 `tools/ios_signing.py`: it imports the Oxee distribution certificate into a
 throwaway keychain, finds or creates an App Store profile for each of the
-three app ids through the App Store Connect API (named `Oxee App Store <id>`),
-checks each carries the App Group, and switches the three Release
-configurations to manual signing in the CI checkout. The committed project
+four app ids through the App Store Connect API (named `Oxee App Store <id>`),
+checks the app, share extension and widget profiles carry the App Group, and
+switches the four Release configurations to manual signing in the CI
+checkout. The notification extension (upstream 4.3.2) needs no capability in
+Oxee, so the script registers its app id itself when the account lacks it. The committed project
 keeps automatic signing, for anyone building from Xcode on a Mac.
 
 Why not Xcode's automatic signing (`-allowProvisioningUpdates`)? It archives

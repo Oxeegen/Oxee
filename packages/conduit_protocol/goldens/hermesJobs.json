@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "id": "j2",
+      "prompt": "",
+      "schedule": "",
+      "enabled": true,
+      "deliver": [],
+      "catchUp": "default",
+      "running": false,
+      "stopping": false,
+      "deliveryKnown": true
+    }
+  ],
+  "writable": true,
+  "scheduling": false,
+  "notices": [],
+  "savedId": "j2",
+  "listFailed": false
+}

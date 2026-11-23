@@ -1,0 +1,9 @@
+{
+  "phase": "unauthenticated",
+  "isAuthenticated": false,
+  "isLoading": false,
+  "hasToken": false,
+  "errorArgs": {},
+  "isReviewerMode": false,
+  "canRenewProxy": false
+}

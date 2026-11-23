@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:conduit/core/providers/app_startup_providers.dart';
 import 'package:conduit/core/router/app_router.dart';
 import 'package:conduit/core/services/native_sheet_bridge.dart';
+import 'package:conduit/features/notifications/services/local_notification_service.dart';
 import 'package:conduit/main.dart';
 import 'package:conduit/platform/conduit_platform_apis.g.dart';
 import 'package:conduit/platform/flutter_key_value_store.dart';
 import 'package:conduit/platform/quick_actions_service.dart';
 import 'package:conduit/shared/services/navigation_service.dart';
 import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
+import 'package:conduit_core/features/calendar/providers/calendar_providers.dart';
 import 'package:conduit_core/features/notifications/models/notification_target.dart';
 import 'package:conduit_core/features/notifications/providers/notification_target_providers.dart';
 import 'package:conduit_core/features/chat/providers/chat_providers.dart'
@@ -102,6 +104,29 @@ class _Targets extends NotificationTargets {
   }
 }
 
+/// Android without "Alarms & reminders", which the service only knows once it
+/// has asked.
+final class _NoExactAlarms extends LocalNotificationService {
+  bool? _allowed;
+
+  @override
+  bool? get exactRemindersAllowed => _allowed;
+
+  @override
+  Future<bool> canScheduleExactReminders() async => _allowed = false;
+}
+
+/// As [_NoExactAlarms], with a reminder sync learning the answer just after
+/// the first page read it.
+final class _SyncLearnsAfterFirstPage extends _NoExactAlarms {
+  @override
+  bool? get exactRemindersAllowed {
+    final shown = _allowed;
+    _allowed = false;
+    return shown;
+  }
+}
+
 final _applyDetailPatchChannel = BasicMessageChannel<Object?>(
   'dev.flutter.pigeon.conduit.NativeSheetHostApi.applyDetailPatch',
   NativeSheetHostApi.pigeonChannelCodec,
@@ -151,7 +176,10 @@ Future<_NativeSettings> _pumpApp(
     'features': {'webhooks': true},
   },
   int? targetCount = 0,
+  bool signedIn = true,
   bool notificationsOn = true,
+  bool calendar = false,
+  LocalNotificationService? notifications,
 }) async {
   if (advanced) {
     await PreferencesStore.put(PreferenceKeys.advancedFeaturesEnabled, true);
@@ -197,6 +225,8 @@ Future<_NativeSettings> _pumpApp(
       optimizedStorageServiceProvider.overrideWithValue(storage),
       modelsProvider.overrideWith(_NoModels.new),
       apiServiceProvider.overrideWithValue(api),
+      // Signed in to it, as the user above, unless the test says otherwise.
+      openWebUiAccountAvailableProvider.overrideWithValue(signedIn),
       currentUserProvider2.overrideWithValue(
         const User(
           id: 'user-1',
@@ -214,6 +244,9 @@ Future<_NativeSettings> _pumpApp(
         ),
       ),
       userPermissionsProvider.overrideWith((ref) async => permissions),
+      if (calendar) calendarAccessProvider.overrideWithValue(true),
+      if (notifications != null)
+        localNotificationServiceProvider.overrideWithValue(notifications),
       notificationTargetsProvider.overrideWith(() => _Targets(targetCount)),
       appStartupFlowProvider.overrideWith(_IdleStartup.new),
       quickActionsCoordinatorProvider.overrideWith(_IdleQuickActions.new),
@@ -247,12 +280,15 @@ Future<_NativeSettings> _pumpApp(
 const _detail = NativeSheetRoutes.notificationSettings;
 const _localToggles = [
   'notifications-enabled',
+  'push-enabled',
+  'push-privacy',
   'notification-in-app-banner',
   'notification-system',
   'notification-sound',
   'notification-sound-always',
   'notification-chat',
   'notification-channel',
+  'notification-scheduled',
 ];
 
 void main() {
@@ -285,8 +321,12 @@ void main() {
         .items(_detail)
         .singleWhere((item) => item.id == 'notification-targets');
     expect(row.title, 'Webhook Destinations');
-    expect(row.dismissOnSelect, isTrue);
-    expect(row.actionId, 'notification-targets');
+    // The row opens the destinations' page inside the sheet.
+    expect(row.dismissOnSelect, isFalse);
+    expect(
+      native.patches.last.detailSheets!.map((page) => page.id),
+      contains('notification-targets'),
+    );
     expect(row.sfSymbol, 'bell.and.waves.left.and.right');
     expect(row.subtitle, 'None');
     // What destinations are lives under the row, not in its subtitle.
@@ -297,6 +337,18 @@ void main() {
       'Your Open WebUI server sends events to these URLs, even while this '
       'app is closed.',
     );
+  });
+
+  testWidgets('without a signed-in account there are no channels to notify', (
+    tester,
+  ) async {
+    final native = await _pumpApp(tester, signedIn: false);
+
+    await native.detailAppeared(_detail);
+
+    final ids = native.items(_detail).map((item) => item.id).toList();
+    expect(ids, isNot(contains('notification-channel')));
+    expect(ids, contains('notification-scheduled'));
   });
 
   testWidgets('the local toggles show before the destinations group is added', (
@@ -314,12 +366,12 @@ void main() {
     expect(ids(patches.first), _localToggles);
     expect(ids(patches.last), [..._localToggles, 'notification-targets']);
     expect(native.items(_detail).last.subtitle, '2 destinations');
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
 
-  // With notifications off the options under the switch could not do
-  // anything, so only the switch shows, as in Settings.
-  testWidgets('with notifications off only the switch shows, explained by '
-      'its footer', (tester) async {
+  // Android switches each kind of notification off in its own settings,
+  // which the page opens; iOS keeps one switch per app there.
+  testWidgets('on Android the master switch is followed by the system '
+      'notification settings', (tester) async {
     final native = await _pumpApp(
       tester,
       advanced: false,
@@ -329,13 +381,56 @@ void main() {
     await native.detailAppeared(_detail);
 
     final patch = native.patches.lastWhere((p) => p.detailId == _detail);
-    expect(patch.sections, hasLength(1));
-    final master = patch.sections.single;
+    expect(patch.sections.first.items.map((item) => item.id), [
+      'notifications-enabled',
+      'notification-system-settings',
+    ]);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+
+  // With notifications off the options under the switch could not do
+  // anything, so only the switch shows, as in Settings, and push, which is
+  // turned off on its own.
+  testWidgets('with notifications off only the switch and push show, the '
+      'switch explained by its footer', (tester) async {
+    final native = await _pumpApp(
+      tester,
+      advanced: false,
+      notificationsOn: false,
+    );
+
+    await native.detailAppeared(_detail);
+
+    final patch = native.patches.lastWhere((p) => p.detailId == _detail);
+    expect(patch.sections, hasLength(2));
+    expect(patch.sections.last.items.first.id, 'push-enabled');
+    final master = patch.sections.first;
     expect(master.items.map((item) => item.id), ['notifications-enabled']);
     expect(master.items.single.value, isFalse);
     expect(master.items.single.subtitle, isNull);
     expect(master.footer, isNotNull);
-  });
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
+  // A reminder sync asks only once it has read the agenda, which may not have
+  // happened by the time the page opens.
+  testWidgets('on Android the page asks whether calendar reminders can fire '
+      'on the minute, and offers Exact Timing when they cannot', (
+    tester,
+  ) async {
+    final native = await _pumpApp(
+      tester,
+      advanced: false,
+      calendar: true,
+      // A sync may also learn the answer while the first page is drawn.
+      notifications: _SyncLearnsAfterFirstPage(),
+    );
+
+    await native.detailAppeared(_detail);
+
+    expect(
+      native.items(_detail).map((item) => item.id),
+      contains('notification-calendar-exact'),
+    );
+  }, variant: TargetPlatformVariant.only(TargetPlatform.android));
 
   testWidgets('an unreadable list leaves the row without a count', (
     tester,
@@ -347,19 +442,6 @@ void main() {
     final row = native.items(_detail).last;
     expect(row.id, 'notification-targets');
     expect(row.subtitle, isNull);
-  });
-
-  testWidgets('tapping it closes the sheet and opens the Notifications page '
-      'with the native-sheet origin', (tester) async {
-    final native = await _pumpApp(tester);
-    await native.detailAppeared(_detail);
-
-    await native.control('notification-targets', true);
-
-    expect(find.text('notifications page'), findsOneWidget);
-    expect(native.pushed, hasLength(1));
-    expect(native.pushed.single.path, Routes.notificationSettings);
-    expect(native.pushed.single.extra, isA<NativeSheetNavigationOrigin>());
   });
 
   group('without a row', () {
@@ -410,13 +492,13 @@ void main() {
         expect(ids, containsAll(_localToggles));
         expect(ids, isNot(contains('notification-targets')));
 
-        await native.control('notification-targets', true);
+        // A page opened from a row gone stale says so and reads nothing.
+        await native.detailAppeared('notification-targets');
 
-        expect(find.text('notifications page'), findsNothing);
         expect(native.pushed, isEmpty);
         expect(
-          find.text("That option isn't available right now."),
-          findsOneWidget,
+          native.items('notification-targets').map((item) => item.title),
+          ["That option isn't available right now."],
         );
       });
     }

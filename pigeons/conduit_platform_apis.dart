@@ -28,6 +28,8 @@ enum PlatformPccQuotaStatus {
 
 enum PlatformPccEventKind { content, usage, fallback, error, done }
 
+enum PlatformPushTransport { apns, fcm, unifiedPush }
+
 enum PlatformNativeSheetItemKind {
   navigation,
   textField,
@@ -48,6 +50,21 @@ enum PlatformNativeSheetItemKind {
   /// Each option's swatches paint its preview; one with dark swatches too
   /// previews both halves.
   appearanceTiles,
+
+  /// A day as a compact date control: value is local ISO 8601 without a
+  /// zone; min and max are the first and last days, in epoch milliseconds.
+  date,
+
+  /// A time of day as a compact time control; value as for [date].
+  time,
+
+  /// One read-only line of a comparison: title is the line; value is
+  /// `added`, `removed` or `context`; subtitle is what VoiceOver reads.
+  diffLine,
+
+  /// Source code, monospaced, filling the page it is the only row of; value
+  /// is the code, sent back as a text row's is; disabled reads only.
+  code,
 }
 
 class PlatformBackgroundStreamLease {
@@ -406,6 +423,12 @@ class PlatformNativeSheetItem {
     this.accent,
     this.usesProfileAvatar,
     this.filterAllLabel,
+    this.confirmMessage,
+    this.disabled,
+    this.keyboard,
+    this.passwordRole,
+    this.rowActions,
+    this.symbolColor,
   });
 
   String id;
@@ -452,6 +475,52 @@ class PlatformNativeSheetItem {
   bool? usesProfileAvatar;
 
   String? filterAllLabel;
+
+  /// Asked before the row acts; the row's title confirms.
+  String? confirmMessage;
+
+  /// Shown dimmed, and does nothing when tapped.
+  bool? disabled;
+
+  /// The keyboard a text row brings up: `url`, `email`, `number`, or the
+  /// default when null.
+  String? keyboard;
+
+  /// For a secure row holding the account's own password: `current`, or
+  /// `newPassword` for one being set. Null marks any other secret (an API
+  /// key, a token), which the system must not offer to save as a password.
+  String? passwordRole;
+
+  /// What else the row can do, besides what a tap does: a long press lists
+  /// them, and a swipe offers them where the page is not reordering.
+  List<PlatformNativeSheetRowAction>? rowActions;
+
+  /// The colour the row's symbol is drawn in, as ARGB, in place of the
+  /// page's tint: a calendar's own colour, say.
+  int? symbolColor;
+}
+
+/// One more thing a row can do, sent as its own control id.
+class PlatformNativeSheetRowAction {
+  PlatformNativeSheetRowAction({
+    required this.id,
+    required this.label,
+    this.sfSymbol,
+    required this.destructive,
+    this.confirmMessage,
+    this.detailId,
+  });
+
+  String id;
+  String label;
+  String? sfSymbol;
+  bool destructive;
+
+  /// Asked before it acts; the label confirms.
+  String? confirmMessage;
+
+  /// The page it opens instead of sending its id.
+  String? detailId;
 }
 
 class PlatformNativeSheetLink {
@@ -570,6 +639,16 @@ class PlatformNativeSheetDetail {
     this.maxHeightFraction,
     this.trailingActionId,
     this.trailingActionSfSymbol,
+    this.trailingActionDetailId,
+    this.discardTitle,
+    this.discardMessage,
+    this.discardConfirmLabel,
+    this.discardCancelLabel,
+    this.busy,
+    this.announcement,
+    this.edited,
+    this.search,
+    this.calendar,
   });
 
   String id;
@@ -584,6 +663,91 @@ class PlatformNativeSheetDetail {
   /// A bar button that closes the sheet and then sends this action.
   String? trailingActionId;
   String? trailingActionSfSymbol;
+
+  /// With it, the bar button pushes this page, as a row leading to it
+  /// would, rather than sending [trailingActionId].
+  String? trailingActionDetailId;
+
+  /// What the page asks before its unsaved changes are dropped, by Back,
+  /// a swipe back, or the sheet swiped away. Null drops them without asking.
+  String? discardTitle;
+  String? discardMessage;
+  String? discardConfirmLabel;
+  String? discardCancelLabel;
+
+  /// Working on what Done sent: Done waits, and the rows take no taps.
+  bool? busy;
+
+  /// Read out by assistive technology as the page is described with it.
+  String? announcement;
+
+  /// Holds changes not yet saved, made on this page or on the pages it
+  /// leads to: leaving asks the discard question.
+  bool? edited;
+
+  /// A search field above the rows, filtering them as the person types.
+  PlatformNativeSheetSearch? search;
+
+  /// A month calendar above the rows, the rows being the chosen day's.
+  PlatformNativeSheetMonthCalendar? calendar;
+}
+
+/// A page's month calendar: the system's month grid, with marks under the
+/// days that hold something. Paging to another month goes back as a change
+/// of `<id>:month` with the month's first day, and choosing a day as a
+/// change of `<id>:day` with that day, each as `yyyy-MM-dd`.
+class PlatformNativeSheetMonthCalendar {
+  PlatformNativeSheetMonthCalendar({
+    required this.id,
+    required this.month,
+    required this.selectedDay,
+    required this.marks,
+    this.locale,
+  });
+
+  String id;
+
+  /// The language the grid's month and weekday names are in, as a BCP 47
+  /// tag: the app's own, which may not be the device's. Null for the
+  /// device's.
+  String? locale;
+
+  /// The first day of the month to show, `yyyy-MM-dd`. The grid keeps the
+  /// month the person paged to unless this changes.
+  String month;
+
+  /// The chosen day, `yyyy-MM-dd`.
+  String selectedDay;
+
+  /// The days that hold something, with the colours to mark them in.
+  List<PlatformNativeSheetCalendarMark> marks;
+}
+
+/// A day of a month calendar that holds something: a dot under it in each
+/// of [colors] (ARGB), up to three.
+class PlatformNativeSheetCalendarMark {
+  PlatformNativeSheetCalendarMark({required this.day, required this.colors});
+
+  /// `yyyy-MM-dd`.
+  String day;
+  List<int> colors;
+}
+
+/// A page's search field: what is typed goes back as a change of [id] a
+/// moment after typing pauses, and as the empty text on cancel.
+class PlatformNativeSheetSearch {
+  PlatformNativeSheetSearch({
+    required this.id,
+    this.placeholder,
+    required this.value,
+  });
+
+  String id;
+  String? placeholder;
+
+  /// The query the page's rows answer; the field keeps text being typed
+  /// unless this changes.
+  String value;
 }
 
 class PlatformNativeProfileSheetConfig {
@@ -723,6 +887,65 @@ class PlatformNativeSheetOptionsSelectorRequest {
   String? filterAllLabel;
 }
 
+/// One answer to a question asked over the sheet.
+class PlatformNativeSheetAlertAction {
+  PlatformNativeSheetAlertAction({
+    required this.id,
+    required this.label,
+    required this.style,
+  });
+
+  String id;
+  String label;
+
+  /// `default`, `cancel` or `destructive`.
+  String style;
+}
+
+/// A question asked over whatever the sheet shows.
+class PlatformNativeSheetAlertRequest {
+  PlatformNativeSheetAlertRequest({
+    required this.title,
+    this.message,
+    required this.actions,
+  });
+
+  String title;
+  String? message;
+  List<PlatformNativeSheetAlertAction> actions;
+}
+
+/// A sign-in page shown in a web view over Settings.
+class PlatformWebSignInRequest {
+  PlatformWebSignInRequest({
+    required this.sessionId,
+    required this.title,
+    required this.url,
+    required this.checkScript,
+    required this.checkUrl,
+    required this.cancelLabel,
+    required this.reloadLabel,
+    required this.loadFailedMessage,
+  });
+
+  /// Names this sign-in in the questions the web view asks Dart.
+  String sessionId;
+  String title;
+
+  /// The page it opens on.
+  String url;
+
+  /// Body of an async JavaScript function (argument `url`) answering
+  /// whether the user is signed in; run on a page Dart agrees to.
+  String checkScript;
+
+  /// The `url` argument of [checkScript].
+  String checkUrl;
+  String cancelLabel;
+  String reloadLabel;
+  String loadFailedMessage;
+}
+
 class PlatformNativeSheetDatePickerRequest {
   PlatformNativeSheetDatePickerRequest({
     required this.title,
@@ -782,6 +1005,7 @@ class PlatformNativeSheetApplyDetailPatchRequest {
     this.subtitle,
     required this.clearSubtitle,
     this.detailSheets,
+    this.whole,
   });
 
   String detailId;
@@ -791,6 +1015,10 @@ class PlatformNativeSheetApplyDetailPatchRequest {
   String? subtitle;
   bool clearSubtitle;
   List<PlatformNativeSheetDetail>? detailSheets;
+
+  /// The page in full, replacing everything it was -- its bar actions and
+  /// discard question too, which a patch of rows keeps.
+  PlatformNativeSheetDetail? whole;
 }
 
 class PlatformNativeSheetControlChangedEvent {
@@ -1095,6 +1323,15 @@ abstract class ImageGalleryHostApi {
   void saveImage(String path, String mimeType, String displayName);
 }
 
+/// Android only. The certificate authorities the user installed in Settings,
+/// each as PEM text.
+@HostApi()
+abstract class UserCertificatesHostApi {
+  /// Async so the host reads the store off its main thread.
+  @async
+  List<String> userCaCertificates();
+}
+
 @HostApi()
 abstract class NativeSheetHostApi {
   void setTheme(PlatformNativeSheetTheme theme);
@@ -1147,6 +1384,25 @@ abstract class NativeSheetHostApi {
   );
 
   bool applyDetailPatch(PlatformNativeSheetApplyDetailPatchRequest request);
+
+  /// Closes the open page [detailId] of the native Settings sheet, going
+  /// back to the page that opened it. Returns whether it was open.
+  bool closeDetail(String detailId);
+
+  /// Asks [request] over whatever is on screen, the Settings sheet and its
+  /// pages included, without closing them. Answers the id of the action
+  /// chosen, or null when nothing could be shown.
+  @async
+  String? presentAlert(PlatformNativeSheetAlertRequest request);
+
+  /// Opens [request]'s page in a web view over Settings, for the user to
+  /// sign in there. Each main-frame navigation is Dart's to allow
+  /// ([NativeSheetFlutterApi.webSignInAllowsNavigation]); on each page Dart
+  /// names ([NativeSheetFlutterApi.webSignInChecksPage]) the web view runs
+  /// the request's check. Answers true once the check says the user is
+  /// signed in, closing the web view; false when it is closed before.
+  @async
+  bool presentWebSignIn(PlatformWebSignInRequest request);
 }
 
 @FlutterApi()
@@ -1155,12 +1411,25 @@ abstract class NativeSheetFlutterApi {
   void onLogoutRequested();
   void onControlChanged(PlatformNativeSheetControlChangedEvent event);
   void onDetailAppeared(PlatformNativeSheetDetailAppearedEvent event);
+
+  /// Page [event]'s detail is gone: popped, or its sheet closed.
+  void onDetailLeft(PlatformNativeSheetDetailAppearedEvent event);
   void onModelPinToggled(PlatformNativeSheetModelPinToggledEvent event);
   void onReasoningEffortChanged(
     PlatformNativeSheetReasoningEffortChangedEvent event,
   );
   void onModelControlChanged(PlatformNativeSheetModelControlChangedEvent event);
   void commitEditProfile(PlatformNativeEditProfileCommittedEvent event);
+
+  /// Whether sign-in [sessionId]'s web view may load [url] in its main
+  /// frame.
+  @async
+  bool webSignInAllowsNavigation(String sessionId, String url);
+
+  /// Whether sign-in [sessionId]'s web view, having loaded [url], should
+  /// run its check.
+  @async
+  bool webSignInChecksPage(String sessionId, String url);
 }
 
 @HostApi()
@@ -1181,4 +1450,234 @@ abstract class PccFlutterApi {
 
   @async
   PlatformPccToolResult onToolCall(PlatformPccToolCall call);
+}
+
+/// One end-to-end-encrypted push subscription: a P-256 key pair and auth
+/// secret kept by the platform (Keychain on iOS, Keystore-wrapped on Android),
+/// for one Open WebUI account or Hermes connection. See docs/push/PROTOCOL.md.
+class PlatformPushSubscription {
+  PlatformPushSubscription({
+    required this.sid,
+    required this.scope,
+    required this.p256dh,
+    required this.auth,
+    required this.createdAtMillis,
+    this.endpoint,
+    this.transport,
+  });
+
+  /// 16 random bytes, base64url. Names the key pair in every push.
+  String sid;
+
+  /// `owui:<accountId>` or `hermes:<connectionId>`.
+  String scope;
+
+  /// Uncompressed P-256 public key, base64url.
+  String p256dh;
+
+  /// 16-byte auth secret, base64url.
+  String auth;
+  int createdAtMillis;
+  String? endpoint;
+  PlatformPushTransport? transport;
+}
+
+class PlatformPushToken {
+  PlatformPushToken({
+    required this.transport,
+    required this.token,
+    required this.app,
+    required this.env,
+  });
+
+  PlatformPushTransport transport;
+
+  /// Hex APNs device token or FCM registration token.
+  String token;
+
+  /// Bundle id or application id the relay addresses.
+  String app;
+
+  /// `prod` or `dev` (the APNs sandbox).
+  String env;
+}
+
+/// What the Notification Service Extension / Android receiver needs to show
+/// a push without the Flutter engine. Mirrored into shared storage.
+class PlatformPushConfig {
+  PlatformPushConfig({
+    required this.enabled,
+    required this.sound,
+    required this.enabledKinds,
+    required this.disabledScopes,
+    required this.scopeLabels,
+    required this.showScopeLabel,
+    required this.strings,
+  });
+
+  bool enabled;
+  bool sound;
+
+  /// `cp/1` kinds the user wants shown: reply, reply_failed, channel, cron, test.
+  List<String> enabledKinds;
+  List<String> disabledScopes;
+
+  /// Account or connection name per scope, shown as the subtitle.
+  Map<String, String> scopeLabels;
+  bool showScopeLabel;
+
+  /// Localized strings keyed fallbackTitle, fallbackBody, replyTitle,
+  /// replyFailedTitle, replyFailedBody, channelTitle, cronTitle, testTitle,
+  /// testBody.
+  Map<String, String> strings;
+}
+
+/// A decrypted push, handed to Dart while the app is in the foreground so the
+/// notification router decides between a banner and nothing.
+class PlatformPushMessage {
+  PlatformPushMessage({
+    required this.sid,
+    required this.scope,
+    required this.payloadJson,
+  });
+
+  String sid;
+  String scope;
+
+  /// The `cp/1` plaintext.
+  String payloadJson;
+}
+
+/// A tapped push notification.
+class PlatformPushTap {
+  PlatformPushTap({required this.scope, required this.payloadJson});
+
+  String scope;
+
+  /// The `cp/1` plaintext the notification was built from.
+  String payloadJson;
+}
+
+@HostApi()
+abstract class PushHostApi {
+  List<PlatformPushTransport> availableTransports();
+
+  @async
+  bool requestPermission();
+
+  /// The current device token, registering for remote notifications first if
+  /// needed. Null when the transport is unavailable.
+  @async
+  PlatformPushToken? currentToken(PlatformPushTransport transport);
+
+  /// Generates a fresh key pair, auth secret and sid for [scope].
+  PlatformPushSubscription createSubscription(String scope);
+  List<PlatformPushSubscription> listSubscriptions();
+  void setEndpoint(String sid, String endpoint, PlatformPushTransport transport);
+  void deleteSubscription(String sid);
+  void setConfig(PlatformPushConfig config);
+
+  /// Records [dedupKey] as shown. False when a push or a local notification
+  /// already claimed it. [localNotificationId] lets a later push replace a
+  /// notification the app posted itself.
+  bool claimNotification(String dedupKey, String? localNotificationId);
+
+  /// Removes delivered notifications that belong to [scope].
+  void cancelScope(String scope);
+
+  /// The push notification that launched the app, once.
+  PlatformPushTap? takeLaunchTap();
+
+  /// Test nonces the extension or receiver decrypted for [sid] since the last
+  /// call.
+  List<String> takeVerifiedNonces(String sid);
+
+  /// Installed UnifiedPush distributors (package names). Android only.
+  List<String> unifiedPushDistributors();
+
+  /// Registers [sid] with [distributor] and answers its endpoint, or null when
+  /// the distributor refuses or does not answer in time.
+  @async
+  String? registerUnifiedPush(String sid, String distributor);
+  void unregisterUnifiedPush(String sid);
+
+  /// Stops using [transport] until a token is asked for again: Android turns
+  /// FCM's auto-init off, deletes the token and stops starting Firebase at
+  /// launch; iOS unregisters from APNs.
+  void releaseTransport(PlatformPushTransport transport);
+}
+
+@FlutterApi()
+abstract class PushFlutterApi {
+  void onToken(PlatformPushToken token);
+  void onForegroundPush(PlatformPushMessage message);
+  void onTap(PlatformPushTap tap);
+  void onTestReceived(String sid, String nonce);
+
+  /// The push service dropped [sid] (UnifiedPush unregistered it).
+  void onUnregistered(String sid);
+  void onUnifiedPushEndpoint(String sid, String endpoint);
+}
+
+/// How a system-browser sign-in ended.
+enum PlatformBrowserAuthOutcome { success, cancelled, unavailable, failed }
+
+/// A sign-in page to open in the system browser, and the redirect that ends
+/// it. The redirect is matched exactly: scheme, host (empty when the redirect
+/// has none, as `com.googleusercontent.apps.<id>:/oauth2redirect` does) and
+/// path.
+class PlatformBrowserAuthRequest {
+  PlatformBrowserAuthRequest({
+    required this.authorizationUrl,
+    required this.callbackScheme,
+    required this.callbackHost,
+    required this.callbackPath,
+    required this.preferEphemeralSession,
+  });
+
+  String authorizationUrl;
+  String callbackScheme;
+  String callbackHost;
+  String callbackPath;
+
+  /// Asks the browser not to share cookies with its other sessions.
+  bool preferEphemeralSession;
+}
+
+class PlatformBrowserAuthResult {
+  PlatformBrowserAuthResult({
+    required this.outcome,
+    this.callbackUrl,
+    this.errorCode,
+    this.channel,
+  });
+
+  PlatformBrowserAuthOutcome outcome;
+
+  /// The redirect the browser ended on, for [PlatformBrowserAuthOutcome.success].
+  String? callbackUrl;
+
+  /// Why the sign-in did not finish: `presentation_failed`, `no_browser`,
+  /// `start_failed`, `unexpected_callback`, `auth_tab_required`,
+  /// `superseded` or `invalid_request`.
+  String? errorCode;
+
+  /// The browser surface used: `web_authentication_session` (iOS),
+  /// `auth_tab`, `custom_tabs` or `external_browser` (Android).
+  String? channel;
+}
+
+/// iOS and Android. Runs a sign-in page in the system browser, where
+/// passkeys and security keys work, and returns the redirect it ends on.
+/// The host ends every sign-in with a [PlatformBrowserAuthResult]; only a
+/// failure of the channel itself throws, as a `PlatformException`.
+@HostApi()
+abstract class BrowserAuthHostApi {
+  /// Completes when the browser reaches the redirect, is dismissed, or
+  /// fails. Starting another sign-in ends this one as `superseded`.
+  @async
+  PlatformBrowserAuthResult authenticate(PlatformBrowserAuthRequest request);
+
+  /// Ends the sign-in in progress as cancelled, if any.
+  void cancel();
 }

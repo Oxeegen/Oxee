@@ -6,7 +6,11 @@ import 'package:uuid/uuid.dart';
 import 'package:conduit_core/database/chat_database_repository.dart'
     show kChatStorageKindMetadataKey;
 import 'package:conduit_core/features/librechat/models/librechat_transport.dart';
+import 'package:conduit_core/features/tether/tether_relay_failure.dart'
+    show tetherRelayFailureByCode;
 import 'package:conduit_core/models/chat_comparison.dart';
+import 'package:conduit_core/models/chat_message.dart'
+    show kTetherRelayErrorKey, tetherRelayFailureFromJson;
 import 'package:conduit_core/models/conversation.dart';
 import 'package:conduit_core/models/message_voice.dart';
 import 'package:conduit_core/models/openwebui_chat_settings.dart';
@@ -490,6 +494,23 @@ Map<String, dynamic>? _extractErrorData(
   Map<String, dynamic> msgData,
   Map<String, dynamic>? historyMsg,
 ) {
+  final data = _extractErrorContent(msgData, historyMsg);
+  final errorRaw = msgData['error'] ?? historyMsg?['error'];
+  // What this app saved with the error, else a relay's code in what Open
+  // WebUI saved: only the code is kept from the whole of it.
+  final relay =
+      (errorRaw is Map
+          ? tetherRelayFailureFromJson(errorRaw[kTetherRelayErrorKey])
+          : null) ??
+      tetherRelayFailureByCode(errorRaw);
+  if (data == null || relay == null) return data;
+  return {...data, kTetherRelayErrorKey: relay.name};
+}
+
+Map<String, dynamic>? _extractErrorContent(
+  Map<String, dynamic> msgData,
+  Map<String, dynamic>? historyMsg,
+) {
   // Check msgData first, then historyMsg
   final errorRaw = msgData['error'] ?? historyMsg?['error'];
   if (errorRaw == null) return null;
@@ -651,6 +672,19 @@ Map<String, dynamic>? _extractOpenWebUiMessageMetadata(
   final meta = historyMsg?['meta'] ?? msgData['meta'];
   final voice = meta is Map ? meta['voice'] : null;
   if (voice is Map) metadata[kMessageVoiceMetadataKey] = _coerceJsonMap(voice);
+
+  // A sub-agent's or a timer's pending message is the server's own, not one
+  // the user is waiting on. Open WebUI answers a held message only while
+  // nothing answers it, and keeps the status on one regenerated meanwhile.
+  metadata.remove(kMessageHeldByServerMetadataKey);
+  final children = historyMsg?['childrenIds'] ?? msgData['childrenIds'];
+  if (role == 'user' &&
+      meta is Map &&
+      meta['status'] == 'pending' &&
+      meta['internal'] != true &&
+      (children is! List || children.isEmpty)) {
+    metadata[kMessageHeldByServerMetadataKey] = true;
+  }
 
   // The user's thumbs up (1) or down (-1), and the evaluation record it was
   // filed under. Open WebUI keeps both on the message, so a rating made in

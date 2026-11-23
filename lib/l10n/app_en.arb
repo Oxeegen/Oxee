@@ -2655,6 +2655,292 @@
   "@ssoLoadingLogin": {
     "description": "Loading message while SSO login page loads."
   },
+  "browserSignInContinueSubtitle": "Works with passkeys and security keys",
+  "@browserSignInContinueSubtitle": {
+    "description": "Subtitle under the button that signs in through the system browser."
+  },
+  "browserSignInWaiting": "Waiting for the browser…",
+  "@browserSignInWaiting": {
+    "description": "Shown on the sign-in button while the system browser is open for a sign-in."
+  },
+  "browserSignInUseInApp": "Use In-App Sign-In",
+  "@browserSignInUseInApp": {
+    "description": "Button that signs in with the server's SSO page inside the app instead of the system browser."
+  },
+  "browserSignInSettings": "Browser Sign-In Settings…",
+  "@browserSignInSettings": {
+    "description": "Link that opens the settings for signing in through the system browser."
+  },
+  "browserSignInSetUp": "Set Up Browser Sign-In (Passkeys)",
+  "@browserSignInSetUp": {
+    "description": "Link that opens the setup for signing in through the system browser, where passkeys work."
+  },
+  "browserSignInHttpWarning": "This server's address uses http, so your sign-in crosses the network unencrypted. Use an https address where you can.",
+  "@browserSignInHttpWarning": {
+    "description": "Warning on the sign-in page when browser sign-in is used with a server reached over plain http."
+  },
+  "browserSignInSessionExpired": "Your browser sign-in has ended. Sign in again.",
+  "@browserSignInSessionExpired": {
+    "description": "Sign-in error when a session signed in through the system browser could not be renewed."
+  },
+  "browserSignInSettingsTitle": "Browser Sign-In",
+  "@browserSignInSettingsTitle": {
+    "description": "Title of the sheet with the settings for signing in through the system browser."
+  },
+  "browserSignInSettingsDescription": "Sign in through this device's browser, where passkeys and security keys work. Your identity provider needs a client registered for Oxee.",
+  "@browserSignInSettingsDescription": {
+    "description": "Explanation at the top of the browser sign-in settings."
+  },
+  "browserSignInSharedNote": "These settings apply to every account on this server.",
+  "@browserSignInSharedNote": {
+    "description": "Note in the browser sign-in settings that they are shared by all accounts on the server."
+  },
+  "browserSignInUnavailable": "This server can't use browser sign-in right now. It needs Open WebUI 0.8 or later with OpenID Connect, Microsoft or Google sign-in.",
+  "@browserSignInUnavailable": {
+    "description": "Shown when browser sign-in settings are opened from a server's settings, but the server can't be reached or can't sign in through the browser."
+  },
+  "browserSignInProvider": "Provider",
+  "@browserSignInProvider": {
+    "description": "Label of the choice of the server's sign-in provider to use in the browser."
+  },
+  "browserSignInClientId": "Client ID",
+  "@browserSignInClientId": {
+    "description": "Label of the field for the ID of the identity provider client registered for Conduit."
+  },
+  "browserSignInClientIdHint": "The ID of the client registered for Oxee",
+  "@browserSignInClientIdHint": {
+    "description": "Hint in the client ID field of the browser sign-in settings."
+  },
+  "browserSignInAdvanced": "Advanced",
+  "@browserSignInAdvanced": {
+    "description": "Title of the expandable advanced section of the browser sign-in settings."
+  },
+  "browserSignInIssuer": "Issuer",
+  "@browserSignInIssuer": {
+    "description": "Label of the field for the identity provider's issuer URL."
+  },
+  "browserSignInIssuerDescription": "Only needed when Oxee can't find your identity provider. Enter its issuer, or the URL of its discovery document.",
+  "@browserSignInIssuerDescription": {
+    "description": "Explanation under the issuer field of the browser sign-in settings."
+  },
+  "browserSignInRedirectUri": "Redirect URI",
+  "@browserSignInRedirectUri": {
+    "description": "Label of the redirect URI to register on the identity provider's client."
+  },
+  "browserSignInRedirectUriDescription": "Register this redirect URI on the client. Tap to copy it.",
+  "@browserSignInRedirectUriDescription": {
+    "description": "Explanation of the copyable redirect URI in the browser sign-in settings."
+  },
+  "browserSignInGoogleClientIdHint": "Enter the client ID of an iOS-type Google client to see its redirect URI.",
+  "@browserSignInGoogleClientIdHint": {
+    "description": "Shown instead of the redirect URI while the Google client ID entered is not a valid one."
+  },
+  "browserSignInTest": "Test",
+  "@browserSignInTest": {
+    "description": "Button that checks the browser sign-in settings against the server and identity provider."
+  },
+  "browserSignInTestIdentityProvider": "Identity Provider",
+  "@browserSignInTestIdentityProvider": {
+    "description": "Label of the test result row about finding the identity provider."
+  },
+  "browserSignInTestFound": "Found {issuer}",
+  "@browserSignInTestFound": {
+    "description": "Test result when the identity provider was found.",
+    "placeholders": {
+      "issuer": {
+        "type": "String",
+        "example": "https://id.example.com"
+      }
+    }
+  },
+  "browserSignInTestExchange": "Token Exchange",
+  "@browserSignInTestExchange": {
+    "description": "Label of the test result row about Open WebUI's token exchange."
+  },
+  "browserSignInTestExchangeOn": "Turned on",
+  "@browserSignInTestExchangeOn": {
+    "description": "Test result when Open WebUI's token exchange is on."
+  },
+  "browserSignInRemove": "Remove",
+  "@browserSignInRemove": {
+    "description": "Button that removes the browser sign-in settings of the server."
+  },
+  "browserSignInRemoveTitle": "Remove Browser Sign-In?",
+  "@browserSignInRemoveTitle": {
+    "description": "Title of the confirmation before removing the browser sign-in settings."
+  },
+  "browserSignInRemoveMessage": "Accounts on this server that signed in through the browser will have to sign in again.",
+  "@browserSignInRemoveMessage": {
+    "description": "Message of the confirmation before removing the browser sign-in settings."
+  },
+  "browserSignInChecklistTitle": "On the Server and Identity Provider",
+  "@browserSignInChecklistTitle": {
+    "description": "Heading of the setup checklist in the browser sign-in settings."
+  },
+  "browserSignInChecklistExchange": "Open WebUI 0.8 or later, with ENABLE_OAUTH_TOKEN_EXCHANGE=true.",
+  "@browserSignInChecklistExchange": {
+    "description": "Checklist item: the server must allow token exchange. Keep the variable name untranslated."
+  },
+  "browserSignInChecklistClient": "A public client with PKCE and no secret, with the redirect URI above and the scopes openid, email, profile and offline_access.",
+  "@browserSignInChecklistClient": {
+    "description": "Checklist item: the client to register on the identity provider. Keep the scope names untranslated."
+  },
+  "browserSignInChecklistUsers": "Each user signs in once on the web first: token exchange doesn't create accounts.",
+  "@browserSignInChecklistUsers": {
+    "description": "Checklist item: users must already exist in Open WebUI."
+  },
+  "browserSignInChecklistMicrosoft": "Microsoft: set OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true. It matches users by email for every provider, so use it only if each one verifies email addresses.",
+  "@browserSignInChecklistMicrosoft": {
+    "description": "Checklist item for Microsoft sign-in. Keep the variable name untranslated."
+  },
+  "browserSignInChecklistGoogle": "Google: use an iOS-type client. Its redirect URI comes from its client ID.",
+  "@browserSignInChecklistGoogle": {
+    "description": "Checklist item for Google sign-in."
+  },
+  "browserSignInChecklistTrustedClients": "If the provider supports token introspection, set OAUTH_TOKEN_EXCHANGE_TRUSTED_CLIENT_IDS to include this client ID (Open WebUI 0.11 or later). Without it, any app holding a user's token from this provider can exchange it for that user's Open WebUI session.",
+  "@browserSignInChecklistTrustedClients": {
+    "description": "Checklist item for providers that may support token introspection: limit token exchange to listed clients, and the risk without it. Keep the variable name untranslated."
+  },
+  "browserSignInChecklistNoClientCheck": "This provider works only with OAUTH_TOKEN_EXCHANGE_TRUSTED_CLIENT_IDS unset, since it has no token introspection. The list covers every provider on the server, so without it any app holding a user's token from any of them can exchange it for that user's Open WebUI session. Turn on token exchange only if you accept this.",
+  "@browserSignInChecklistNoClientCheck": {
+    "description": "Checklist item for Google and Microsoft: they work only with the server-wide trusted-client list unset, and the risk that comes with it. Keep the variable name untranslated."
+  },
+  "browserSignInChecklistClaims": "If Open WebUI takes roles or groups from claims, give this client the same claims.",
+  "@browserSignInChecklistClaims": {
+    "description": "Checklist item: role and group claims must match Open WebUI's own client."
+  },
+  "browserSignInErrorBrowserUnavailable": "No browser on this device can run the sign-in. Use in-app sign-in instead.",
+  "@browserSignInErrorBrowserUnavailable": {
+    "description": "Browser sign-in error: no system browser is available."
+  },
+  "browserSignInErrorAuthTabRequired": "Google sign-in needs a browser that supports Auth Tab, such as Chrome. Make one your default browser, or use in-app sign-in.",
+  "@browserSignInErrorAuthTabRequired": {
+    "description": "Browser sign-in error on Android when the default browser can't return a Google sign-in."
+  },
+  "browserSignInErrorPresentationFailed": "The browser couldn't open over the app. Try again.",
+  "@browserSignInErrorPresentationFailed": {
+    "description": "Browser sign-in error when the system browser could not be shown."
+  },
+  "browserSignInErrorInvalidClientId": "That isn't a Google client ID. It ends in .apps.googleusercontent.com.",
+  "@browserSignInErrorInvalidClientId": {
+    "description": "Browser sign-in error when the Google client ID entered is not valid."
+  },
+  "browserSignInErrorProxySignInRequired": "Something in front of this server asked for its own sign-in. Use in-app sign-in instead.",
+  "@browserSignInErrorProxySignInRequired": {
+    "description": "Browser sign-in error when a reverse proxy answered instead of Open WebUI."
+  },
+  "browserSignInErrorProbeNotFound": "This server doesn't offer sign-in with this provider.",
+  "@browserSignInErrorProbeNotFound": {
+    "description": "Browser sign-in error when Open WebUI has no sign-in for the provider."
+  },
+  "browserSignInErrorProviderNotConfigured": "Open WebUI doesn't have this provider set up for token exchange.",
+  "@browserSignInErrorProviderNotConfigured": {
+    "description": "Browser sign-in error when Open WebUI's token exchange doesn't know the provider."
+  },
+  "browserSignInErrorDiscoveryNotFound": "Couldn't find your identity provider. Enter its issuer in the browser sign-in settings.",
+  "@browserSignInErrorDiscoveryNotFound": {
+    "description": "Browser sign-in error when the identity provider could not be discovered."
+  },
+  "browserSignInErrorInvalidIssuer": "The issuer isn't a valid https URL.",
+  "@browserSignInErrorInvalidIssuer": {
+    "description": "Browser sign-in error when the issuer entered is not a URL."
+  },
+  "browserSignInErrorEndpointMismatch": "That issuer isn't the identity provider this server signs in with.",
+  "@browserSignInErrorEndpointMismatch": {
+    "description": "Browser sign-in error when the issuer entered belongs to another identity provider."
+  },
+  "browserSignInErrorInsecureIdp": "The identity provider must use https.",
+  "@browserSignInErrorInsecureIdp": {
+    "description": "Browser sign-in error when the identity provider is not served over https."
+  },
+  "browserSignInErrorCallbackMismatch": "The browser came back with an unexpected answer. Try again.",
+  "@browserSignInErrorCallbackMismatch": {
+    "description": "Browser sign-in error when the browser returned to an unexpected address."
+  },
+  "browserSignInErrorStateMismatch": "The sign-in that came back wasn't the one Oxee started. Try again.",
+  "@browserSignInErrorStateMismatch": {
+    "description": "Browser sign-in error when the returned sign-in does not match the one started."
+  },
+  "browserSignInErrorIssuerMismatch": "The sign-in came back from a different identity provider. Try again.",
+  "@browserSignInErrorIssuerMismatch": {
+    "description": "Browser sign-in error when the returned sign-in names another issuer."
+  },
+  "browserSignInErrorNonceMismatch": "The identity provider's answer didn't match this sign-in. Try again.",
+  "@browserSignInErrorNonceMismatch": {
+    "description": "Browser sign-in error when the ID token was not for this sign-in."
+  },
+  "browserSignInErrorAccessDenied": "The sign-in was declined.",
+  "@browserSignInErrorAccessDenied": {
+    "description": "Browser sign-in error when the user or identity provider declined."
+  },
+  "browserSignInErrorClientRejected": "The identity provider doesn't accept this client. Check the client ID, that the client is public, and its redirect URI.",
+  "@browserSignInErrorClientRejected": {
+    "description": "Browser sign-in error when the identity provider rejects Conduit's client."
+  },
+  "browserSignInErrorIdpError": "The identity provider couldn't complete the sign-in. Try again.",
+  "@browserSignInErrorIdpError": {
+    "description": "Browser sign-in error for any other failure at the identity provider."
+  },
+  "browserSignInErrorRefreshExpired": "Your sign-in with the identity provider has ended. Sign in again.",
+  "@browserSignInErrorRefreshExpired": {
+    "description": "Browser sign-in error when the saved refresh token is no longer accepted."
+  },
+  "browserSignInErrorConfigMismatch": "This server's browser sign-in settings changed. Sign in again.",
+  "@browserSignInErrorConfigMismatch": {
+    "description": "Browser sign-in error when the settings changed since the account signed in."
+  },
+  "browserSignInErrorExchangeDisabled": "Token exchange is turned off on this server. An administrator can turn it on with ENABLE_OAUTH_TOKEN_EXCHANGE=true.",
+  "@browserSignInErrorExchangeDisabled": {
+    "description": "Browser sign-in error when Open WebUI's token exchange is off. Keep the variable name untranslated."
+  },
+  "browserSignInErrorServerTooOld": "This server is too old for browser sign-in. It needs Open WebUI 0.8 or later.",
+  "@browserSignInErrorServerTooOld": {
+    "description": "Browser sign-in error when the server has no token exchange."
+  },
+  "browserSignInErrorCannotDetermineClient": "Open WebUI only accepts tokens issued to listed clients, and couldn't ask the identity provider which client this one was issued to. Use in-app sign-in, or ask an administrator to review OAUTH_TOKEN_EXCHANGE_TRUSTED_CLIENT_IDS: it needs token introspection, which Google and Microsoft don't have.",
+  "@browserSignInErrorCannotDetermineClient": {
+    "description": "Browser sign-in error when Open WebUI only trusts listed clients and cannot identify this token's client. Keep the variable name untranslated."
+  },
+  "browserSignInErrorAccessProhibited": "Open WebUI refused this account. Its email domain, role, or this client may not be allowed.",
+  "@browserSignInErrorAccessProhibited": {
+    "description": "Browser sign-in error when Open WebUI prohibits the account."
+  },
+  "browserSignInErrorMissingClaims": "The identity provider didn't share the account's email or ID. Allow the email and profile scopes for this client.",
+  "@browserSignInErrorMissingClaims": {
+    "description": "Browser sign-in error when the identity provider's user info lacks required claims."
+  },
+  "browserSignInErrorUserNotFound": "No Open WebUI account goes with this sign-in yet. Sign in once on the web, then try again.",
+  "@browserSignInErrorUserNotFound": {
+    "description": "Browser sign-in error when Open WebUI has no user for this identity yet."
+  },
+  "browserSignInErrorUserMismatch": "That sign-in belongs to a different Open WebUI user than this account.",
+  "@browserSignInErrorUserMismatch": {
+    "description": "Browser sign-in error when the sign-in was for another user than the account."
+  },
+  "browserSignInErrorTokenRejected": "Open WebUI couldn't check the sign-in with the identity provider. Try again.",
+  "@browserSignInErrorTokenRejected": {
+    "description": "Browser sign-in error when Open WebUI could not validate the token with the identity provider."
+  },
+  "browserSignInErrorAuthenticationChanged": "Your sign-in changed on the server in the meantime. Try again.",
+  "@browserSignInErrorAuthenticationChanged": {
+    "description": "Browser sign-in error when the account's sign-in changed on the server during the attempt."
+  },
+  "browserSignInErrorRateLimited": "Too many sign-in attempts. Wait a moment, then try again.",
+  "@browserSignInErrorRateLimited": {
+    "description": "Browser sign-in error when requests are rate limited."
+  },
+  "browserSignInErrorNetwork": "Couldn't reach the server or identity provider. Check your connection.",
+  "@browserSignInErrorNetwork": {
+    "description": "Browser sign-in error when the server or identity provider could not be reached."
+  },
+  "browserSignInErrorTls": "The certificate of the server or identity provider isn't trusted.",
+  "@browserSignInErrorTls": {
+    "description": "Browser sign-in error when a TLS certificate was not trusted."
+  },
+  "browserSignInErrorServerError": "The server or identity provider failed. Try again later.",
+  "@browserSignInErrorServerError": {
+    "description": "Browser sign-in error when the server or identity provider answered with a server error."
+  },
   "ldap": "LDAP",
   "@ldap": {
     "description": "Label for LDAP authentication option."
@@ -3149,10 +3435,6 @@
   "personalConnectionsUnsupported": "This connection uses settings the app cannot edit. You can still switch it on or off or delete it.",
   "@personalConnectionsUnsupported": {
     "description": "Explains that a connection uses settings the app cannot edit, so it can only be switched or deleted."
-  },
-  "personalConnectionsDeleteTitle": "Delete connection?",
-  "@personalConnectionsDeleteTitle": {
-    "description": "Title of the confirmation for deleting a personal connection."
   },
   "personalConnectionsDeleteMessage": "{name} will be removed from your Open WebUI account.",
   "@personalConnectionsDeleteMessage": {
@@ -4737,6 +5019,14 @@
   "@notificationViewAction": {
     "description": "Action label on an in-app notification banner that opens the target."
   },
+  "notificationReplyFailedBody": "The reply couldn't be finished.",
+  "@notificationReplyFailedBody": {
+    "description": "Notification body for a reply that failed, when the source gives no detail."
+  },
+  "notificationTargetUnavailable": "The account or connection for this notification is no longer on this device.",
+  "@notificationTargetUnavailable": {
+    "description": "Shown when a tapped notification belongs to an account or connection that was removed from this device."
+  },
   "notificationsPermissionDenied": "Notifications are turned off in system settings.",
   "@notificationsPermissionDenied": {
     "description": "Shown when the user enables notifications but the OS permission was denied."
@@ -4891,8 +5181,6 @@
   "workspaceUnsupported": "This server does not support workspace management.",
   "workspaceLoadFailed": "Workspace could not be loaded.",
   "workspaceRetry": "Retry",
-  "workspaceSelectItem": "Select an item to view its details.",
-  "workspaceEditorComingSoon": "This editor will be available in the next Workspace milestone.",
   "workspaceSearchHint": "Search workspace resources",
   "workspaceLoadMore": "Load More",
   "@workspaceTitle": {"description": "App bar title for the Workspace feature."},
@@ -4908,8 +5196,6 @@
   "@workspaceUnsupported": {"description": "Shown when the connected server does not support Workspace management."},
   "@workspaceLoadFailed": {"description": "Error message shown when the Workspace fails to load."},
   "@workspaceRetry": {"description": "Retry button label on the Workspace error state."},
-  "@workspaceSelectItem": {"description": "Placeholder prompting the user to select a resource to view its details."},
-  "@workspaceEditorComingSoon": {"description": "Placeholder shown for workspace section editors that are not yet implemented."},
   "@workspaceSearchHint": {"description": "Hint text for the workspace resource search field."},
   "@workspaceLoadMore": {"description": "Button label to load the next page of workspace resources."},
   "workspaceAccessPublicDisabled": "You do not have permission to share this publicly.",
@@ -4964,10 +5250,6 @@
   "@workspaceEditorDiscardConfirm": {"description": "Confirm button label on the discard-changes dialog."},
   "workspaceEditorKeepEditing": "Keep Editing",
   "@workspaceEditorKeepEditing": {"description": "Cancel button label on the discard-changes dialog."},
-  "workspaceEditorSaveTooltip": "Save Changes",
-  "@workspaceEditorSaveTooltip": {"description": "Tooltip for the workspace editor save button."},
-  "workspaceEditorSaving": "Saving…",
-  "@workspaceEditorSaving": {"description": "Label shown on the editor save button while a save is in progress."},
   "workspaceEditorMoreActions": "More Actions",
   "@workspaceEditorMoreActions": {"description": "Tooltip for the workspace editor overflow menu button."},
   "workspaceImportChooseFile": "Choose JSON File",
@@ -5092,8 +5374,6 @@
   "@workspaceModelUnhide": {"description":"Action that unhides the model in model selectors."},
   "workspaceModelDelete": "Delete Model",
   "@workspaceModelDelete": {"description":"Action that deletes the model."},
-  "workspaceModelDeleteConfirmTitle": "Delete model?",
-  "@workspaceModelDeleteConfirmTitle": {"description":"Confirmation dialog title for deleting a model."},
   "workspaceModelDeleteConfirmMessage": "This permanently removes {name}.",
   "@workspaceModelDeleteConfirmMessage": {"description":"Confirmation dialog body for deleting a model.","placeholders":{"name":{"type":"String"}}},
   "workspaceModelExport": "Export Model",
@@ -5114,8 +5394,6 @@
   "@workspaceModelSaveFailed": {"description":"Error when saving the model fails."},
   "workspaceModelDeleted": "Model deleted.",
   "@workspaceModelDeleted": {"description":"Confirmation that the model was deleted."},
-  "workspaceModelAddAction": "Add",
-  "@workspaceModelAddAction": {"description":"Confirm button in a small add-text dialog."},
   "workspaceKnowledgeCreateTitle": "New Knowledge Base",
   "@workspaceKnowledgeCreateTitle": {"description":"Title of the create form for a new knowledge base."},
   "workspaceKnowledgeName": "Name",
@@ -5132,14 +5410,10 @@
   "@workspaceKnowledgeDeleted": {"description":"Confirmation that the knowledge base was deleted."},
   "workspaceKnowledgeDelete": "Delete Knowledge Base",
   "@workspaceKnowledgeDelete": {"description":"Overflow action that deletes the knowledge base."},
-  "workspaceKnowledgeDeleteConfirmTitle": "Delete knowledge base?",
-  "@workspaceKnowledgeDeleteConfirmTitle": {"description":"Confirmation dialog title for deleting a knowledge base."},
   "workspaceKnowledgeDeleteConfirmMessage": "This permanently removes {name} and detaches its files.",
   "@workspaceKnowledgeDeleteConfirmMessage": {"description":"Confirmation dialog body for deleting a knowledge base.","placeholders":{"name":{"type":"String"}}},
   "workspaceKnowledgeReset": "Reset",
   "@workspaceKnowledgeReset": {"description":"Overflow action that removes all files from a knowledge base."},
-  "workspaceKnowledgeResetConfirmTitle": "Reset knowledge base?",
-  "@workspaceKnowledgeResetConfirmTitle": {"description":"Confirmation dialog title for resetting a knowledge base."},
   "workspaceKnowledgeResetConfirmMessage": "This removes all files from {name} but keeps the knowledge base.",
   "@workspaceKnowledgeResetConfirmMessage": {"description":"Confirmation dialog body for resetting a knowledge base.","placeholders":{"name":{"type":"String"}}},
   "workspaceKnowledgeResetDone": "Knowledge base reset.",
@@ -5172,20 +5446,10 @@
   "@workspaceKnowledgeFilesEmpty": {"description":"Empty state when a knowledge base directory contains no files."},
   "workspaceKnowledgeFilesLoadFailed": "Files could not be loaded.",
   "@workspaceKnowledgeFilesLoadFailed": {"description":"Error when the knowledge base file list fails to load."},
-  "workspaceKnowledgeRefreshFiles": "Refresh",
-  "@workspaceKnowledgeRefreshFiles": {"description":"Tooltip for the button that refreshes the knowledge file list."},
-  "workspaceKnowledgeRoot": "Root",
-  "@workspaceKnowledgeRoot": {"description":"Breadcrumb label for the top level of a knowledge base."},
-  "workspaceKnowledgeAddMenu": "Add Files",
-  "@workspaceKnowledgeAddMenu": {"description":"Tooltip for the menu that adds files or folders to a knowledge base."},
-  "workspaceKnowledgeUpload": "Upload File",
-  "@workspaceKnowledgeUpload": {"description":"Menu item to upload a single local file into a knowledge base."},
   "workspaceKnowledgeUploading": "Uploading {name}…",
   "@workspaceKnowledgeUploading": {"description":"Progress label shown while a file uploads into a knowledge base.","placeholders":{"name":{"type":"String"}}},
   "workspaceKnowledgeUploadFailed": "The file could not be uploaded.",
   "@workspaceKnowledgeUploadFailed": {"description":"Error when uploading a file into a knowledge base fails."},
-  "workspaceKnowledgeBatchAttach": "Upload Multiple Files",
-  "@workspaceKnowledgeBatchAttach": {"description":"Menu item to upload several local files into a knowledge base at once."},
   "workspaceKnowledgeAttachExisting": "Attach Server File",
   "@workspaceKnowledgeAttachExisting": {"description":"Menu item to attach an existing server file to a knowledge base."},
   "workspaceKnowledgeAttachFailed": "The file could not be attached.",
@@ -5208,8 +5472,6 @@
   "@workspaceKnowledgeRenameFolder": {"description":"Action to rename a knowledge base directory."},
   "workspaceKnowledgeDeleteFolder": "Delete Folder",
   "@workspaceKnowledgeDeleteFolder": {"description":"Action to delete a knowledge base directory."},
-  "workspaceKnowledgeDeleteFolderConfirmTitle": "Delete folder?",
-  "@workspaceKnowledgeDeleteFolderConfirmTitle": {"description":"Confirmation dialog title for deleting a knowledge base directory."},
   "workspaceKnowledgeDeleteFolderConfirmMessage": "Files inside {name} move to the parent folder.",
   "@workspaceKnowledgeDeleteFolderConfirmMessage": {"description":"Confirmation dialog body for deleting a knowledge base directory.","placeholders":{"name":{"type":"String"}}},
   "workspaceKnowledgeFolderDeleteFailed": "The folder could not be deleted.",
@@ -5266,12 +5528,6 @@
   "@workspacePromptContentHint": {"description":"Placeholder text for the empty prompt content field."},
   "workspacePromptContentRequired": "Prompt content is required.",
   "@workspacePromptContentRequired": {"description":"Validation error when the prompt content is empty."},
-  "workspacePromptWriteTab": "Write",
-  "@workspacePromptWriteTab": {"description":"Toggle label for the editable prompt content view."},
-  "workspacePromptPreviewTab": "Preview",
-  "@workspacePromptPreviewTab": {"description":"Toggle label for the rendered markdown preview of the prompt content."},
-  "workspacePromptPreviewEmpty": "Nothing to preview yet.",
-  "@workspacePromptPreviewEmpty": {"description":"Empty-state text shown in the prompt preview when there is no content."},
   "workspacePromptTags": "Tags",
   "@workspacePromptTags": {"description":"Label for the prompt tags field."},
   "workspacePromptTagAdd": "Add Tag",
@@ -5302,8 +5558,6 @@
   "@workspacePromptDeactivate": {"description":"Overflow action that disables a prompt."},
   "workspacePromptDelete": "Delete Prompt",
   "@workspacePromptDelete": {"description":"Overflow action that deletes a prompt."},
-  "workspacePromptDeleteConfirmTitle": "Delete prompt?",
-  "@workspacePromptDeleteConfirmTitle": {"description":"Confirmation dialog title for deleting a prompt."},
   "workspacePromptDeleteConfirmMessage": "\"{name}\" will be permanently deleted.",
   "@workspacePromptDeleteConfirmMessage": {"description":"Confirmation dialog body for deleting a prompt.","placeholders":{"name":{"type":"String"}}},
   "workspacePromptDeleted": "Prompt deleted",
@@ -5348,8 +5602,6 @@
   "@workspacePromptHistoryProductionSet": {"description":"Confirmation that the production version was changed."},
   "workspacePromptHistoryDelete": "Delete Version",
   "@workspacePromptHistoryDelete": {"description":"Action that deletes a prompt history entry."},
-  "workspacePromptHistoryDeleteConfirmTitle": "Delete version?",
-  "@workspacePromptHistoryDeleteConfirmTitle": {"description":"Confirmation dialog title for deleting a prompt version."},
   "workspacePromptHistoryDeleteConfirmMessage": "This version snapshot will be removed. This can't be undone.",
   "@workspacePromptHistoryDeleteConfirmMessage": {"description":"Confirmation dialog body for deleting a prompt version."},
   "workspacePromptHistoryDeleted": "Version deleted",
@@ -5384,12 +5636,6 @@
   "@workspaceSkillContentHint": {"description":"Placeholder text for the empty skill instructions field."},
   "workspaceSkillContentRequired": "Instructions are required.",
   "@workspaceSkillContentRequired": {"description":"Validation error when the skill instructions are empty."},
-  "workspaceSkillWriteTab": "Write",
-  "@workspaceSkillWriteTab": {"description":"Toggle label for the editable skill instructions view."},
-  "workspaceSkillPreviewTab": "Preview",
-  "@workspaceSkillPreviewTab": {"description":"Toggle label for the rendered markdown preview of the skill instructions."},
-  "workspaceSkillPreviewEmpty": "Nothing to preview yet.",
-  "@workspaceSkillPreviewEmpty": {"description":"Empty-state text shown in the skill preview when there is no content."},
   "workspaceSkillManageAccess": "Manage Access",
   "@workspaceSkillManageAccess": {"description":"Action to open the sharing/access editor for a skill."},
   "workspaceSkillSaved": "Skill saved",
@@ -5406,8 +5652,6 @@
   "@workspaceSkillDeactivate": {"description":"Overflow action that disables a skill."},
   "workspaceSkillDelete": "Delete Skill",
   "@workspaceSkillDelete": {"description":"Overflow action that deletes a skill."},
-  "workspaceSkillDeleteConfirmTitle": "Delete skill?",
-  "@workspaceSkillDeleteConfirmTitle": {"description":"Confirmation dialog title for deleting a skill."},
   "workspaceSkillDeleteConfirmMessage": "\"{name}\" will be permanently deleted.",
   "@workspaceSkillDeleteConfirmMessage": {"description":"Confirmation dialog body for deleting a skill.","placeholders":{"name":{"type":"String"}}},
   "workspaceSkillDeleted": "Skill deleted",
@@ -5416,8 +5660,6 @@
   "@workspaceSkillImport": {"description":"Title of the JSON skill import sheet."},
   "workspaceSkillImportMarkdown": "Import Markdown",
   "@workspaceSkillImportMarkdown": {"description":"Overflow action that imports a skill from a Markdown file into the create editor."},
-  "workspaceSkillImportJson": "Import JSON",
-  "@workspaceSkillImportJson": {"description":"Overflow action that imports one or more skills from a JSON file."},
   "workspaceSkillImportMarkdownLoaded": "Markdown loaded. Review and save to create the skill.",
   "@workspaceSkillImportMarkdownLoaded": {"description":"Confirmation that a Markdown file was loaded into the unsaved skill editor."},
   "workspaceSkillImportMarkdownFailed": "Couldn't read the Markdown file.",
@@ -5470,14 +5712,10 @@
   "@workspaceToolCloneSuffix": {"description":"Suffix appended to the name of a cloned tool."},
   "workspaceToolDelete": "Delete",
   "@workspaceToolDelete": {"description":"Overflow action that deletes a tool."},
-  "workspaceToolDeleteConfirmTitle": "Delete tool?",
-  "@workspaceToolDeleteConfirmTitle": {"description":"Title of the tool delete confirmation dialog."},
   "workspaceToolDeleteConfirmMessage": "\"{name}\" will be permanently deleted.",
   "@workspaceToolDeleteConfirmMessage": {"description":"Confirmation dialog body for deleting a tool.","placeholders":{"name":{"type":"String"}}},
   "workspaceToolImport": "Import Tools",
   "@workspaceToolImport": {"description":"Title of the tool JSON import sheet."},
-  "workspaceToolImportJson": "Import JSON",
-  "@workspaceToolImportJson": {"description":"Overflow action that imports tools from a JSON file."},
   "workspaceToolImportUrl": "Import from URL",
   "@workspaceToolImportUrl": {"description":"Overflow action, admin-only, that imports a tool from a URL."},
   "workspaceToolImportUrlTitle": "Import Tool from URL",
@@ -5508,8 +5746,6 @@
   "@workspaceToolManifestFunding": {"description":"Displays the tool's funding URL from its manifest.","placeholders":{"url":{"type":"String"}}},
   "workspaceToolSpecs": "Generated Specifications",
   "@workspaceToolSpecs": {"description":"Heading for the read-only server-generated tool function specifications."},
-  "workspaceToolDetails": "Tool Details",
-  "@workspaceToolDetails": {"description":"Disclosure title for secondary tool manifest and function metadata."},
   "workspaceToolFunctionCount": "{count, plural, =1{1 function} other{{count} functions}}",
   "@workspaceToolFunctionCount": {"description":"Quiet collection status showing how many functions a tool provides.","placeholders":{"count":{"type":"int"}}},
   "workspaceToolSpecsEmpty": "No specifications were generated for this tool.",
@@ -7445,6 +7681,8 @@
   "@directModelTooManyImages": {"description": "Error shown when a Direct model rejects a request for having too many images."},
   "directToolLoopNoAnswer": "The model kept using tools without giving an answer. Try again, or turn off web search and tools.",
   "@directToolLoopNoAnswer": {"description": "Error shown when a Direct model kept asking for tools instead of answering after Conduit stopped offering them."},
+  "heldReplyStillRunning": "The server is still working on this reply. Open this chat again later to see it.",
+  "@heldReplyStillRunning": {"description": "Error shown on a reply when Conduit stopped waiting for the server to finish it, without a live connection; the server may still be writing it."},
   "directContextLimitOllamaNote": "For Ollama models on your own server, a limit you choose here is also the context window Ollama loads the model with. A larger window uses more memory.",
   "@directContextLimitOllamaNote": {"description": "Note under the Direct context limit list: for local Ollama models the chosen limit is also sent as the context window, which costs memory."},
   "directContextCompactionModelCount": "{count, plural, =1{1 model} other{{count} models}}",
@@ -8675,10 +8913,6 @@
   "@personalToolSettingsSaveFailed": {
     "description": "Tool settings sheet: error when saving the user's personal tool settings failed."
   },
-  "scheduledTaskDeleteTitle": "Delete scheduled task?",
-  "@scheduledTaskDeleteTitle": {
-    "description": "Title of the confirmation dialog before deleting a scheduled task."
-  },
   "scheduledTaskRunning": "Running…",
   "@scheduledTaskRunning": {
     "description": "Shown on a scheduled task's page while waiting for a run the user started with Run now to finish."
@@ -8703,10 +8937,6 @@
         "type": "String"
       }
     }
-  },
-  "scheduledTaskFolderSearchHint": "Search folders",
-  "@scheduledTaskFolderSearchHint": {
-    "description": "Placeholder of the search field in the folder picker of the scheduled task editor."
   },
   "scheduledTasksEmptyHint": "Have a model follow your instructions on a schedule, like a morning news digest.",
   "@scheduledTasksEmptyHint": {
@@ -10559,6 +10789,10 @@
   "@hermesErrorGateway": {
     "description": "Title of a Hermes error card: Hermes itself failed, not the model provider."
   },
+  "hermesErrorGatewaySignIn": "Signed out of Oxee Hermes",
+  "@hermesErrorGatewaySignIn": {
+    "description": "Title of a Hermes error card: the Hermes gateway no longer accepts this app's sign-in, so the user has to sign in again."
+  },
   "hermesErrorDisk": "Oxee Hermes is out of disk space",
   "@hermesErrorDisk": {
     "description": "Title of a Hermes error card: the Hermes server's disk is full."
@@ -10776,10 +11010,6 @@
   "@modelControlServiceTier": {
     "description": "Row title in the model picker for a coding agent's service tier setting (which processing tier, such as faster or cheaper, the agent's model uses)."
   },
-  "scheduledTaskTerminalSearchHint": "Search terminals",
-  "@scheduledTaskTerminalSearchHint": {
-    "description": "Search field hint in the list of terminals a scheduled task can run with."
-  },
   "scheduledTaskWorkingFolderLabel": "Working Folder",
   "@scheduledTaskWorkingFolderLabel": {
     "description": "Label of the field for the folder on the terminal where a scheduled task starts. Optional."
@@ -10799,5 +11029,982 @@
   "scheduledTaskAgentsLoading": "Loading this terminal's agents…",
   "@scheduledTaskAgentsLoading": {
     "description": "Shown on the model row of a scheduled task while the coding agents its terminal offers are loading."
+  },
+  "personalizationMemoryGone": "This memory is no longer on the server. Go back to see your memories.",
+  "@personalizationMemoryGone": {
+    "description": "Shown on a memory's page when that memory is no longer on the server (cleared or deleted meanwhile), so a change to it cannot be saved."
+  },
+  "hermesConnectionModeTitle": "Connection Mode",
+  "@hermesConnectionModeTitle": {
+    "description": "Title of the row choosing how a Hermes connection talks to its server."
+  },
+  "hermesModeResponsesApi": "Responses API",
+  "@hermesModeResponsesApi": {
+    "description": "Name of the Hermes connection mode that uses the Responses API."
+  },
+  "hermesProfilesNeedUrl": "Enter the Oxee Hermes server URL first.",
+  "@hermesProfilesNeedUrl": {
+    "description": "Shown under the Hermes profile picker when no server URL is entered."
+  },
+  "hermesProfilesNeedTest": "Test the connection, then refresh the profile list.",
+  "@hermesProfilesNeedTest": {
+    "description": "Shown under the Hermes profile picker before an unencrypted connection was agreed to."
+  },
+  "hermesProfilesNone": "No Oxee Hermes profiles were returned.",
+  "@hermesProfilesNone": {
+    "description": "Shown under the Hermes profile picker when the server lists no profiles."
+  },
+  "hermesProfilesNeedSignIn": "Sign in, then refresh the profile list.",
+  "@hermesProfilesNeedSignIn": {
+    "description": "Shown under the Hermes profile picker when listing profiles needs a sign-in."
+  },
+  "hermesNativeSignInFailed": "Oxee Hermes sign-in failed or was cancelled. Check that native PKCE is enabled and try again.",
+  "@hermesNativeSignInFailed": {
+    "description": "Shown when signing in to a Hermes Desktop Gateway with native PKCE did not finish."
+  },
+  "hermesGatewaySignInAgain": "Sign In Again",
+  "@hermesGatewaySignInAgain": {
+    "description": "Button on a Hermes error card that signs in to the Hermes gateway again after it signed the app out."
+  },
+  "hermesNativeSignInHelp": "With Oxee Hermes password sign-in, set HERMES_DASHBOARD_BASIC_AUTH_SECRET on the gateway. Without it, every gateway restart signs Oxee out.",
+  "@hermesNativeSignInHelp": {
+    "description": "Help under the native Hermes sign-in option. HERMES_DASHBOARD_BASIC_AUTH_SECRET is an environment variable name and must not be translated."
+  },
+  "hermesDashboardSignInTitle": "Oxee Hermes Sign-In",
+  "@hermesDashboardSignInTitle": {
+    "description": "Title of the web view in which the user signs in to a Hermes dashboard."
+  },
+  "hermesDashboardSignInLoadFailed": "Oxee Hermes sign-in could not be loaded.",
+  "@hermesDashboardSignInLoadFailed": {
+    "description": "Shown in the Hermes sign-in web view when its page cannot be loaded."
+  },
+  "hermesJobLastDeliveryError": "Delivery: {error}",
+  "@hermesJobLastDeliveryError": {
+    "description": "A scheduled agent's last delivery error, as Hermes reported it.",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesJobRunsLoadFailed": "Could not load run history.",
+  "@hermesJobRunsLoadFailed": {
+    "description": "Shown in a scheduled agent's run history when it cannot be read."
+  },
+  "hermesJobPause": "Pause",
+  "@hermesJobPause": {
+    "description": "Action in a scheduled agent's menu that stops it running on its schedule."
+  },
+  "hermesJobResume": "Resume",
+  "@hermesJobResume": {
+    "description": "Action in a paused scheduled agent's menu that runs it on its schedule again."
+  },
+  "hermesMcpAddServer": "Add MCP Server",
+  "@hermesMcpAddServer": {
+    "description": "Row and page title for adding an MCP server to Hermes by hand."
+  },
+  "hermesMcpAddFromCatalog": "Add from Catalog",
+  "@hermesMcpAddFromCatalog": {
+    "description": "Row and page title for adding an MCP server from Hermes' catalog."
+  },
+  "hermesMcpLoadFailed": "Could not load MCP servers.",
+  "@hermesMcpLoadFailed": {
+    "description": "Shown when Hermes' MCP servers cannot be read."
+  },
+  "hermesMcpNone": "No MCP servers configured.",
+  "@hermesMcpNone": {
+    "description": "Shown when Hermes has no MCP servers."
+  },
+  "hermesMcpTest": "Test",
+  "@hermesMcpTest": {
+    "description": "Action that checks an MCP server can be reached and lists what it offers."
+  },
+  "hermesMcpRemove": "Remove",
+  "@hermesMcpRemove": {
+    "description": "Action that removes an MCP server from Hermes."
+  },
+  "hermesMcpRemoveMessage": "This removes the server from Oxee Hermes.",
+  "@hermesMcpRemoveMessage": {
+    "description": "Question asked before removing an MCP server from Hermes."
+  },
+  "hermesMcpToolsList": "Tools: {tools}",
+  "@hermesMcpToolsList": {
+    "description": "An MCP server's tools, listed by name.",
+    "placeholders": {
+      "tools": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpToolFilter": "Tool Filter",
+  "@hermesMcpToolFilter": {
+    "description": "Title of the row saying which of an MCP server's tools Hermes uses."
+  },
+  "hermesMcpToolFilterSummary": "Tool filter: {filter}",
+  "@hermesMcpToolFilterSummary": {
+    "description": "Which of an MCP server's tools Hermes uses, summarised.",
+    "placeholders": {
+      "filter": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpAuthenticate": "Authenticate",
+  "@hermesMcpAuthenticate": {
+    "description": "Action that signs in to an MCP server that uses OAuth."
+  },
+  "hermesMcpSetApiKey": "Set API Key",
+  "@hermesMcpSetApiKey": {
+    "description": "Row opening the page that sets an MCP server's API key."
+  },
+  "hermesMcpSetApiKeyFor": "API Key for {name}",
+  "@hermesMcpSetApiKeyFor": {
+    "description": "Title of the page setting MCP server {name}'s API key.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpHttpUrl": "HTTP URL",
+  "@hermesMcpHttpUrl": {
+    "description": "Field for an MCP server's HTTP address."
+  },
+  "hermesMcpStdioCommand": "Command (stdio)",
+  "@hermesMcpStdioCommand": {
+    "description": "Field for the command Hermes runs to start a local MCP server."
+  },
+  "hermesMcpArguments": "Arguments (one per line)",
+  "@hermesMcpArguments": {
+    "description": "Field for a local MCP server's command arguments."
+  },
+  "hermesMcpApiKeyOptional": "API Key (Optional)",
+  "@hermesMcpApiKeyOptional": {
+    "description": "Field for an MCP server's API key, which may be left empty."
+  },
+  "hermesMcpAdd": "Add",
+  "@hermesMcpAdd": {
+    "description": "Done button adding an MCP server."
+  },
+  "hermesMcpCatalogAsks": "Asks for {names}",
+  "@hermesMcpCatalogAsks": {
+    "description": "A catalog MCP server, saying which values it asks for when added.",
+    "placeholders": {
+      "names": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpCatalogNeeds": "Needs {names}, which this connection cannot send. Add it from Oxee Hermes on your computer.",
+  "@hermesMcpCatalogNeeds": {
+    "description": "A catalog MCP server whose values this connection cannot send.",
+    "placeholders": {
+      "names": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpActionFailed": "Oxee Hermes MCP action failed.",
+  "@hermesMcpActionFailed": {
+    "description": "Shown when an action on Hermes' MCP servers fails."
+  },
+  "hermesMcpKeepsValues": "Oxee Hermes keeps each value for {name}.",
+  "@hermesMcpKeepsValues": {
+    "description": "Footer of the values a catalog MCP server {name} asks for.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpValueRequired": "{name} (required)",
+  "@hermesMcpValueRequired": {
+    "description": "A value a catalog MCP server cannot be added without.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpValueOptional": "{name} (optional)",
+  "@hermesMcpValueOptional": {
+    "description": "A value a catalog MCP server can be added without.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpFillRequired": "Fill in every required value.",
+  "@hermesMcpFillRequired": {
+    "description": "Shown when a catalog MCP server is added without a value it needs."
+  },
+  "hermesMcpStillInstallingSignIn": "Oxee Hermes is still installing {name}. Once it is listed, sign in with Authenticate from its page.",
+  "@hermesMcpStillInstallingSignIn": {
+    "description": "Shown after adding a catalog MCP server that signs in with OAuth and is still being installed.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpStillInstalling": "Oxee Hermes is still installing {name}. It is listed once done.",
+  "@hermesMcpStillInstalling": {
+    "description": "Shown after adding a catalog MCP server that is still being installed.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpAddedSignInUnfinished": "Added {name}, but signing in didn't finish. Use Authenticate from its page to try again.",
+  "@hermesMcpAddedSignInUnfinished": {
+    "description": "Shown when a catalog MCP server was added but signing in to it did not finish.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "hermesMcpResourcesPrompts": "Resources: {resources} · Prompts: {prompts}",
+  "@hermesMcpResourcesPrompts": {
+    "description": "How many resources and prompts an MCP server offers, from its last test.",
+    "placeholders": {
+      "resources": {
+        "type": "int"
+      },
+      "prompts": {
+        "type": "int"
+      }
+    }
+  },
+  "hermesMcpTestConnected": "Connected · Tools: {tools} · Resources: {resources} · Prompts: {prompts}",
+  "@hermesMcpTestConnected": {
+    "description": "Result of an MCP server test that reached it.",
+    "placeholders": {
+      "tools": {
+        "type": "int"
+      },
+      "resources": {
+        "type": "int"
+      },
+      "prompts": {
+        "type": "int"
+      }
+    }
+  },
+  "hermesMcpTestFailed": "MCP test failed.",
+  "@hermesMcpTestFailed": {
+    "description": "Result of an MCP server test that failed without saying why."
+  },
+  "scheduledTasksFilterLabel": "Show",
+  "@scheduledTasksFilterLabel": {
+    "description": "Title of the row choosing which scheduled tasks the list shows: all, active or paused."
+  },
+  "personalConnectionsTurnOn": "Turn On",
+  "@personalConnectionsTurnOn": {
+    "description": "Menu action on a personal tool server or terminal row that turns it on."
+  },
+  "personalConnectionsTurnOff": "Turn Off",
+  "@personalConnectionsTurnOff": {
+    "description": "Menu action on a personal tool server or terminal row that turns it off."
+  },
+  "calendarDayEmpty": "No events",
+  "@calendarDayEmpty": {
+    "description": "Row on the calendar's month page in Settings when the chosen day holds no events."
+  },
+  "workspaceModelCapabilityVision": "Vision",
+  "@workspaceModelCapabilityVision": {
+    "description": "Model capability: understands images it is given."
+  },
+  "workspaceModelCapabilityFileUpload": "File Upload",
+  "@workspaceModelCapabilityFileUpload": {
+    "description": "Model capability: accepts uploaded files."
+  },
+  "workspaceModelCapabilityCitations": "Citations",
+  "@workspaceModelCapabilityCitations": {
+    "description": "Model capability: cites its sources."
+  },
+  "workspaceModelCapabilityUsage": "Usage",
+  "@workspaceModelCapabilityUsage": {
+    "description": "Model capability: reports token usage."
+  },
+  "workspacePromptHistoryDiffRemovedLine": "Removed: {line}",
+  "@workspacePromptHistoryDiffRemovedLine": {
+    "description": "What a screen reader says for a line removed in a comparison of two prompt versions; {line} is the line.",
+    "placeholders": {
+      "line": {
+        "type": "String"
+      }
+    }
+  },
+  "workspacePromptHistoryDiffAddedLine": "Added: {line}",
+  "@workspacePromptHistoryDiffAddedLine": {
+    "description": "What a screen reader says for a line added in a comparison of two prompt versions; {line} is the line.",
+    "placeholders": {
+      "line": {
+        "type": "String"
+      }
+    }
+  },
+  "workspaceKnowledgeSourceLabel": "Source",
+  "@workspaceKnowledgeSourceLabel": {
+    "description": "Label of the menu on the Knowledge list in Settings that filters bases by where they come from (all, local, connected)."
+  },
+  "workspaceKnowledgeUploadFiles": "Upload Files",
+  "@workspaceKnowledgeUploadFiles": {
+    "description": "Row in a knowledge base's files in Settings that opens the file picker to upload one or more files."
+  },
+  "pushFallbackTitle": "Oxee",
+  "@pushFallbackTitle": {
+    "description": "Title of a push notification that could not be decrypted on this device, or that has no title. Usually the app name."
+  },
+  "pushFallbackBody": "New notification",
+  "@pushFallbackBody": {
+    "description": "Body of a push notification that could not be decrypted on this device; it never shows any content."
+  },
+  "pushReplyTitle": "New reply",
+  "@pushReplyTitle": {
+    "description": "Title of a push notification for a finished reply when the chat has no title."
+  },
+  "pushReplyFailedTitle": "Reply failed",
+  "@pushReplyFailedTitle": {
+    "description": "Title of a push notification for a reply that failed, when the chat has no title."
+  },
+  "pushReplyFailedBody": "The reply couldn't be finished.",
+  "@pushReplyFailedBody": {
+    "description": "Body of a push notification for a reply that failed, when the server gives no detail."
+  },
+  "pushChannelTitle": "New message",
+  "@pushChannelTitle": {
+    "description": "Title of a push notification for a channel message when the channel has no name."
+  },
+  "pushCronTitle": "Scheduled task",
+  "@pushCronTitle": {
+    "description": "Title of a push notification for a Hermes scheduled task result when the job has no name."
+  },
+  "pushTestTitle": "Push notifications work",
+  "@pushTestTitle": {
+    "description": "Title of the test push notification Conduit asks the user's server to send while setting up push."
+  },
+  "pushTestBody": "This test notification came from your server.",
+  "@pushTestBody": {
+    "description": "Body of the test push notification Conduit asks the user's server to send while setting up push."
+  },
+  "pushSectionTitle": "Push Notifications",
+  "@pushSectionTitle": {
+    "description": "Header of the Push notifications group on the Notifications settings page, and title of its native iOS detail."
+  },
+  "pushEnabledTitle": "Push Notifications",
+  "@pushEnabledTitle": {
+    "description": "Title of the switch that turns end-to-end encrypted push notifications on for every account and connection."
+  },
+  "pushEnabledDescription": "Get notified while Oxee is closed. End-to-end encrypted.",
+  "@pushEnabledDescription": {
+    "description": "Subtitle of the push notifications switch."
+  },
+  "pushUnavailableBuild": "Not available in this build",
+  "@pushUnavailableBuild": {
+    "description": "Shown instead of the push switch subtitle, and as a target status, when this build of the app has no way to deliver push notifications."
+  },
+  "pushUnavailableAndroid": "Not available in this build without a UnifiedPush distributor",
+  "@pushUnavailableAndroid": {
+    "description": "Shown on Android instead of the push switch subtitle when push can only work through a UnifiedPush distributor and none is installed."
+  },
+  "pushGetDistributor": "Get a UnifiedPush Distributor",
+  "@pushGetDistributor": {
+    "description": "Row that opens the UnifiedPush website listing distributor apps."
+  },
+  "pushPrivacyTitle": "How Push Stays Private",
+  "@pushPrivacyTitle": {
+    "description": "Row and page title for a short explanation of what each party can see of push notifications."
+  },
+  "pushStatusOff": "Off",
+  "@pushStatusOff": {
+    "description": "Push status of an account or connection while push is off."
+  },
+  "pushStatusOptedOut": "Turned off on this device",
+  "@pushStatusOptedOut": {
+    "description": "Push status of an account or connection the user switched push off for on this device."
+  },
+  "pushStatusSettingUp": "Setting up…",
+  "@pushStatusSettingUp": {
+    "description": "Push status while the app registers this device with the server."
+  },
+  "pushStatusVerifying": "Sending a test notification…",
+  "@pushStatusVerifying": {
+    "description": "Push status while the server sends a test push to check delivery."
+  },
+  "pushStatusOn": "On",
+  "@pushStatusOn": {
+    "description": "Push status when a test push arrived and push works for the account or connection."
+  },
+  "pushStatusNeedsAdminSetup": "Needs your admin to set up",
+  "@pushStatusNeedsAdminSetup": {
+    "description": "Push status when the Open WebUI server lacks the Conduit Push function and the user is not an admin."
+  },
+  "pushStatusCanInstall": "Not set up on this server",
+  "@pushStatusCanInstall": {
+    "description": "Push status when the Open WebUI server lacks the Conduit Push function and the user, an admin, can install it."
+  },
+  "pushStatusUpdateAvailable": "On · Update available",
+  "@pushStatusUpdateAvailable": {
+    "description": "Push status when push works and a newer Conduit Push function comes with the app."
+  },
+  "pushStatusPluginsDisabled": "Functions are turned off on this server",
+  "@pushStatusPluginsDisabled": {
+    "description": "Push status when the Open WebUI server runs with functions (plugins) disabled."
+  },
+  "pushStatusServerTooOldOpenWebUi": "Needs Open WebUI 0.11 or newer",
+  "@pushStatusServerTooOldOpenWebUi": {
+    "description": "Push status when the Open WebUI server is older than the version push needs."
+  },
+  "pushStatusServerTooOldHermes": "Needs a newer version of Oxee Hermes",
+  "@pushStatusServerTooOldHermes": {
+    "description": "Push status when the Hermes server is too old for push."
+  },
+  "pushStatusNeedsHermesPlugin": "Needs the Oxee plugin in Oxee Hermes",
+  "@pushStatusNeedsHermesPlugin": {
+    "description": "Push status when the Hermes connection lacks the Conduit plugin."
+  },
+  "pushStatusRestartHermes": "Restart Oxee Hermes to finish",
+  "@pushStatusRestartHermes": {
+    "description": "Push status after the Hermes plugin was installed and Hermes must restart to load it."
+  },
+  "pushStatusSignInNeeded": "Sign in to use push",
+  "@pushStatusSignInNeeded": {
+    "description": "Push status when the account's or connection's session ended."
+  },
+  "pushStatusPermissionDenied": "Notifications are blocked",
+  "@pushStatusPermissionDenied": {
+    "description": "Push status and row title when the system does not allow Conduit to show notifications."
+  },
+  "pushStatusNotificationsOff": "On · Notifications are off for this account",
+  "@pushStatusNotificationsOff": {
+    "description": "Push status when push works but the account's own notifications switch is off, so pushes are not shown."
+  },
+  "pushActionSetUp": "Set Up",
+  "@pushActionSetUp": {
+    "description": "Button that installs the Conduit Push function on an Open WebUI server, after a confirmation."
+  },
+  "pushActionAskAdmin": "Ask Your Admin",
+  "@pushActionAskAdmin": {
+    "description": "Button that shares setup instructions with the Open WebUI admin."
+  },
+  "pushActionUpdate": "Update",
+  "@pushActionUpdate": {
+    "description": "Button that updates the Conduit Push function on an Open WebUI server, after a confirmation."
+  },
+  "pushActionInstall": "Install",
+  "@pushActionInstall": {
+    "description": "Button that installs the Conduit plugin or function, after a confirmation."
+  },
+  "pushActionCopyCommand": "Copy Command",
+  "@pushActionCopyCommand": {
+    "description": "Button that copies the command that installs the Conduit plugin in Hermes."
+  },
+  "pushExplainOn": "Notifications for this account reach this device even while Oxee is closed.",
+  "@pushExplainOn": {
+    "description": "Detail sheet explanation when push works."
+  },
+  "pushExplainOptedOut": "Push is turned off for this account on this device.",
+  "@pushExplainOptedOut": {
+    "description": "Detail sheet explanation when push is off for this account or connection."
+  },
+  "pushExplainSettingUp": "Oxee is registering this device with the server.",
+  "@pushExplainSettingUp": {
+    "description": "Detail sheet explanation while push is being set up."
+  },
+  "pushExplainVerifying": "The server is sending a test notification to this device.",
+  "@pushExplainVerifying": {
+    "description": "Detail sheet explanation while a test push is on its way."
+  },
+  "pushExplainNotificationsOff": "Push is set up, but notifications are turned off for this account, so they aren't shown.",
+  "@pushExplainNotificationsOff": {
+    "description": "Detail sheet explanation when push works but the account's notifications switch is off."
+  },
+  "pushExplainNeedsAdminSetup": "Push needs the open-source Oxee Push function on this server, and only an admin can install it. Send your admin the setup link.",
+  "@pushExplainNeedsAdminSetup": {
+    "description": "Detail sheet explanation when a non-admin's Open WebUI server lacks the function."
+  },
+  "pushExplainCanInstall": "Push needs the open-source Oxee Push function on this server. You're an admin, so you can install it now.",
+  "@pushExplainCanInstall": {
+    "description": "Detail sheet explanation when an admin's Open WebUI server lacks the function."
+  },
+  "pushExplainUpdateAvailable": "Push works. This app comes with a newer version of the Oxee Push function.",
+  "@pushExplainUpdateAvailable": {
+    "description": "Detail sheet explanation when an update of the function is available."
+  },
+  "pushExplainPluginsDisabled": "This Open WebUI server runs with functions turned off, so Oxee Push can't run on it. An admin can turn them on.",
+  "@pushExplainPluginsDisabled": {
+    "description": "Detail sheet explanation when the server disables functions."
+  },
+  "pushExplainServerTooOld": "This server is too old for push notifications. Update it to use them.",
+  "@pushExplainServerTooOld": {
+    "description": "Detail sheet explanation when the server is too old."
+  },
+  "pushExplainNeedsHermesPlugin": "Push needs the open-source Oxee plugin in Oxee Hermes. Oxee can install it through the Oxee Hermes dashboard.",
+  "@pushExplainNeedsHermesPlugin": {
+    "description": "Detail sheet explanation when a dashboard Hermes connection lacks the plugin."
+  },
+  "pushExplainHermesCommand": "Push needs the open-source Oxee plugin in Oxee Hermes. Run this command on the computer that runs Oxee Hermes:",
+  "@pushExplainHermesCommand": {
+    "description": "Detail sheet explanation, followed by a command, when an API-key Hermes connection lacks the plugin."
+  },
+  "pushExplainRestartHermes": "The plugin is installed. Restart Oxee Hermes to finish; Oxee checks again by itself.",
+  "@pushExplainRestartHermes": {
+    "description": "Detail sheet explanation while Hermes needs a restart."
+  },
+  "pushExplainSignInNeeded": "Sign in to this account again to use push.",
+  "@pushExplainSignInNeeded": {
+    "description": "Detail sheet explanation when the session ended."
+  },
+  "pushExplainRelayUnavailable": "This build of Oxee can't deliver push notifications.",
+  "@pushExplainRelayUnavailable": {
+    "description": "Detail sheet explanation when the build has no push relay."
+  },
+  "pushExplainPermissionDenied": "Allow notifications for Oxee in system settings.",
+  "@pushExplainPermissionDenied": {
+    "description": "Explanation when the system blocks notifications for Conduit."
+  },
+  "pushFailureNoTransport": "This device has no way to receive push notifications.",
+  "@pushFailureNoTransport": {
+    "description": "Push failure: no delivery service is available."
+  },
+  "pushFailureNoToken": "This device didn't get a push token. Check the connection and try again.",
+  "@pushFailureNoToken": {
+    "description": "Push failure: Apple or Google did not issue a device token."
+  },
+  "pushFailureDistributor": "The UnifiedPush distributor didn't answer.",
+  "@pushFailureDistributor": {
+    "description": "Push failure: the UnifiedPush distributor app gave no endpoint."
+  },
+  "pushFailureRelay": "The push relay couldn't be reached.",
+  "@pushFailureRelay": {
+    "description": "Push failure: the push relay failed."
+  },
+  "pushFailureRelayBusy": "The push relay is busy. Try again later.",
+  "@pushFailureRelayBusy": {
+    "description": "Push failure: the push relay is rate limiting."
+  },
+  "pushFailureServerUnreachable": "The server couldn't be reached.",
+  "@pushFailureServerUnreachable": {
+    "description": "Push failure: the Open WebUI or Hermes server could not be reached."
+  },
+  "pushFailureServerRejected": "The server refused the request.",
+  "@pushFailureServerRejected": {
+    "description": "Push failure: the server answered with an error."
+  },
+  "pushFailureHermesAuth": "Oxee Hermes didn't accept the API key.",
+  "@pushFailureHermesAuth": {
+    "description": "Push failure: Hermes rejected the API key."
+  },
+  "pushFailureSubscriptionLost": "The server didn't keep this device's subscription.",
+  "@pushFailureSubscriptionLost": {
+    "description": "Push failure: the subscription was not stored on the server."
+  },
+  "pushFailureInstall": "Installing didn't work.",
+  "@pushFailureInstall": {
+    "description": "Push failure: installing the function or plugin failed."
+  },
+  "pushFailureTestTimeout": "The test notification didn't arrive.",
+  "@pushFailureTestTimeout": {
+    "description": "Push failure: the test push never reached this device."
+  },
+  "pushFailureDelivery": "The server couldn't deliver the test notification.",
+  "@pushFailureDelivery": {
+    "description": "Push failure: the server reported a delivery error."
+  },
+  "pushFailurePlatform": "This device couldn't store its push keys.",
+  "@pushFailurePlatform": {
+    "description": "Push failure: the device key store failed."
+  },
+  "pushFailureUnknown": "Something went wrong.",
+  "@pushFailureUnknown": {
+    "description": "Push failure without a known reason."
+  },
+  "pushInstallOpenWebUiTitle": "Install Oxee Push?",
+  "@pushInstallOpenWebUiTitle": {
+    "description": "Title of the confirmation before installing the Conduit Push function on an Open WebUI server."
+  },
+  "pushInstallOpenWebUiMessage": "This installs the open-source Oxee Push function on this server and turns it on, so everyone here can get push notifications in Oxee. It encrypts each notification on the server before it leaves.",
+  "@pushInstallOpenWebUiMessage": {
+    "description": "Body of the confirmation before installing the Conduit Push function."
+  },
+  "pushUpdateOpenWebUiTitle": "Update Oxee Push?",
+  "@pushUpdateOpenWebUiTitle": {
+    "description": "Title of the confirmation before updating the Conduit Push function."
+  },
+  "pushUpdateOpenWebUiMessage": "This replaces the Oxee Push function on this server with the version that comes with this app. Existing subscriptions are kept.",
+  "@pushUpdateOpenWebUiMessage": {
+    "description": "Body of the confirmation before updating the Conduit Push function."
+  },
+  "pushInstallHermesTitle": "Install the Oxee plugin?",
+  "@pushInstallHermesTitle": {
+    "description": "Title of the confirmation before installing the Conduit plugin into Hermes."
+  },
+  "pushInstallHermesMessage": "This installs the open-source Oxee plugin into Oxee Hermes from GitHub and turns it on. Oxee Hermes checks plugins before installing them. Restart Oxee Hermes once to finish.",
+  "@pushInstallHermesMessage": {
+    "description": "Body of the confirmation before installing the Conduit plugin into Hermes."
+  },
+  "pushViewSource": "View Source",
+  "@pushViewSource": {
+    "description": "Row in an install confirmation that opens the source code being installed."
+  },
+  "pushHermesCommandLabel": "Command",
+  "@pushHermesCommandLabel": {
+    "description": "Label of the Hermes install command shown in the detail sheet."
+  },
+  "pushDetailSendTest": "Send Test Notification",
+  "@pushDetailSendTest": {
+    "description": "Row in a push detail sheet that sends a test push to this device."
+  },
+  "pushTestArrived": "The test notification arrived.",
+  "@pushTestArrived": {
+    "description": "Message after a test push arrived."
+  },
+  "pushTestMissing": "The test notification didn't arrive.",
+  "@pushTestMissing": {
+    "description": "Message after a test push did not arrive in time."
+  },
+  "pushDetailUseForAccount": "Use Push for This Account",
+  "@pushDetailUseForAccount": {
+    "description": "Switch in a push detail sheet that turns push on or off for one Open WebUI account on this device."
+  },
+  "pushDetailUseForConnection": "Use Push for This Connection",
+  "@pushDetailUseForConnection": {
+    "description": "Switch in a push detail sheet that turns push on or off for one Hermes connection on this device."
+  },
+  "pushDetailOriginTitle": "Replies From",
+  "@pushDetailOriginTitle": {
+    "description": "Header of the choice of which Open WebUI replies send a push."
+  },
+  "pushDetailOriginDescription": "Which finished replies send a push notification.",
+  "@pushDetailOriginDescription": {
+    "description": "Description of the choice of which Open WebUI replies send a push."
+  },
+  "pushOriginConduit": "Chats Started in Oxee",
+  "@pushOriginConduit": {
+    "description": "Option: only replies to chats started from Conduit send a push."
+  },
+  "pushOriginAny": "All My Chats",
+  "@pushOriginAny": {
+    "description": "Option: replies to every chat of the account send a push."
+  },
+  "pushDiagnosticsTitle": "Diagnostics",
+  "@pushDiagnosticsTitle": {
+    "description": "Heading of the technical details in a push detail sheet."
+  },
+  "pushDiagnosticsTransport": "Delivery",
+  "@pushDiagnosticsTransport": {
+    "description": "Diagnostics label: how pushes reach this device (APNs, FCM or UnifiedPush)."
+  },
+  "pushDiagnosticsServer": "Server Version",
+  "@pushDiagnosticsServer": {
+    "description": "Diagnostics label: the server's version."
+  },
+  "pushDiagnosticsPlugin": "Plugin Version",
+  "@pushDiagnosticsPlugin": {
+    "description": "Diagnostics label: the installed Conduit function's or plugin's version."
+  },
+  "pushDiagnosticsVerified": "Last Verified",
+  "@pushDiagnosticsVerified": {
+    "description": "Diagnostics label: when a test push last arrived."
+  },
+  "pushDiagnosticsServerReport": "Server Report",
+  "@pushDiagnosticsServerReport": {
+    "description": "Diagnostics label: what the server recorded about delivering to this device."
+  },
+  "pushDiagnosticsError": "Last Error",
+  "@pushDiagnosticsError": {
+    "description": "Diagnostics label: the last setup error."
+  },
+  "pushDeliveryTitle": "Push Delivery",
+  "@pushDeliveryTitle": {
+    "description": "Header of the Android choice of how pushes are delivered."
+  },
+  "pushDeliveryAutomatic": "Automatic",
+  "@pushDeliveryAutomatic": {
+    "description": "Delivery option: Google's service when available, otherwise UnifiedPush."
+  },
+  "pushDeliveryFcm": "Google (FCM)",
+  "@pushDeliveryFcm": {
+    "description": "Delivery option: Firebase Cloud Messaging."
+  },
+  "pushDeliveryUnifiedPush": "UnifiedPush",
+  "@pushDeliveryUnifiedPush": {
+    "description": "Delivery option: a UnifiedPush distributor app."
+  },
+  "pushDistributorTitle": "UnifiedPush Distributor",
+  "@pushDistributorTitle": {
+    "description": "Header of the list of installed UnifiedPush distributor apps."
+  },
+  "pushNoDistributor": "No UnifiedPush distributor is installed.",
+  "@pushNoDistributor": {
+    "description": "Shown when no UnifiedPush distributor app is installed."
+  },
+  "pushResetKeys": "Reset Push Keys",
+  "@pushResetKeys": {
+    "description": "Row that deletes every push key and sets push up again."
+  },
+  "pushResetKeysDescription": "Remove this device from every server and set push up again with new keys.",
+  "@pushResetKeysDescription": {
+    "description": "Subtitle of the Reset push keys row."
+  },
+  "pushResetKeysConfirmTitle": "Reset push keys?",
+  "@pushResetKeysConfirmTitle": {
+    "description": "Title of the confirmation before resetting push keys."
+  },
+  "pushResetKeysConfirmMessage": "Oxee removes this device from every server, deletes its push keys, and sets push up again with new ones.",
+  "@pushResetKeysConfirmMessage": {
+    "description": "Body of the confirmation before resetting push keys."
+  },
+  "pushResetKeysConfirm": "Reset",
+  "@pushResetKeysConfirm": {
+    "description": "Confirms resetting push keys."
+  },
+  "pushPrivacyIntro": "Your own server encrypts each push notification so that only this device can read it. The key that decrypts it never leaves this device, so nothing in between can read it.",
+  "@pushPrivacyIntro": {
+    "description": "Opening paragraph of the push privacy explainer."
+  },
+  "pushPrivacyServerTitle": "Your Server",
+  "@pushPrivacyServerTitle": {
+    "description": "Push privacy explainer section about the user's own server."
+  },
+  "pushPrivacyServerBody": "It already has your chats. For push it also keeps this device's push address, its public key, a random device id and a label such as \"iOS\". It decides what goes in a notification: a title and a short preview.",
+  "@pushPrivacyServerBody": {
+    "description": "Push privacy explainer: what the user's server stores and sends."
+  },
+  "pushPrivacyRelayTitle": "The Oxee Relay",
+  "@pushPrivacyRelayTitle": {
+    "description": "Push privacy explainer section about the Conduit push relay."
+  },
+  "pushPrivacyRelayBody": "It passes encrypted notifications on to Apple or Google. It sees your server's IP address, when it sends and a rounded size, but never titles, text, accounts, or your server's name or URL. It is open source and keeps no logs or database.",
+  "@pushPrivacyRelayBody": {
+    "description": "Push privacy explainer: what the relay sees."
+  },
+  "pushPrivacyProvidersTitle": "Apple and Google",
+  "@pushPrivacyProvidersTitle": {
+    "description": "Push privacy explainer section about Apple's and Google's push services."
+  },
+  "pushPrivacyProvidersBody": "They deliver the encrypted notification and can't read it. If it can't be decrypted, your phone only shows \"New notification\".",
+  "@pushPrivacyProvidersBody": {
+    "description": "Push privacy explainer: what Apple and Google see."
+  },
+  "pushPrivacyUnifiedPushTitle": "UnifiedPush",
+  "@pushPrivacyUnifiedPushTitle": {
+    "description": "Push privacy explainer section about UnifiedPush on Android."
+  },
+  "pushPrivacyUnifiedPushBody": "On Android you can use a UnifiedPush distributor instead. Your server then sends to it directly, without the Oxee relay or Google.",
+  "@pushPrivacyUnifiedPushBody": {
+    "description": "Push privacy explainer: UnifiedPush skips the relay."
+  },
+  "pushPrivacyOffTitle": "Turning Push Off",
+  "@pushPrivacyOffTitle": {
+    "description": "Push privacy explainer section about turning push off."
+  },
+  "pushPrivacyOffBody": "Turning push off deletes all of this device's push keys; turning it off for one account, signing out of it or removing it deletes that account's. Nothing sent to them later can be read. Oxee also asks the servers of the accounts involved to forget this device.",
+  "@pushPrivacyOffBody": {
+    "description": "Push privacy explainer: what turning push off does."
+  },
+  "pushPrivacyReadMore": "Read the Full Details",
+  "@pushPrivacyReadMore": {
+    "description": "Row that opens the full push threat model document."
+  },
+  "pushAttentionChip": "Push needs attention",
+  "@pushAttentionChip": {
+    "description": "Chip on an account or connection in Accounts when its push setup needs the user; tapping it opens push details."
+  },
+  "notificationScheduledTitle": "Scheduled Tasks",
+  "@notificationScheduledTitle": {
+    "description": "Toggle title for notifications when a Hermes scheduled task delivers."
+  },
+  "notificationScheduledDescription": "Notify when an Oxee Hermes scheduled task delivers its result.",
+  "@notificationScheduledDescription": {
+    "description": "Toggle description for scheduled task notifications."
+  },
+  "hermesJobNotifyTitle": "Notify Me",
+  "@hermesJobNotifyTitle": {
+    "description": "Switch in the Hermes job editor that sends a push notification when the job delivers."
+  },
+  "hermesJobNotifyDescription": "Send a push notification when this job delivers.",
+  "@hermesJobNotifyDescription": {
+    "description": "Description of the Notify me switch in the Hermes job editor."
+  },
+  "pushAskAdminMessage": "Could you set up Oxee Push on our Open WebUI server? It lets Oxee send end-to-end encrypted push notifications. In Admin Panel → Functions, import {url} and set the function ID to {functionId}. Setup guide: {guide}",
+  "@pushAskAdminMessage": {
+    "description": "Message shared with the Open WebUI admin asking them to install the Conduit Push function. {url} is the raw file to import, {functionId} the id to use, {guide} the setup guide link.",
+    "placeholders": {
+      "url": {
+        "type": "String",
+        "example": "https://raw.githubusercontent.com/cogwheel0/conduit/main/server-plugins/openwebui/conduit_push.py"
+      },
+      "functionId": {
+        "type": "String",
+        "example": "conduit_push"
+      },
+      "guide": {
+        "type": "String",
+        "example": "https://github.com/cogwheel0/conduit/blob/main/docs/push/ADMIN_SETUP.md"
+      }
+    }
+  },
+  "pushExplainFailed": "Oxee tries again by itself the next time you open it, or you can try again now.",
+  "@pushExplainFailed": {
+    "description": "Detail-sheet explanation under a push failure (the failure itself is the heading above it); a Retry button follows."
+  },
+  "pushHermesCommandLatest": "This installs the latest published version of the plugin.",
+  "@pushHermesCommandLatest": {
+    "description": "Note under the copyable Hermes plugin install command when this build does not pin a plugin commit, so the command installs whatever version the plugin's repository currently publishes."
+  },
+  "hermesJobCreatedNotifyFailed": "Job created, but notifications couldn't be turned on for it.",
+  "@hermesJobCreatedNotifyFailed": {
+    "description": "Message after creating a Hermes scheduled job with \"Notify me\" on, when the job was created but turning its push notifications on failed. Says the job exists, so the user does not create it again."
+  },
+  "hermesJobUpdatedNotifyFailed": "Job saved, but its notifications couldn't be changed.",
+  "@hermesJobUpdatedNotifyFailed": {
+    "description": "Message after saving a Hermes scheduled job whose \"Notify me\" was changed, when the job was saved but changing its push notifications failed."
+  },
+  "hermesJobNotifyNeedsScheduled": "Turn on Scheduled Tasks in Notifications to use this.",
+  "@hermesJobNotifyNeedsScheduled": {
+    "description": "Hint under the disabled \"Notify me\" switch in the Hermes job editor while the \"Scheduled tasks\" notification kind is turned off in the Notifications settings."
+  },
+  "pushSettingsMenuAction": "Push Settings",
+  "@pushSettingsMenuAction": {
+    "description": "Item in an account's or connection's row menu in Settings, shown while its push notifications need attention; opens that account's push settings page."
+  },
+  "workspaceSkillCloneSaveFirst": "Save or discard your changes before duplicating the skill.",
+  "@workspaceSkillCloneSaveFirst": {
+    "description": "Said on a skill's editor when Duplicate is tapped with unsaved changes: Duplicate copies the skill as saved."
+  },
+  "workspaceSkillToggleSaveFirst": "Save or discard your changes before switching the skill on or off.",
+  "@workspaceSkillToggleSaveFirst": {
+    "description": "Said on a skill's editor when its on/off switch is tapped with unsaved changes."
+  },
+  "hermesShowScheduledRuns": "Show Scheduled Runs",
+  "@hermesShowScheduledRuns": {
+    "description": "Switch in Hermes settings, in the Conversations group, that shows or leaves out the chats a scheduled agent (cron job) starts each time it runs."
+  },
+  "hermesShowScheduledRunsDescription": "Each run of a scheduled agent starts its own chat. Turn this off to leave those chats out of the Oxee Hermes list. Pinned ones stay.",
+  "@hermesShowScheduledRunsDescription": {
+    "description": "Explains the Show Scheduled Runs switch in Hermes settings: scheduled agents start a new chat per run, and pinned chats stay listed when it is off."
+  },
+  "hermesScheduledRunsHidden": "{count, plural, =1{1 scheduled run hidden} other{{count} scheduled runs hidden}}",
+  "@hermesScheduledRunsHidden": {
+    "description": "Row in the Hermes chat list, shown while Show Scheduled Runs is off, saying how many chats that scheduled agents started were left out of the list.",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "12"
+      }
+    }
+  },
+  "hermesShowScheduledRunsAction": "Show",
+  "@hermesShowScheduledRunsAction": {
+    "description": "Button on the row that says scheduled runs are hidden from the Hermes chat list; turns Show Scheduled Runs back on."
+  },
+  "voiceCallLibreChatUnavailable": "Voice calls aren't available in LibreChat chats.",
+  "@voiceCallLibreChatUnavailable": {
+    "description": "Shown when the voice call button is used in a LibreChat chat, which has no voice calls."
+  },
+  "messageHintTextForModel": "Ask {modelName}",
+  "@messageHintTextForModel": {
+    "description": "Placeholder in the chat message input naming the chat's selected model (its display name, cut short with an ellipsis after 24 characters). Falls back to messageHintText when no model is chosen.",
+    "placeholders": {
+      "modelName": {
+        "type": "String",
+        "example": "Research Assistant"
+      }
+    }
+  },
+  "showModelNameInComposer": "Show Model Name in Message Box",
+  "@showModelNameInComposer": {
+    "description": "Switch in Settings > Chat, with the message box settings: whether the empty message box names the selected model instead of Conduit."
+  },
+  "showModelNameInComposerDescription": "The empty message box names the selected model instead of Oxee.",
+  "@showModelNameInComposerDescription": {
+    "description": "Explains the Show Model Name in Message Box switch in Settings > Chat."
+  },
+  "workspaceEditorAccountChanged": "The signed-in account changed, so your change was not saved.",
+  "@workspaceEditorAccountChanged": {
+    "description": "Shown on a Workspace skill or tool editor read again because the signed-in account changed while a change on it (a save, switch, duplicate, delete or valve save) was under way, when that change was never sent or failed."
+  },
+  "settingsAddAction": "Add",
+  "@settingsAddAction": {
+    "description": "Read aloud for the plus button in a Settings page's bar that adds an item, such as a calendar event."
+  },
+  "notificationCalendarTitle": "Calendar Reminders",
+  "@notificationCalendarTitle": {
+    "description": "Toggle title for reminders of Open WebUI calendar events."
+  },
+  "notificationCalendarDescription": "Remind me of calendar events, even when the app is closed.",
+  "@notificationCalendarDescription": {
+    "description": "Toggle description for calendar event reminders."
+  },
+  "notificationChannelCalendarName": "Calendar reminders",
+  "@notificationChannelCalendarName": {
+    "description": "Android notification channel name for calendar event reminders."
+  },
+  "notificationChannelCalendarDescription": "Reminders of upcoming calendar events",
+  "@notificationChannelCalendarDescription": {
+    "description": "Android notification channel description for calendar event reminders."
+  },
+  "calendarReminderStartsAt": "Starts at {time}",
+  "@calendarReminderStartsAt": {
+    "description": "Body of a calendar event reminder: when the event starts. {time} is a clock time such as 14:30 or 2:30 PM.",
+    "placeholders": {
+      "time": {
+        "type": "String",
+        "example": "14:30"
+      }
+    }
+  },
+  "notificationCalendarExactTitle": "Exact Timing",
+  "@notificationCalendarExactTitle": {
+    "description": "Settings row under Calendar Reminders on Android, shown when reminders cannot fire at the exact time. Opens the system's Alarms & reminders permission."
+  },
+  "notificationCalendarExactDescription": "Allow \"Alarms & reminders\" so calendar reminders arrive on the minute.",
+  "@notificationCalendarExactDescription": {
+    "description": "Subtitle of the exact-timing row: why to allow Alarms & reminders."
+  },
+  "personalConnectionsKeyRemovedForNewAddress": "The saved key won't be sent to the new address, so it will be removed. Enter a key for this address.",
+  "@personalConnectionsKeyRemovedForNewAddress": {
+    "description": "Hint shown instead of a stored key when the edit moves the connection to another address: Save removes the saved key there, so the user must enter one for the new address."
+  },
+  "chatHeldMessageWaiting": "Waiting for the current reply to finish",
+  "@chatHeldMessageWaiting": {
+    "description": "Caption under a message the server holds because a reply in the same chat is still running (started on another device, say); the server answers the message once that reply finishes."
+  },
+  "personalConnectionsMovedToTether": "This server now takes personal tools and terminals from your devices through Tether.",
+  "@personalConnectionsMovedToTether": {
+    "description": "Shown in Settings › Personal Connections when the Open WebUI server is 0.13.4 or later, which replaced personal tool servers and terminals with Tether, Open WebUI's companion app that connects the user's own computers. Keep 'Tether' untranslated."
+  },
+  "personalConnectionsSavedListUnused": "The server no longer uses the connections saved here. They are kept for reference.",
+  "@personalConnectionsSavedListUnused": {
+    "description": "Shown above the personal tool servers and terminals saved on a server that moved them to Tether: the server ignores them, and they are listed to read only."
+  },
+  "openWebUiDirectConnectionsMovedToTether": "This server moved direct connections to Tether. Models from your devices appear with its other models.",
+  "@openWebUiDirectConnectionsMovedToTether": {
+    "description": "Shown in the Open WebUI section of Direct Connections settings when the server is 0.13.4 or later, which replaced the direct connections users kept on it with Tether, Open WebUI's companion app. Keep 'Tether' untranslated."
+  },
+  "composerYourDevices": "Your devices",
+  "@composerYourDevices": {
+    "description": "Heading in the message box's tools menu above the tools and terminals the user's own computers offer through Tether (Open WebUI 0.13.4 and later)."
+  },
+  "tetherRelayInterrupted": "The connection to your device was interrupted. It may have finished anyway, so check before you try again.",
+  "@tetherRelayInterrupted": {
+    "description": "Shown for a reply or request Open WebUI relayed to one of the user's own devices through Tether when the relay broke: the operation may still have completed, so the user should check its result rather than repeat it."
+  },
+  "tetherRelayUnavailable": "Your device isn't available through Tether right now. Check that Tether is running on it.",
+  "@tetherRelayUnavailable": {
+    "description": "Shown when Open WebUI could not reach the user's own device through Tether: the device is offline or no longer offers the connection. Keep 'Tether' untranslated."
+  },
+  "tetherRelayBusy": "Your device is busy with other requests through Tether. Try again when they finish.",
+  "@tetherRelayBusy": {
+    "description": "Shown when Open WebUI turned a request away because the user's device already runs as many Tether operations as it allows. Keep 'Tether' untranslated."
+  },
+  "knowledgeBaseEntire": "Entire Knowledge Base",
+  "@knowledgeBaseEntire": {
+    "description": "Title of the knowledge picker's row, above a knowledge base's files, that attaches the whole base rather than one of its files."
   }
 }

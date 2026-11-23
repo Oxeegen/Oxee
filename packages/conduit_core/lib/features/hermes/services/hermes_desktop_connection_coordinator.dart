@@ -1,6 +1,7 @@
 import 'package:conduit_core/features/hermes/models/hermes_config.dart';
 import 'package:conduit_core/features/hermes/services/hermes_dashboard_bridge.dart';
 import 'package:conduit_core/features/hermes/services/hermes_desktop_api_service.dart';
+import 'package:conduit_core/ports/browser_auth_port.dart';
 import 'package:conduit_core/ports/external_url_port.dart';
 
 HermesDesktopAuthKind hermesRecommendedDesktopAuth(
@@ -30,6 +31,41 @@ HermesDesktopAuthKind hermesRecommendedDesktopAuth(
       : HermesDesktopAuthKind.dashboardCookie;
 }
 
+/// Why a connection editor's profile list is not the gateway's own: the
+/// editor keeps the profile it has, and says this under the list.
+enum HermesProfileListIssue {
+  /// No usable server URL yet.
+  noUrl,
+
+  /// Listing would send the draft's credentials unencrypted before the
+  /// user agreed to (Test, Save or sign-in asks).
+  testFirst,
+
+  /// The gateway listed none.
+  empty,
+
+  /// The gateway refused, or could not be reached: sign in first.
+  signInFirst,
+}
+
+/// What keeps [draft]'s profiles from being listed at all, or null when
+/// they can be asked for.
+HermesProfileListIssue? hermesProfileListBlocker(HermesConfig draft) {
+  if (HermesConfig.connectionOrigin(draft.baseUrl) == null) {
+    return HermesProfileListIssue.noUrl;
+  }
+  if (!draft.mayUsePlainHttp) return HermesProfileListIssue.testFirst;
+  return null;
+}
+
+/// The profile an editor shows once the gateway listed [profiles]:
+/// [current] while it is listed, else `default`, else the first. An empty
+/// list keeps [current].
+String hermesProfileAfterRefresh(List<String> profiles, String current) {
+  if (profiles.isEmpty || profiles.contains(current)) return current;
+  return profiles.contains('default') ? 'default' : profiles.first;
+}
+
 bool hermesDesktopConnectionMatches(HermesConfig left, HermesConfig right) {
   if (HermesConfig.connectionEndpoint(left.baseUrl) !=
           HermesConfig.connectionEndpoint(right.baseUrl) ||
@@ -53,10 +89,12 @@ bool hermesDesktopConnectionMatches(HermesConfig left, HermesConfig right) {
 final class HermesDesktopConnectionCoordinator {
   const HermesDesktopConnectionCoordinator({
     this.openExternalUrl,
+    this.browserAuth,
     this.dashboardBridgeFactory,
   });
 
   final OpenExternalUrlPort? openExternalUrl;
+  final BrowserAuthPort? browserAuth;
   final HermesDashboardBridgeFactory? dashboardBridgeFactory;
 
   Future<List<String>> profiles(
@@ -76,17 +114,21 @@ final class HermesDesktopConnectionCoordinator {
     );
   }
 
-  Future<void> signInNative(
+  /// Whether the user signed in: false when they closed the browser.
+  Future<bool> signInNative(
     HermesConfig config, {
     required HermesDesktopCredentialsWriter onCredentialsChanged,
     HermesDesktopApiService? service,
-  }) =>
-      service?.signInNative() ??
-      _using(
-        config,
-        (temporary) => temporary.signInNative(),
-        onCredentialsChanged: onCredentialsChanged,
-      );
+  }) async {
+    final tokens =
+        await (service?.signInNative() ??
+            _using(
+              config,
+              (temporary) => temporary.signInNative(),
+              onCredentialsChanged: onCredentialsChanged,
+            ));
+    return tokens != null;
+  }
 
   Future<HermesDesktopAuthKind> recommendedAuth(HermesConfig config) =>
       _using(config, (service) async {
@@ -108,6 +150,7 @@ final class HermesDesktopConnectionCoordinator {
     final service = HermesDesktopApiService(
       config: config,
       openExternalUrl: openExternalUrl,
+      browserAuth: browserAuth,
       dashboardBridgeFactory: dashboardBridgeFactory,
       onCredentialsChanged: onCredentialsChanged,
     );

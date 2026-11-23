@@ -1,7 +1,12 @@
+import 'dart:async';
+
 import 'package:checks/checks.dart';
-import 'package:conduit/features/hermes/views/hermes_hidden_sessions_page.dart';
+import 'package:conduit/core/services/native_sheet_bridge.dart';
 import 'package:conduit/features/hermes/widgets/hermes_session_tile.dart';
 import 'package:conduit/features/hermes/widgets/hermes_sessions_tab.dart';
+import 'package:conduit/features/settings/pages/hermes_settings_pages.dart';
+import 'package:conduit/features/settings/settings_page_module.dart';
+import 'package:conduit/features/settings/settings_pages.dart';
 import 'package:conduit/l10n/app_localizations_en.dart';
 import 'package:conduit/l10n/conduit_localizations.dart';
 import 'package:conduit/shared/utils/conversation_context_menu.dart';
@@ -11,6 +16,7 @@ import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 import 'package:conduit_core/features/hermes/services/hermes_api_service.dart';
 import 'package:conduit_core/features/hermes/services/hermes_set_aside_session_store.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
+import 'package:conduit_core/services/settings_service.dart';
 import 'package:conduit_core/ports/key_value_store.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -49,7 +55,9 @@ class _FlagsService extends HermesApiService {
   final edits = <String>[];
 
   @override
-  Future<List<Map<String, dynamic>>> listSessions() async => sessions;
+  Future<List<Map<String, dynamic>>> listSessions({
+    bool excludeScheduledRuns = false,
+  }) async => sessions;
 
   @override
   Future<Map<String, dynamic>> getCapabilities() async => const {};
@@ -245,7 +253,142 @@ void main() {
     ).isGreaterThan(tester.getTopLeft(archivedRow).dy);
   });
 
-  testWidgets('hidden chats are listed in settings and can be unhidden', (
+  testWidgets('scheduled runs leave the list when switched off; a pinned '
+      'one stays', (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final service = _FlagsService(
+      sessions: [
+        {
+          'id': 'chat',
+          'title': 'Synthetic chat',
+          'source': 'api_server',
+          'last_active': 300,
+        },
+        {
+          'id': 'run',
+          'title': 'Synthetic nightly digest',
+          'source': 'cron',
+          'last_active': 200,
+        },
+        {
+          'id': 'kept-run',
+          'title': 'Synthetic pinned digest',
+          'source': 'cron',
+          'pinned': true,
+          'last_active': 100,
+        },
+      ],
+      rows: {
+        'old-run': {
+          'id': 'old-run',
+          'title': 'Synthetic archived digest',
+          'source': 'cron',
+          'archived': true,
+        },
+      },
+    );
+    await HermesSetAsideSessionStore.remember(
+      HermesSetAsideSession(
+        scope: _scope,
+        sessionId: 'old-run',
+        title: 'Synthetic archived digest',
+        kind: HermesSetAsideKind.archived,
+      ),
+    );
+    final container = _container(service);
+    await tester.pumpWidget(
+      _host(
+        container,
+        const HermesSessionsTab(showBottomNavigationBar: false),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // On by default: nothing changes for anyone who has not chosen.
+    expect(find.text('Synthetic chat'), findsOneWidget);
+    expect(find.text('Synthetic nightly digest'), findsOneWidget);
+    expect(find.text('Synthetic pinned digest'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('hermes-archived-sessions')),
+      findsOneWidget,
+    );
+
+    await container
+        .read(appSettingsProvider.notifier)
+        .setHermesShowScheduledSessions(false);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Synthetic chat'), findsOneWidget);
+    expect(find.text('Synthetic nightly digest'), findsNothing);
+    expect(find.text('Synthetic pinned digest'), findsOneWidget);
+    // The only archived chat was a run: no archived row is left.
+    expect(
+      find.byKey(const ValueKey<String>('hermes-archived-sessions')),
+      findsNothing,
+    );
+    // This server listed the runs anyway, so the list says how many it
+    // leaves out, and Show lists them again.
+    final hiddenRow = find.byKey(
+      const ValueKey<String>('hermes-hidden-scheduled-runs'),
+    );
+    expect(
+      find.descendant(
+        of: hiddenRow,
+        matching: find.text(_l10n.hermesScheduledRunsHidden(2)),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.descendant(
+        of: hiddenRow,
+        matching: find.text(_l10n.hermesShowScheduledRunsAction),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      container.read(appSettingsProvider).hermesShowScheduledSessions,
+      isTrue,
+    );
+    expect(find.text('Synthetic nightly digest'), findsOneWidget);
+    expect(hiddenRow, findsNothing);
+  });
+
+  testWidgets('a list of nothing but runs says they are hidden rather than '
+      'that there are no chats', (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final service = _FlagsService(
+      sessions: [
+        for (var i = 0; i < 3; i++)
+          {
+            'id': 'run-$i',
+            'title': 'Synthetic digest $i',
+            'source': 'cron',
+            'last_active': 300 - i,
+          },
+      ],
+    );
+    final container = _container(service);
+    await container
+        .read(appSettingsProvider.notifier)
+        .setHermesShowScheduledSessions(false);
+    await tester.pumpWidget(
+      _host(
+        container,
+        const HermesSessionsTab(showBottomNavigationBar: false),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Synthetic digest 0'), findsNothing);
+    expect(find.text(_l10n.hermesNoConversationsMessage), findsNothing);
+    expect(find.text(_l10n.hermesScheduledRunsHidden(3)), findsOneWidget);
+  });
+
+  testWidgets('hidden chats are listed in Settings and can be unhidden', (
     tester,
   ) async {
     final service = _FlagsService(
@@ -266,18 +409,44 @@ void main() {
       ),
     );
     final container = _container(service);
-    await tester.pumpWidget(_host(container, const HermesHiddenSessionsPage()));
-    await tester.pumpAndSettle();
+    final pages = container
+        .read(settingsPageModulesProvider)
+        .whereType<HermesSettingsPages>()
+        .single;
+    container.read(settingsPagesProvider.notifier).register([
+      NativeSheetDetailConfig(id: hermesHiddenChatsPageId, title: ''),
+    ]);
+    Future<void> settle(Future<Object?> work) async {
+      var done = false;
+      unawaited(work.whenComplete(() => done = true));
+      while (!done) {
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+    }
 
-    expect(find.text('Synthetic hidden'), findsOneWidget);
-    await tester.tap(
-      find.byKey(const ValueKey<String>('hermes-unhide-session-secret')),
+    List<String> titles() => [
+      for (final section
+          in container
+              .read(settingsPagesProvider)[hermesHiddenChatsPageId]!
+              .sections)
+        for (final row in section.items) row.title,
+    ];
+
+    await settle(pages.hydrate(hermesHiddenChatsPageId, _l10n));
+    check(titles()).contains('Synthetic hidden');
+
+    await settle(
+      pages.handleChange(
+        hermesHiddenChatRowId('unhide', 'secret'),
+        true,
+        _l10n,
+      ),
     );
-    await tester.pumpAndSettle();
 
     check(service.edits).deepEquals(['secret hidden=false']);
-    expect(find.text('Synthetic hidden'), findsNothing);
-    expect(find.text(_l10n.hermesHiddenChatsEmpty), findsOneWidget);
+    check(titles()).not((it) => it.contains('Synthetic hidden'));
+    // The last one shown again, the page says none are hidden.
+    check(titles()).contains(_l10n.hermesHiddenChatsEmpty);
     check(HermesSetAsideSessionStore.forScope(_scope)).isEmpty();
   });
 

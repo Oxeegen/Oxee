@@ -1,0 +1,10 @@
+{
+  "description": "Searching Knowledge for “tide tables”",
+  "phrase": "knowledgeSearch",
+  "query": "tide tables",
+  "action": "knowledge_search",
+  "done": false,
+  "queries": [],
+  "links": [],
+  "details": []
+}

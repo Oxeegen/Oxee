@@ -1,0 +1,16 @@
+{
+  "detail": {
+    "kind": "knowledge",
+    "knowledge": {
+      "id": "",
+      "name": "Docs",
+      "description": "",
+      "fileCount": 0,
+      "external": false
+    },
+    "grants": [],
+    "writeAccess": true
+  },
+  "create": true,
+  "metadataOnly": true
+}

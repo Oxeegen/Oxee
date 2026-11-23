@@ -15,6 +15,7 @@ library;
 import 'dart:async';
 
 import 'package:meta/meta.dart';
+import 'package:riverpod/misc.dart' show Override;
 import 'package:riverpod/riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -26,6 +27,7 @@ import 'package:conduit_core/features/direct_connections/direct_connections.dart
 import 'package:conduit_core/features/hermes/models/hermes_model.dart';
 import 'package:conduit_core/features/tools/providers/tools_providers.dart';
 import 'package:conduit_core/database/database_provider.dart';
+import 'package:conduit_core/models/chat_comparison.dart';
 import 'package:conduit_core/models/conversation.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/sync/id_remapper.dart' show RemapEvent;
@@ -43,9 +45,19 @@ import 'package:conduit_core/utils/debug_logger.dart';
 /// A model comparison has one main answer per model, and all of them end the
 /// transcript. [isChatStreamingProvider] stays true while any one of them
 /// streams, so the queue waits for the last slot whichever finishes first.
-final chatMainAnswerActiveProvider = Provider<bool>(
-  (ref) => ref.watch(isChatStreamingProvider),
-);
+///
+/// A question the server holds until another reply ends
+/// ([ChatMessageComparisonFields.isHeldByServer]) has its answer still to
+/// come: a message sent under it would branch off the held question.
+final chatMainAnswerActiveProvider = Provider<bool>(_chatMainAnswerActive);
+
+bool _chatMainAnswerActive(Ref ref) =>
+    ref.watch(isChatStreamingProvider) ||
+    ref.watch(
+      chatMessagesProvider.select(
+        (messages) => messages.lastOrNull?.isHeldByServer ?? false,
+      ),
+    );
 
 /// Whether a draft's files are ready to send.
 enum ChatDraftReadiness {
@@ -220,6 +232,18 @@ List<QueuedDraftAttachment?> chatDraftFiles(
         .firstOrNull,
 ];
 
+/// What [draft] is shown as: its words, else the names of its files.
+String chatDraftPreview(
+  ChatDraftQueue queue,
+  QueuedChatDraft draft,
+  List<QueuedDraftAttachment> held,
+) => draft.text.isNotEmpty
+    ? draft.text
+    : [
+        for (final file in chatDraftFiles(queue, draft, held))
+          ?file?.upload.fileName,
+      ].join(', ');
+
 /// Whether [draft]'s files are all uploaded, judged against [held].
 ChatDraftReadiness chatDraftReadiness(
   ChatDraftQueue queue,
@@ -280,10 +304,12 @@ bool _canDrainRoute(dynamic read) {
 /// Whether a draft may be queued now: a response is running on a conversation
 /// that takes queued turns. Existing drafts stay visible and manageable
 /// whatever this says.
-final chatDraftQueueOfferProvider = Provider<bool>((ref) {
+final chatDraftQueueOfferProvider = Provider<bool>(_chatDraftQueueOffer);
+
+bool _chatDraftQueueOffer(Ref ref) {
   if (!ref.watch(chatMainAnswerActiveProvider)) return false;
   return _queueableRoute(ref.watch);
-});
+}
 
 ChatDraftQueue? _queueForActive(dynamic read, List<ChatDraftQueue> queues) {
   final active = read(activeConversationProvider) as Conversation?;
@@ -309,16 +335,90 @@ ChatDraftQueue? _queueForActive(dynamic read, List<ChatDraftQueue> queues) {
 /// The queue of the conversation on screen under the account that is signed
 /// in, or null. A queue of another conversation or account never shows here.
 final activeChatDraftQueueProvider = Provider<ChatDraftQueue?>(
-  (ref) => _queueForActive(ref.watch, ref.watch(chatDraftQueueProvider)),
+  _activeChatDraftQueue,
 );
+
+ChatDraftQueue? _activeChatDraftQueue(Ref ref) =>
+    _queueForActive(ref.watch, ref.watch(chatDraftQueueProvider));
 
 final chatDraftQueueProvider =
     NotifierProvider<ChatDraftQueueController, List<ChatDraftQueue>>(
       ChatDraftQueueController.new,
     );
 
+/// The queue's share of a chat scope (see `chatSessionScopeOverrides`): the
+/// queue itself and everything derived from the scope's chat, made again in
+/// the scope so they follow its conversation and answer, not the root's.
+List<Override> chatSessionScopedDraftQueueOverrides() => <Override>[
+  chatMainAnswerActiveProvider.overrideWith(_chatMainAnswerActive),
+  chatDraftQueueOfferProvider.overrideWith(_chatDraftQueueOffer),
+  activeChatDraftQueueProvider.overrideWith(_activeChatDraftQueue),
+  chatDraftQueueProvider.overrideWith(ChatDraftQueueController.new),
+];
+
+/// How a queue hands its batch over: the same durable send every ordinary
+/// message uses ([durableSend]), with [ref] the queue's own.
+typedef ChatDraftQueueSend = Future<void> Function(
+  dynamic ref,
+  String text,
+  List<String>? fileIds, {
+  List<String>? toolIds,
+  List<ChatContextAttachment>? contextAttachments,
+  void Function(ChatSendPlaceholderHandle handle)?
+  onAssistantPlaceholderCreated,
+  void Function(ChatSendAdmissionReceipt receipt)? onAdmissionCommitted,
+});
+
+/// The send a queue's batch goes through. [durableSend] everywhere mobile
+/// runs; a host that follows each turn it starts (the desktop daemon, which
+/// projects a chat scope's turns onto its windows) overrides it in its chat
+/// scopes, so a turn the queue starts is followed like any other.
+final chatDraftQueueSendProvider = Provider<ChatDraftQueueSend>(
+  (_) => _durableQueueSend,
+);
+
+/// What a queue's batch waits for before it is admitted, once the stop or the
+/// stopped answers the chat owed are settled; null when it waits for nothing.
+typedef ChatDraftQueueAdmissionWait = Future<void>? Function();
+
+/// What a batch waits for before it is admitted: it runs after the batch's
+/// answer has ended and before the batch is admitted. Nothing everywhere
+/// mobile runs, so the batch goes the moment its answer ends. The composer is
+/// free meanwhile, as while a Stop waits on the server: a message sent then
+/// goes first, and the batch follows that answer. A wait that fails admits
+/// nothing, and the drafts stay.
+final chatDraftQueueAdmissionWaitProvider =
+    Provider<ChatDraftQueueAdmissionWait>((_) => _noAdmissionWait);
+
+Future<void>? _noAdmissionWait() => null;
+
+Future<void> _durableQueueSend(
+  dynamic ref,
+  String text,
+  List<String>? fileIds, {
+  List<String>? toolIds,
+  List<ChatContextAttachment>? contextAttachments,
+  void Function(ChatSendPlaceholderHandle handle)?
+  onAssistantPlaceholderCreated,
+  void Function(ChatSendAdmissionReceipt receipt)? onAdmissionCommitted,
+}) => durableSend(
+  ref,
+  text,
+  fileIds,
+  toolIds: toolIds,
+  contextAttachments: contextAttachments,
+  onAssistantPlaceholderCreated: onAssistantPlaceholderCreated,
+  onAdmissionCommitted: onAdmissionCommitted,
+);
+
 class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
   bool _drainScheduled = false;
+
+  /// The queues whose batch is being admitted ([_admit]). One admission runs
+  /// per queue, claimed before its first wait: a drain asked for meanwhile
+  /// (reading the queue can itself ask for one) never sends the same drafts
+  /// again once the host's wait lets both through.
+  final Set<String> _admitting = <String>{};
   bool _lifetimeNoticeShown = false;
 
   /// True the first time it is asked in a session. Queued drafts do not survive
@@ -370,10 +470,12 @@ class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
   /// Queues what the composer holds behind the running response and clears it.
   /// Returns null when nothing can be queued now. The composer's files leave
   /// the tray but keep uploading, and a file that has not finished delays the
-  /// whole queue rather than being dropped.
+  /// whole queue rather than being dropped. Files alone make a draft, as they
+  /// make a message.
   QueuedChatDraft? enqueue(String text) {
     final trimmed = text.trim();
-    if (trimmed.isEmpty ||
+    final tray = ref.read(attachedFilesProvider);
+    if ((trimmed.isEmpty && tray.isEmpty) ||
         !ref.read(chatMainAnswerActiveProvider) ||
         !_queueableRoute(ref.read)) {
       return null;
@@ -381,7 +483,6 @@ class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
     final active = ref.read(activeConversationProvider)!;
     final owner = captureChatMutationOwner(ref, active);
 
-    final tray = ref.read(attachedFilesProvider);
     final context = ref.read(contextAttachmentsProvider);
     final existing = _active;
     final queueId = existing?.id ?? const Uuid().v4();
@@ -579,6 +680,11 @@ class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
         !draft.attachmentIds.contains(attachmentId)) {
       return false;
     }
+    // A draft of files alone would be sent empty once its last file goes.
+    if (draft.text.trim().isEmpty &&
+        draft.attachmentIds.every((owned) => owned == attachmentId)) {
+      return removeDraft(draftId);
+    }
     _replace(
       queue.id,
       (queue) => queue._copyWith(
@@ -726,25 +832,76 @@ class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
     String queueId,
     List<String> draftIds,
   ) async {
+    if (!_admitting.add(queueId)) return ChatDraftSendNowOutcome.changed;
+    try {
+      return await _admitClaimed(queueId, draftIds);
+    } finally {
+      _admitting.remove(queueId);
+      // A drain refused while this one ran is asked again: drafts queued
+      // meanwhile go once this batch's answer is done.
+      if (ref.mounted) _scheduleDrain();
+    }
+  }
+
+  /// [_admit], with the queue's admission claimed.
+  Future<ChatDraftSendNowOutcome> _admitClaimed(
+    String queueId,
+    List<String> draftIds,
+  ) async {
     // A Stop settles the visible answer before the server has answered, so the
     // response being idle says nothing about its cancellation: a turn is not
     // admitted over one the server has not accepted, and a refused one is asked
     // again here.
-    final cancelling = _owedCancellation(queueId);
-    if (cancelling != null) {
-      final refused = await _settleOwedWork(queueId, draftIds, cancelling);
-      if (refused != null) return refused;
+    //
+    // Nothing owed, nothing awaited: the batch is frozen in the same turn as
+    // the queue was found on screen.
+    Future<ChatDraftSendNowOutcome?>? settleOwedStops() {
+      final cancelling = _owedCancellation(queueId);
+      final owed = cancelling == null ? _owedStoppedAnswers(queueId) : null;
+      if (cancelling == null && owed == null) return null;
+      return () async {
+        if (cancelling != null) {
+          final refused = await _settleOwedWork(queueId, draftIds, cancelling);
+          if (refused != null) return refused;
+        }
+        final stopped = owed ?? _owedStoppedAnswers(queueId);
+        if (stopped != null) {
+          final refused = await _settleOwedWork(queueId, draftIds, stopped);
+          if (refused != null) return refused;
+        }
+        return null;
+      }();
     }
-    final owed = _owedStoppedAnswers(queueId);
-    if (owed != null) {
-      final refused = await _settleOwedWork(queueId, draftIds, owed);
-      if (refused != null) return refused;
+
+    final refusedBefore = await settleOwedStops();
+    if (refusedBefore != null) return refusedBefore;
+    // A wait that fails, or a host that throws instead of waiting, admits
+    // nothing: the drafts stay, as when a cancellation is refused.
+    Future<bool>? settled;
+    try {
+      settled = ref
+          .read(chatDraftQueueAdmissionWaitProvider)()
+          ?.then((_) => true, onError: (Object _) => false);
+    } catch (_) {
+      settled = Future<bool>.value(false);
     }
-    // Waiting on the server leaves the composer free, so another answer may have
-    // started meanwhile. A turn is not sent over it: the drafts stay whole, and
-    // the queue drains when that answer is done, as it does after any other.
+    if (settled != null) {
+      final refused = await _settleOwedWork(queueId, draftIds, settled);
+      if (refused != null) return refused;
+      // The composer was free while the host waited: a Stop pressed meanwhile
+      // is settled before the batch goes, as one pressed before.
+      if (!ref.mounted) return ChatDraftSendNowOutcome.changed;
+      final refusedAfter = await settleOwedStops();
+      if (refusedAfter != null) return refusedAfter;
+    }
+    // Waiting on the server (or the host) leaves the composer free, so another
+    // answer may have started meanwhile. A turn is not sent over it: the drafts
+    // stay whole, and the queue drains when that answer is done, as it does
+    // after any other.
     if (!ref.mounted) return ChatDraftSendNowOutcome.changed;
-    if (ref.read(chatMainAnswerActiveProvider)) {
+    // Nor is it sent into a chat opened meanwhile: the batch is its own
+    // chat's, and waits for it.
+    if (_active?.id != queueId || ref.read(chatMainAnswerActiveProvider)) {
       _replace(
         queueId,
         (queue) => queue.phase == ChatDraftQueuePhase.admitting
@@ -775,7 +932,10 @@ class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
       }
     }
     final frozenIds = [for (final draft in batch) draft.id];
-    final text = batch.map((draft) => draft.text).join('\n\n');
+    final text = [
+      for (final draft in batch)
+        if (draft.text.isNotEmpty) draft.text,
+    ].join('\n\n');
     final contextAttachments = [
       for (final draft in batch) ...draft.contextAttachments,
     ];
@@ -792,7 +952,7 @@ class ChatDraftQueueController extends Notifier<List<ChatDraftQueue>> {
     ChatSendPlaceholderHandle? placeholder;
     var committed = false;
     try {
-      await durableSend(
+      await ref.read(chatDraftQueueSendProvider)(
         ref,
         text,
         fileIds.isEmpty ? null : fileIds,

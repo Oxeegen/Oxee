@@ -19,7 +19,13 @@ import 'package:conduit_core/sync/pull_sync.dart';
 import 'package:conduit_core/sync/push_sync.dart';
 import 'package:conduit_core/sync/sync_api_client.dart';
 import 'package:conduit_core/sync/sync_entity_adapter.dart';
-import 'package:drift/drift.dart' show Value;
+import 'package:drift/drift.dart'
+    show
+        ApplyInterceptor,
+        QueryExecutor,
+        QueryInterceptor,
+        TransactionExecutor,
+        Value;
 import 'package:drift/native.dart';
 import 'package:test/test.dart';
 
@@ -39,6 +45,9 @@ class FakeSyncClock implements SyncClock {
 class RecordingSyncApiClient implements SyncApiClient {
   RecordingSyncApiClient(this.server);
   final FakeOpenWebUiServer server;
+
+  @override
+  SyncApiClient? ownedBy(AppDatabase db) => this;
 
   final List<String> calls = <String>[];
   final List<String> events = <String>[];
@@ -98,10 +107,34 @@ class RecordingSyncApiClient implements SyncApiClient {
   }
 
   @override
+  Future<List<String>> getChatTaskIds(String chatId) async =>
+      server.getTaskIdsByChat(chatId);
+
+  @override
+  Future<void> stopChatTasks(String chatId) async =>
+      server.stopTasksByChat(chatId);
+
+  @override
+  Future<String?> sessionUserId() async => FakeOpenWebUiServer.userId;
+
+  @override
   Future<bool> deleteChat(String id) {
     calls.add('deleteChat:$id');
     events.add('deleteChat:$id');
     return _track(id, () async => server.deleteChat(id));
+  }
+
+  @override
+  Future<void> deleteChatMessages(String chatId, List<String> messageIds) {
+    for (final messageId in messageIds) {
+      calls.add('deleteChatMessage:$chatId/$messageId');
+      events.add('deleteChatMessage:$chatId/$messageId');
+    }
+    return _track(chatId, () async {
+      for (final messageId in messageIds) {
+        server.deleteChatMessage(chatId, messageId);
+      }
+    });
   }
 
   @override
@@ -145,6 +178,10 @@ class RecordingSyncApiClient implements SyncApiClient {
   @override
   Future<List<Map<String, dynamic>>> getArchivedChatListPage(int page) async =>
       throw UnimplementedError();
+  @override
+  Future<Set<String>> getPinnedChatIds() async => throw UnimplementedError();
+  @override
+  Future<int?> getArchivedChatCount() async => throw UnimplementedError();
   @override
   Future<Map<String, dynamic>?> getChatRaw(String id) async =>
       throw UnimplementedError();
@@ -230,6 +267,9 @@ class FakeCompletionRunner implements RequestCompletionRunner {
   int failuresRemaining = 0;
   Object error = StateError('completion boom');
 
+  /// Runs inside each attempt, before it fails or succeeds.
+  Future<void> Function(Map<String, dynamic> payload)? onRun;
+
   @override
   Future<void> run({
     required String chatId,
@@ -239,6 +279,7 @@ class FakeCompletionRunner implements RequestCompletionRunner {
     ranChats.add(chatId);
     events?.add('completion:$chatId');
     await Future<void>.delayed(Duration.zero);
+    await onRun?.call(payload);
     if (failuresRemaining > 0) {
       failuresRemaining--;
       throw error;
@@ -258,10 +299,12 @@ void main() {
   late PushSync push;
   late FakeSyncClock clock;
   late FakeCompletionRunner completion;
+  late _EmptyClaimWatch claims;
   var online = true;
 
   setUp(() {
-    db = AppDatabase(NativeDatabase.memory());
+    claims = _EmptyClaimWatch();
+    db = AppDatabase(NativeDatabase.memory().interceptWith(claims));
     dao = db.outboxDao;
     server = FakeOpenWebUiServer();
     client = RecordingSyncApiClient(server);
@@ -614,6 +657,61 @@ void main() {
       },
     );
 
+    for (final (cause, error, attemptsBefore) in <(String, Object, int)>[
+      (
+        'a terminal error',
+        const SyncTerminalException(statusCode: 403, message: 'refused'),
+        0,
+      ),
+      ('the error of its last attempt', StateError('completion boom'), 4),
+    ]) {
+      test('a stopped op whose settlement fails once is retried, never parked '
+          'behind $cause, and the chat\'s next op then runs', () async {
+        await seedServerChat('c1');
+        final seq = await enqueue(
+          kind: OutboxKind.requestCompletion,
+          chatId: 'c1',
+          payload: const RequestCompletionPayload(
+            assistantMessageId: 'a1',
+            model: 'm',
+          ).toJson(),
+        );
+        await (db.update(db.outboxOps)..where((t) => t.seq.equals(seq))).write(
+          OutboxOpsCompanion(attempts: Value(attemptsBefore)),
+        );
+        await enqueue(kind: OutboxKind.updateChat, chatId: 'c1');
+        completion
+          ..failuresRemaining = 2
+          ..onRun = (payload) async {
+            if (completion.runs == 1) {
+              // Stopped while its attempt runs, which then fails.
+              await db.chatsDao.cancelPendingCompletion('c1');
+              completion.error = error;
+            } else {
+              check(payload['stopped']).equals(true);
+              completion.error = StateError('the stopped answer not written');
+            }
+          };
+        final drainer = buildDrainer();
+
+        await drainer.drain();
+
+        check(await dao.watchParkedForChat('c1').first).isEmpty();
+        check(await dao.opBySeq(seq))
+            .isNotNull()
+            .has((op) => op.attempts, 'attempts')
+            .equals(attemptsBefore);
+        check(client.calls).isEmpty();
+
+        clock.now += 10;
+        await drainer.drain();
+
+        check(completion.runs).equals(3);
+        check(await dao.opBySeq(seq)).isNull();
+        check(client.calls).deepEquals(['updateChat:c1']);
+      });
+    }
+
     test(
       'malformed requestCompletion without chatId parks immediately',
       () async {
@@ -686,6 +784,237 @@ void main() {
       // now so the op runs immediately and (no more failures) completes.
       await drainer.onConnectivityRegained();
       check(await dao.pendingForChat('c1')).isEmpty();
+    });
+  });
+
+  group('a message the server must delete', () {
+    // The empty answer of a question Open WebUI holds behind a running reply:
+    // the server answers the question only once nothing answers it, so its
+    // delete is tried again until it lands, and the completion never is.
+    test(
+      'a delete that fails is tried again until the message is gone',
+      () async {
+        await seedServerChat('c1');
+        server.seedChat(
+          id: 'c1',
+          blob: const {
+            'title': 'x',
+            'history': {
+              'currentId': 'a1',
+              'messages': {
+                'u1': {
+                  'id': 'u1',
+                  'role': 'user',
+                  'content': 'Is the kettle on?',
+                  'childrenIds': ['a1'],
+                  'meta': {'status': 'pending'},
+                },
+                'a1': {
+                  'id': 'a1',
+                  'parentId': 'u1',
+                  'role': 'assistant',
+                  'content': '',
+                  'childrenIds': <String>[],
+                },
+              },
+            },
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        );
+        await enqueue(
+          kind: OutboxKind.deleteMessages,
+          chatId: 'c1',
+          payload: {
+            kDeleteMessagesIdsKey: ['a1'],
+          },
+        );
+        client.failuresByChat['c1'] = [StateError('transient')];
+        final drainer = buildDrainer(backoff: Backoff(jitter: () => 0.999999));
+        final pushes = db.chatsDao.pushVersion('c1');
+
+        await drainer.drain();
+        final waiting = (await dao.pendingForChat('c1')).single;
+        check(waiting.attempts).equals(1);
+        check(waiting.nextAttemptAt).equals(clock.now + 2);
+        check(db.chatsDao.pushVersion('c1')).equals(pushes);
+
+        clock.now += 2;
+        await drainer.drain();
+
+        check(await dao.pendingForChat('c1')).isEmpty();
+        // Landed as a push does: a copy of the chat read before it still has
+        // the answer, and a pull stores nothing of it.
+        check(db.chatsDao.pushVersion('c1')).equals(pushes + 1);
+        final history =
+            (server.getChatById('c1')!['chat'] as Map)['history'] as Map;
+        check((history['messages'] as Map).keys.toList()).deepEquals(['u1']);
+        check(((history['messages'] as Map)['u1'] as Map)['childrenIds'])
+            .isA<List>()
+            .isEmpty();
+        check(client.calls)
+            .deepEquals(['deleteChatMessage:c1/a1', 'deleteChatMessage:c1/a1']);
+        check(completion.runs).equals(0);
+      },
+    );
+
+    test('one parked on a refusal holds up no later work', () async {
+      await seedServerChat('c1');
+      final delete = await enqueue(
+        kind: OutboxKind.deleteMessages,
+        chatId: 'c1',
+        payload: {
+          kDeleteMessagesIdsKey: ['a1'],
+        },
+      );
+      await dao.markParked(delete, error: 'deleteChatMessages forbidden');
+      await enqueue(kind: OutboxKind.updateChat, chatId: 'c1');
+
+      await buildDrainer().drain();
+
+      check(client.calls).deepEquals(['updateChat:c1']);
+      check(await dao.pendingForChat('c1')).isEmpty();
+      check((await dao.opBySeq(delete))!.status).equals(OutboxStatus.failed);
+    });
+
+    test('one re-armed once the workers ran out of work is sent by that '
+        'drain', () async {
+      final delete = await enqueue(
+        kind: OutboxKind.deleteMessages,
+        chatId: 'c1',
+        payload: {
+          kDeleteMessagesIdsKey: ['a1'],
+        },
+      );
+      await dao.markParked(delete, error: 'deleteChatMessages forbidden');
+      final recovery = _GatedRecovery(dao, delete);
+      var emptyClaims = 0;
+      // Both workers' claims found nothing: the re-arm requeues the delete
+      // and ends before the claim that found nothing last returns.
+      claims.onEmptyClaim = () async {
+        if (++emptyClaims != OutboxDrainer.kPoolSize) return;
+        recovery.gate.complete();
+        await recovery.rearmed.future;
+      };
+      final drainer = buildDrainer(
+        adapters: [
+          ChatAdapter(
+            pull: PullSync(
+              client: client,
+              db: db,
+              locks: chatLocks,
+              remapper: remapper,
+            ),
+            push: push,
+          ),
+          recovery,
+        ],
+      );
+
+      await drainer.drain();
+
+      check(client.calls).deepEquals(['deleteChatMessage:c1/a1']);
+      check(await dao.opBySeq(delete)).isNull();
+    });
+  });
+
+  // CodeRabbit 4651804341.
+  test('a drain whose worker fails ends only once the re-arm it started '
+      'has', () async {
+    final delete = await enqueue(
+      kind: OutboxKind.deleteMessages,
+      chatId: 'c1',
+      payload: {
+        kDeleteMessagesIdsKey: ['a1'],
+      },
+    );
+    await dao.markParked(delete, error: 'deleteChatMessages forbidden');
+    final recovery = _GatedRecovery(dao, delete);
+    final ended = <String>[];
+    unawaited(recovery.rearmed.future.then((_) => ended.add('re-arm')));
+    var emptyClaims = 0;
+    claims.onEmptyClaim = () async {
+      // Each worker's claim fails. The re-arm goes on once the work of that
+      // turn is done, by when a drain that does not wait for it has ended.
+      if (++emptyClaims == OutboxDrainer.kPoolSize) {
+        Timer.run(recovery.gate.complete);
+      }
+      throw StateError('claim failed');
+    };
+    final drainer = buildDrainer(adapters: [recovery]);
+
+    await check(drainer.drain()).throws();
+    ended.add('drain');
+    await recovery.rearmed.future;
+
+    check(ended).deepEquals(['re-arm', 'drain']);
+  });
+
+  group('parked ops whose check could not tell', () {
+    test('are checked again by a drain asked for once that is due, while one '
+        'that began before then runs', () async {
+      final recovery = _UndecidedOnce();
+      final drainer = buildDrainer(adapters: [recovery]);
+      // The first drain's re-arm could not tell: it is checked again later.
+      await drainer.drain();
+      check(recovery.checks).equals(1);
+
+      var asked = false;
+      claims.onEmptyClaim = () async {
+        if (asked) return;
+        asked = true;
+        clock.now += 3600;
+        unawaited(drainer.drain());
+      };
+      await drainer.drain();
+
+      check(asked).isTrue();
+      check(recovery.checks).equals(2);
+    });
+
+    test('are checked by a drain asked for while a re-arm runs once it ends, '
+        'when one parked meanwhile', () async {
+      await seedServerChat('c1');
+      final update = await enqueue(kind: OutboxKind.updateChat, chatId: 'c1');
+      client.failuresByChat['c1'] = [
+        const SyncTerminalException(
+          statusCode: 403,
+          message: 'ownership unknown',
+          mayRecover: true,
+        ),
+      ];
+      final recovery = _GatedChecks();
+      final drainer = buildDrainer(
+        adapters: [
+          ChatAdapter(
+            pull: PullSync(
+              client: client,
+              db: db,
+              locks: chatLocks,
+              remapper: remapper,
+            ),
+            push: push,
+          ),
+          recovery,
+        ],
+      );
+      var emptyClaims = 0;
+      claims.onEmptyClaim = () async {
+        switch (++emptyClaims) {
+          // The update parked while the first drain's re-arm waits, and its
+          // recheck is due by the drain asked for then.
+          case OutboxDrainer.kPoolSize:
+            clock.now += 3600;
+            unawaited(drainer.drain());
+          case const (OutboxDrainer.kPoolSize + 1):
+            recovery.gate.complete();
+        }
+      };
+
+      await drainer.drain();
+
+      check((await dao.opBySeq(update))!.status).equals(OutboxStatus.failed);
+      check(recovery.checks).equals(2);
     });
   });
 
@@ -864,6 +1193,116 @@ void main() {
       check(await db.chatsDao.getChat('c1')).isNull();
     });
   });
+}
+
+/// Runs [onEmptyClaim] once a drainer's claim that found nothing to run has
+/// committed, before that claim returns.
+final class _EmptyClaimWatch extends QueryInterceptor {
+  Future<void> Function()? onEmptyClaim;
+  final _empty = <TransactionExecutor>{};
+
+  @override
+  Future<List<Map<String, Object?>>> runSelect(
+    QueryExecutor executor,
+    String statement,
+    List<Object?> args,
+  ) async {
+    final rows = await executor.runSelect(statement, args);
+    if (rows.isEmpty &&
+        executor is TransactionExecutor &&
+        statement.contains('"next_attempt_at" <=')) {
+      _empty.add(executor);
+    }
+    return rows;
+  }
+
+  @override
+  Future<void> commitTransaction(TransactionExecutor inner) async {
+    await inner.send();
+    if (_empty.remove(inner)) await onEmptyClaim?.call();
+  }
+}
+
+/// Recovery that re-arms parked op [seq] once [gate] opens, and owns no kind.
+final class _GatedRecovery implements SyncEntityAdapter, ParkedOpRecovery {
+  _GatedRecovery(this.dao, this.seq);
+
+  final OutboxDao dao;
+  final int seq;
+  final gate = Completer<void>();
+  final rearmed = Completer<void>();
+
+  @override
+  Future<bool> rearmRecoverable({required int nowEpochSeconds}) async {
+    await gate.future;
+    try {
+      await dao.requeueParked(seq, nowEpochSeconds: nowEpochSeconds);
+    } catch (error, stackTrace) {
+      // The claim waiting on it reports the failure instead of timing out.
+      rearmed.completeError(error, stackTrace);
+      rethrow;
+    }
+    rearmed.complete();
+    return false;
+  }
+
+  @override
+  bool ownsKind(OutboxKind kind) => false;
+
+  @override
+  String get watermarkKey => throw UnimplementedError();
+  @override
+  int get pullOverlap => throw UnimplementedError();
+  @override
+  Future<List<SyncListItem>> getListPage(int page) =>
+      throw UnimplementedError();
+  @override
+  int get listPageSize => throw UnimplementedError();
+  @override
+  bool get listEnvelopeIsFullRaw => throw UnimplementedError();
+  @override
+  Future<Map<String, dynamic>?> fetchRaw(String id) =>
+      throw UnimplementedError();
+  @override
+  Future<bool> mergeServer(Map<String, dynamic> raw) =>
+      throw UnimplementedError();
+  @override
+  Future<void> pushOp(OutboxOp op) => throw UnimplementedError();
+}
+
+/// Recovery whose first check could not tell, and whose later ones re-arm
+/// nothing; it owns no kind.
+final class _UndecidedOnce implements SyncEntityAdapter, ParkedOpRecovery {
+  int checks = 0;
+
+  @override
+  Future<bool> rearmRecoverable({required int nowEpochSeconds}) async =>
+      ++checks == 1;
+
+  @override
+  bool ownsKind(OutboxKind kind) => false;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
+}
+
+/// Recovery that counts its checks, the first of which waits for [gate]; it
+/// re-arms nothing and owns no kind.
+final class _GatedChecks implements SyncEntityAdapter, ParkedOpRecovery {
+  final gate = Completer<void>();
+  int checks = 0;
+
+  @override
+  Future<bool> rearmRecoverable({required int nowEpochSeconds}) async {
+    if (++checks == 1) await gate.future;
+    return false;
+  }
+
+  @override
+  bool ownsKind(OutboxKind kind) => false;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
 /// Answers only delete all, and holds the answer until the test releases it.

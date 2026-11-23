@@ -6,6 +6,7 @@ import SafariServices
 import StoreKit
 import UIKit
 import UniformTypeIdentifiers
+import WebKit
 
 func loadFlutterAssetImage(_ asset: String, bundle: Bundle = .main) -> UIImage? {
     let assetKey = FlutterDartProject.lookupKey(forAsset: asset)
@@ -216,6 +217,8 @@ private struct NativeSheetItem {
     let placeholder: String?
     let options: [NativeSheetOption]
     let filterAllLabel: String?
+    /// Asked before the row acts; its title is the answer that goes ahead.
+    let confirmMessage: String?
     let sourceIndex: Int?
     let sourceUrl: String?
     let sourceType: String?
@@ -237,6 +240,19 @@ private struct NativeSheetItem {
     let accent: Bool
     /// Draws the row as the sheet's profile summary.
     let usesProfileAvatar: Bool
+    /// Shown dimmed, taking no taps.
+    let disabled: Bool
+    /// The keyboard a text row brings up: url, email, number, decimal;
+    /// nil = default.
+    let keyboard: String?
+    /// A secure row's password role: current, newPassword, or nil for any
+    /// other secret.
+    let passwordRole: String?
+    /// What else the row can do: a long press lists them, and a swipe offers
+    /// them where the page is not reordering. Each is sent as its own id.
+    let rowActions: [NativeSheetRowAction]
+    /// The colour the row's symbol is drawn in, in place of the page's tint.
+    let symbolColor: UIColor?
 
     init?(_ payload: [String: Any]) {
         guard
@@ -270,6 +286,7 @@ private struct NativeSheetItem {
         options = (payload["options"] as? [[String: Any]] ?? [])
             .compactMap(NativeSheetOption.init)
         filterAllLabel = payload["filterAllLabel"] as? String
+        confirmMessage = payload["confirmMessage"] as? String
         sourceIndex = NativeSheetItem.optionalInt(payload["sourceIndex"])
         sourceUrl = payload["sourceUrl"] as? String
         sourceType = payload["sourceType"] as? String
@@ -296,6 +313,13 @@ private struct NativeSheetItem {
         checked = payload["checked"] as? Bool ?? false
         accent = payload["accent"] as? Bool ?? false
         usesProfileAvatar = payload["usesProfileAvatar"] as? Bool ?? false
+        disabled = payload["disabled"] as? Bool ?? false
+        keyboard = payload["keyboard"] as? String
+        passwordRole = payload["passwordRole"] as? String
+        rowActions = (payload["rowActions"] as? [[String: Any]] ?? [])
+            .compactMap(NativeSheetRowAction.init)
+        symbolColor = (payload["symbolColor"] as? NSNumber)
+            .map { nativeSheetColor($0.int64Value) }
     }
 
     private static func optionalDouble(_ value: Any?) -> Double? {
@@ -320,6 +344,54 @@ private struct NativeSheetItem {
         default:
             return nil
         }
+    }
+}
+
+/// One more thing a row can do, sent as its own control id.
+private struct NativeSheetRowAction {
+    let id: String
+    let label: String
+    let sfSymbol: String?
+    let destructive: Bool
+    /// Asked before it acts; the label confirms.
+    let confirmMessage: String?
+    /// The page it opens, as a row leading to that page does.
+    let detailId: String?
+
+    init?(_ payload: [String: Any]) {
+        guard let id = payload["id"] as? String, !id.isEmpty,
+              let label = payload["label"] as? String, !label.isEmpty
+        else { return nil }
+        self.id = id
+        self.label = label
+        sfSymbol = payload["sfSymbol"] as? String
+        destructive = payload["destructive"] as? Bool ?? false
+        confirmMessage = payload["confirmMessage"] as? String
+        detailId = (payload["detailId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The action as a row of its own, for the sheet to act on as it acts on
+    /// a tapped row: asking first when it has a question, then sending it,
+    /// or pushing the page it names.
+    var asItem: NativeSheetItem? {
+        if let detailId {
+            // Its question, when it has one, is asked before the page opens.
+            var page: [String: Any] = [
+                "id": detailId,
+                "title": label,
+                "destructive": destructive,
+            ]
+            page["confirmMessage"] = confirmMessage
+            return NativeSheetItem(page)
+        }
+        var payload: [String: Any] = [
+            "id": id,
+            "title": label,
+            "destructive": destructive,
+            "showsDisclosure": false,
+        ]
+        payload["confirmMessage"] = confirmMessage
+        return NativeSheetItem(payload)
     }
 }
 
@@ -732,9 +804,153 @@ private struct NativeResultSheetConfiguration {
             return item.value as? Bool ?? false
         case "slider":
             return item.sliderNumericValue
+        case "date", "time":
+            return item.value as? String
         default:
             return nil
         }
+    }
+}
+
+/// The question a page asks before its unsaved changes are dropped.
+/// A page's month calendar: the system's month grid above the rows, the
+/// rows being the chosen day's.
+private struct NativeSheetMonthCalendar: Equatable {
+    let id: String
+    /// The first day of the month to show.
+    let month: DateComponents
+    let selectedDay: DateComponents
+    /// The colours each marked day is marked in, by `yyyy-MM-dd`.
+    let marks: [String: [Int64]]
+    /// The app's language, which the grid's month and weekday names
+    /// follow; nil for the device's.
+    let locale: Locale?
+
+    init?(_ payload: Any?) {
+        guard let payload = payload as? [String: Any],
+              let id = payload["id"] as? String,
+              !id.isEmpty,
+              let month = (payload["month"] as? String).flatMap(Self.components),
+              let day = (payload["selectedDay"] as? String)
+                  .flatMap(Self.components)
+        else { return nil }
+        self.id = id
+        self.month = month
+        selectedDay = day
+        locale = (payload["locale"] as? String)
+            .flatMap { $0.isEmpty ? nil : Locale(identifier: $0) }
+        var marks: [String: [Int64]] = [:]
+        for entry in payload["marks"] as? [[String: Any]] ?? [] {
+            guard let day = entry["day"] as? String,
+                  Self.components(day) != nil
+            else { continue }
+            let colors = (entry["colors"] as? [Any] ?? []).compactMap {
+                ($0 as? NSNumber)?.int64Value
+            }
+            if !colors.isEmpty { marks[day] = colors }
+        }
+        self.marks = marks
+    }
+
+    /// The calendar Dart's `yyyy-MM-dd` days are in: Gregorian, whatever
+    /// the device's own calendar, so the grid's days are the rows' days.
+    static let gregorian: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = .autoupdatingCurrent
+        calendar.timeZone = .autoupdatingCurrent
+        return calendar
+    }()
+
+    /// `yyyy-MM-dd` as a Gregorian day.
+    static func components(_ text: String) -> DateComponents? {
+        let parts = text.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return DateComponents(
+            calendar: gregorian,
+            year: parts[0],
+            month: parts[1],
+            day: parts[2]
+        )
+    }
+
+    /// [components]'s day as `yyyy-MM-dd`.
+    static func key(_ components: DateComponents) -> String? {
+        guard let year = components.year,
+              let month = components.month,
+              let day = components.day
+        else { return nil }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+}
+
+/// Up to three dots under a day of a month calendar, one per colour.
+private final class NativeCalendarDotsView: UIView {
+    private static let diameter: CGFloat = 5
+    private static let spacing: CGFloat = 2
+    private let count: Int
+
+    init(colors: [UIColor]) {
+        count = colors.count
+        super.init(frame: .zero)
+        isAccessibilityElement = false
+        for (index, color) in colors.enumerated() {
+            let dot = UIView(frame: CGRect(
+                x: CGFloat(index) * (Self.diameter + Self.spacing),
+                y: 0,
+                width: Self.diameter,
+                height: Self.diameter
+            ))
+            dot.backgroundColor = color
+            dot.layer.cornerRadius = Self.diameter / 2
+            addSubview(dot)
+        }
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(
+            width: CGFloat(count) * Self.diameter
+                + CGFloat(max(count - 1, 0)) * Self.spacing,
+            height: Self.diameter
+        )
+    }
+}
+
+/// A page's search field, filtering its rows as the person types.
+private struct NativeSheetSearch: Equatable {
+    let id: String
+    let placeholder: String?
+    /// The query the page's rows answer.
+    let value: String
+
+    init?(_ payload: Any?) {
+        guard let payload = payload as? [String: Any],
+              let id = payload["id"] as? String,
+              !id.isEmpty
+        else { return nil }
+        self.id = id
+        placeholder = payload["placeholder"] as? String
+        value = payload["value"] as? String ?? ""
+    }
+}
+
+private struct NativeSheetDiscardPrompt {
+    let title: String
+    let message: String
+    let discardLabel: String
+    let keepLabel: String
+
+    init?(_ payload: [String: Any]) {
+        guard let title = payload["discardTitle"] as? String, !title.isEmpty,
+              let message = payload["discardMessage"] as? String,
+              let discardLabel = payload["discardConfirmLabel"] as? String,
+              let keepLabel = payload["discardCancelLabel"] as? String
+        else { return nil }
+        self.title = title
+        self.message = message
+        self.discardLabel = discardLabel
+        self.keepLabel = keepLabel
     }
 }
 
@@ -751,6 +967,23 @@ private struct NativeSheetDetail {
     /// A bar button that closes the sheet and then sends this action.
     let trailingActionId: String?
     let trailingActionSfSymbol: String?
+    /// With it, the bar button pushes this page, as a row leading to it
+    /// would.
+    let trailingActionDetailId: String?
+    /// What the page asks before its unsaved changes are dropped; nil drops
+    /// them without asking.
+    let discardPrompt: NativeSheetDiscardPrompt?
+    /// Working on what Done sent: Done waits, and the rows take no taps.
+    let busy: Bool
+    /// Read out by VoiceOver as the page is described with it.
+    let announcement: String?
+    /// Holds changes not yet saved, as Dart counts them, here or on the
+    /// pages it leads to: leaving asks the discard question.
+    let edited: Bool
+    /// A search field above the rows, as a long list's filter.
+    let search: NativeSheetSearch?
+    /// A month calendar above the rows, the rows being the chosen day's.
+    let calendar: NativeSheetMonthCalendar?
 
     init(
         id: String,
@@ -762,7 +995,14 @@ private struct NativeSheetDetail {
         confirmActionLabel: String? = nil,
         maxHeightFraction: CGFloat? = nil,
         trailingActionId: String? = nil,
-        trailingActionSfSymbol: String? = nil
+        trailingActionSfSymbol: String? = nil,
+        trailingActionDetailId: String? = nil,
+        discardPrompt: NativeSheetDiscardPrompt? = nil,
+        busy: Bool = false,
+        announcement: String? = nil,
+        edited: Bool = false,
+        search: NativeSheetSearch? = nil,
+        calendar: NativeSheetMonthCalendar? = nil
     ) {
         self.id = id
         self.title = title
@@ -774,6 +1014,13 @@ private struct NativeSheetDetail {
         self.maxHeightFraction = maxHeightFraction
         self.trailingActionId = trailingActionId
         self.trailingActionSfSymbol = trailingActionSfSymbol
+        self.trailingActionDetailId = trailingActionDetailId
+        self.discardPrompt = discardPrompt
+        self.busy = busy
+        self.announcement = announcement
+        self.edited = edited
+        self.search = search
+        self.calendar = calendar
     }
 
     init?(_ payload: [String: Any]) {
@@ -798,6 +1045,13 @@ private struct NativeSheetDetail {
         maxHeightFraction = NativeSheetDetail.parseMaxHeightFraction(payload["maxHeightFraction"])
         trailingActionId = payload["trailingActionId"] as? String
         trailingActionSfSymbol = payload["trailingActionSfSymbol"] as? String
+        trailingActionDetailId = payload["trailingActionDetailId"] as? String
+        discardPrompt = NativeSheetDiscardPrompt(payload)
+        busy = payload["busy"] as? Bool ?? false
+        announcement = payload["announcement"] as? String
+        edited = payload["edited"] as? Bool ?? false
+        search = NativeSheetSearch(payload["search"])
+        calendar = NativeSheetMonthCalendar(payload["calendar"])
     }
 
     private static func parseMaxHeightFraction(_ value: Any?) -> CGFloat? {
@@ -987,6 +1241,30 @@ private extension PlatformNativeSheetDetail {
         payload["maxHeightFraction"] = maxHeightFraction
         payload["trailingActionId"] = trailingActionId
         payload["trailingActionSfSymbol"] = trailingActionSfSymbol
+        payload["trailingActionDetailId"] = trailingActionDetailId
+        payload["discardTitle"] = discardTitle
+        payload["discardMessage"] = discardMessage
+        payload["discardConfirmLabel"] = discardConfirmLabel
+        payload["discardCancelLabel"] = discardCancelLabel
+        payload["busy"] = busy
+        payload["announcement"] = announcement
+        payload["edited"] = edited
+        if let search {
+            var entry: [String: Any] = ["id": search.id, "value": search.value]
+            entry["placeholder"] = search.placeholder
+            payload["search"] = entry
+        }
+        if let calendar {
+            payload["calendar"] = [
+                "id": calendar.id,
+                "month": calendar.month,
+                "selectedDay": calendar.selectedDay,
+                "marks": calendar.marks.map { mark -> [String: Any] in
+                    ["day": mark.day, "colors": mark.colors]
+                },
+                "locale": calendar.locale ?? "",
+            ] as [String: Any]
+        }
         return payload
     }
 }
@@ -1028,6 +1306,22 @@ private extension PlatformNativeSheetItem {
         payload["accent"] = accent
         payload["usesProfileAvatar"] = usesProfileAvatar
         payload["filterAllLabel"] = filterAllLabel
+        payload["confirmMessage"] = confirmMessage
+        payload["disabled"] = disabled
+        payload["keyboard"] = keyboard
+        payload["passwordRole"] = passwordRole
+        payload["symbolColor"] = symbolColor
+        payload["rowActions"] = rowActions?.map { action -> [String: Any] in
+            var entry: [String: Any] = [
+                "id": action.id,
+                "label": action.label,
+                "destructive": action.destructive,
+            ]
+            entry["sfSymbol"] = action.sfSymbol
+            entry["confirmMessage"] = action.confirmMessage
+            entry["detailId"] = action.detailId
+            return entry
+        }
         return payload
     }
 }
@@ -1049,6 +1343,10 @@ private extension PlatformNativeSheetItemKind {
         case .source: "source"
         case .statusUpdate: "statusUpdate"
         case .appearanceTiles: "appearanceTiles"
+        case .date: "date"
+        case .time: "time"
+        case .diffLine: "diffLine"
+        case .code: "code"
         }
     }
 }
@@ -1198,13 +1496,31 @@ private final class NativeSheetPresentationDelegate:
 {
     private let onWillDismiss: () -> Void
     private let onDismiss: () -> Void
+    private let shouldDismiss: () -> Bool
+    private let onAttemptToDismiss: () -> Void
 
     init(
         onWillDismiss: @escaping () -> Void = {},
+        shouldDismiss: @escaping () -> Bool = { true },
+        onAttemptToDismiss: @escaping () -> Void = {},
         onDismiss: @escaping () -> Void
     ) {
         self.onWillDismiss = onWillDismiss
+        self.shouldDismiss = shouldDismiss
+        self.onAttemptToDismiss = onAttemptToDismiss
         self.onDismiss = onDismiss
+    }
+
+    func presentationControllerShouldDismiss(
+        _ presentationController: UIPresentationController
+    ) -> Bool {
+        shouldDismiss()
+    }
+
+    func presentationControllerDidAttemptToDismiss(
+        _ presentationController: UIPresentationController
+    ) {
+        onAttemptToDismiss()
     }
 
     func presentationControllerWillDismiss(
@@ -1243,17 +1559,18 @@ let nativeSheetProfileMenuDetailId = "profile-menu"
 
 /// Whether a row that closes the sheet waits for it to finish leaving before
 /// telling Flutter. Rows that open a Flutter page send at once, so the page is
-/// already underneath as the sheet slides away. The memory editor waits: it
-/// opens a Flutter sheet that takes keyboard focus, which must not be asked
-/// for while this sheet still holds it.
+/// already underneath as the sheet slides away. Account actions wait.
 func nativeSheetSelectionWaitsForDismiss(actionId: String) -> Bool {
-    actionId == "memory-editor-new" || actionId.hasPrefix("memory-editor:")
-        // Switching, adding or signing out of an account can ask a question
-        // in a sheet of its own, which cannot present over this one.
-        || actionId == "account-switch" || actionId == "account-add"
-        || actionId == "account-sign-out" || actionId == "account-direct-edit"
+    // Switching, adding or signing out of an account can ask a question in
+    // a sheet of its own, which cannot present over this one.
+    actionId == "account-switch" || actionId == "account-add"
+        || actionId == "account-sign-out" || actionId == "account-sign-out-of"
+        || actionId == "account-direct-edit"
         || actionId == "account-librechat-use"
         || actionId == "account-librechat-sign-out"
+        // Signing in again to a push target switches to its account, which
+        // can ask first.
+        || actionId == "push-target-sign-in"
 }
 
 final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
@@ -1277,6 +1594,8 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
     private weak var activeProfileMenuController: NativeProfileMenuTableViewController?
     private var profileChannel: FlutterMethodChannel?
     private var activeSheetMode: ActiveSheetMode = .profileMenu
+    /// Counts the times Settings was presented.
+    private var settingsPresentations = 0
     private var pendingModelSelectorResult: PendingStringResult?
     private var pendingOptionsSelectorResult: PendingStringResult?
     private var pendingDatePickerResult: PendingStringResult?
@@ -1614,7 +1933,10 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
             for detail in relatedDetails {
                 self.detailPayloads[detail.id] = detail
             }
-            let patched = NativeSheetDetail(
+            // A page sent whole replaces everything it was, its bar actions
+            // and discard question too; a patch of rows keeps them.
+            let whole = request.whole.flatMap { NativeSheetDetail($0.asPayload()) }
+            let patched = whole ?? NativeSheetDetail(
                 id: existing.id,
                 title: request.title ?? existing.title,
                 subtitle: request.clearSubtitle
@@ -1626,11 +1948,36 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
                 confirmActionLabel: existing.confirmActionLabel,
                 maxHeightFraction: existing.maxHeightFraction,
                 trailingActionId: existing.trailingActionId,
-                trailingActionSfSymbol: existing.trailingActionSfSymbol
+                trailingActionSfSymbol: existing.trailingActionSfSymbol,
+                trailingActionDetailId: existing.trailingActionDetailId,
+                discardPrompt: existing.discardPrompt,
+                busy: existing.busy,
+                // Kept, so the same announcement sent again is not read out
+                // twice.
+                announcement: existing.announcement,
+                edited: existing.edited,
+                search: existing.search,
+                calendar: existing.calendar
             )
             self.detailPayloads[detailId] = patched
-            if self.activeDetailTableController?.detailId == detailId {
-                self.activeDetailTableController?.applyUpdatedDetail(patched)
+            // The page on top, and the same page further down the sheet: one
+            // covered by a page it opened learns of a change made there (an
+            // editor marked edited from its Advanced page), so closing the
+            // sheet can ask about it.
+            var pages: [NativeDetailTableViewController] = []
+            if let active = self.activeDetailTableController,
+               active.detailId == detailId {
+                pages.append(active)
+            }
+            let openPages = self.activeSettingsColumns?.allViewControllers
+                ?? self.activeNavigationController?.viewControllers ?? []
+            for case let page as NativeDetailTableViewController
+                in openPages
+                where page.detailId == detailId && !pages.contains(where: { $0 === page }) {
+                pages.append(page)
+            }
+            for page in pages {
+                page.applyUpdatedDetail(patched)
             }
             return true
         }
@@ -1641,6 +1988,134 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         var applied = false
         DispatchQueue.main.sync { applied = apply() }
         return applied
+    }
+
+    func closeDetail(detailId: String) throws -> Bool {
+        let close = { () -> Bool in
+            if let columns = self.activeSettingsColumns,
+               columns.closeRootPage(where: {
+                   ($0 as? NativeDetailTableViewController)?.detailId == detailId
+               }) {
+                return true
+            }
+            guard let navigation = self.activeNavigationController,
+                  let index = navigation.viewControllers.firstIndex(where: {
+                      ($0 as? NativeDetailTableViewController)?.detailId == detailId
+                  }),
+                  index > 0
+            else { return false }
+            navigation.popToViewController(
+                navigation.viewControllers[index - 1],
+                animated: true
+            )
+            return true
+        }
+        if Thread.isMainThread {
+            return close()
+        }
+        var closed = false
+        DispatchQueue.main.sync { closed = close() }
+        return closed
+    }
+
+    func presentAlert(
+        request: PlatformNativeSheetAlertRequest,
+        completion: @escaping (Result<String?, Error>) -> Void
+    ) {
+        // Over whatever is up -- the Settings sheet and its pages stay where
+        // they are, as an alert from one of their own rows would.
+        whenModalChainIdle { [weak self] in
+            guard let presenter = self?.topViewController() else {
+                completion(.success(nil))
+                return
+            }
+            let alert = UIAlertController(
+                title: request.title,
+                message: request.message,
+                preferredStyle: .alert
+            )
+            for action in request.actions {
+                let style: UIAlertAction.Style = switch action.style {
+                case "cancel": .cancel
+                case "destructive": .destructive
+                default: .default
+                }
+                alert.addAction(UIAlertAction(title: action.label, style: style) { _ in
+                    completion(.success(action.id))
+                })
+            }
+            presenter.present(alert, animated: true)
+        }
+    }
+
+    func presentWebSignIn(
+        request: PlatformWebSignInRequest,
+        completion: @escaping (Result<Bool, Error>) -> Void
+    ) {
+        // Over the Settings sheet, as a page opened from one of its rows;
+        // Dart decides which pages the web view may load, and which it checks.
+        whenModalChainIdle { [weak self] in
+            guard let self,
+                  let presenter = self.topViewController(),
+                  let url = URL(string: request.url)
+            else {
+                completion(.success(false))
+                return
+            }
+            let api = self.flutterApi
+            let sessionId = request.sessionId
+            func ask(
+                _ question: @escaping (
+                    NativeSheetFlutterApi,
+                    @escaping (Result<Bool, PigeonError>) -> Void
+                ) -> Void,
+                _ answer: @escaping (Bool) -> Void
+            ) {
+                guard let api else {
+                    answer(false)
+                    return
+                }
+                question(api) { result in
+                    let value = (try? result.get()) ?? false
+                    DispatchQueue.main.async { answer(value) }
+                }
+            }
+            let signIn = NativeWebSignInViewController(
+                request: request,
+                startURL: url,
+                allowsNavigation: { target, answer in
+                    ask({ api, reply in
+                        api.webSignInAllowsNavigation(
+                            sessionId: sessionId,
+                            url: target,
+                            completion: reply
+                        )
+                    }, answer)
+                },
+                checksPage: { target, answer in
+                    ask({ api, reply in
+                        api.webSignInChecksPage(
+                            sessionId: sessionId,
+                            url: target,
+                            completion: reply
+                        )
+                    }, answer)
+                },
+                onFinish: { signedIn in completion(.success(signedIn)) }
+            )
+            let navigation = UINavigationController(rootViewController: signIn)
+            navigation.modalPresentationStyle = .pageSheet
+            NativeSheetTheme.shared.apply(to: navigation)
+            navigation.presentationController?.delegate = signIn
+            presenter.present(navigation, animated: true)
+            // UIKit refuses a presentation it cannot make (the presenter is
+            // already presenting, or mid-transition) with only a console
+            // warning: answer now, rather than leave the sign-in waiting
+            // for a page that never appears.
+            if navigation.presentingViewController == nil {
+                completion(.success(false))
+            }
+        }
     }
 
     /// Runs [work] on main once no sheet above Flutter is still animating
@@ -1657,13 +2132,19 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
     private func presentProfileMenu(_ configuration: NativeSheetConfiguration) -> Bool {
         let controller = NativeProfileMenuTableViewController(
             configuration: configuration,
-            onSelect: { [weak self] item in self?.handleSelection(item) },
-            onClose: { [weak self] in self?.dismissActive() }
+            onSelect: { [weak self] item in self?.handleSelection(item, fromRoot: true) },
+            onClose: { [weak self] in self?.closeSettingsAsking() }
         )
-        let navigation = NativeSheetNavigationController(rootViewController: controller)
-        let presented = present(navigation, initialDetent: .large)
+        let sheet: UIViewController
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            sheet = makeSettingsColumns(root: controller)
+        } else {
+            sheet = NativeSheetNavigationController(rootViewController: controller)
+        }
+        let presented = present(sheet, initialDetent: .large)
         if presented {
             activeProfileMenuController = controller
+            settingsPresentations += 1
         }
         return presented
     }
@@ -1749,6 +2230,38 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         }
     }
 
+    /// Settings on iPad: the root list beside the page it opened.
+    private func makeSettingsColumns(
+        root: NativeProfileMenuTableViewController
+    ) -> NativeSettingsColumnsController {
+        let columns = NativeSettingsColumnsController(root: root)
+        columns.makePage = { [weak self] id in
+            guard let self, let detail = self.detailPayloads[id] else { return nil }
+            return self.makeDetailController(detail: detail)
+        }
+        columns.defaultRootId = { [weak root, weak self] in
+            guard let root, let self else { return nil }
+            return root.firstRowId { item in
+                self.detailPayloads[item.id] != nil
+                    && !item.dismissOnSelect
+                    && item.kind != "searchablePicker"
+                    && item.url == nil
+            }
+        }
+        columns.onPageLeft = { [weak self] controller in
+            if let page = controller as? NativeDetailTableViewController {
+                self?.notifyDetailLeft(page)
+            }
+        }
+        columns.onSelectionChanged = { [weak root] id in
+            root?.selectedRowId = id
+        }
+        columns.onColumnsChanged = { [weak root] twoColumns in
+            root?.closesFromLeadingEdge = twoColumns
+        }
+        return columns
+    }
+
     private func makeDetailController(detail: NativeSheetDetail) -> NativeDetailTableViewController {
         NativeDetailTableViewController(
             detail: detail,
@@ -1823,8 +2336,11 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         }
     }
 
-    private func presentInlineOptionsSelector(for item: NativeSheetItem) {
-        guard let navigation = activeNavigationController else { return }
+    private func presentInlineOptionsSelector(
+        for item: NativeSheetItem,
+        on chosenNavigation: UINavigationController? = nil
+    ) {
+        guard let navigation = chosenNavigation ?? activeNavigationController else { return }
         // A short list (five palettes) is read at a glance, so only a long
         // one (languages, voices) gets a search field.
         let configuration = NativeOptionsSelectorConfiguration(
@@ -2001,6 +2517,22 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
             onWillDismiss: { [weak self] in
                 self?.flushActiveSheetEditing()
             },
+            // Swiped away with unsaved changes on any of its pages, the
+            // sheet stays and asks first.
+            shouldDismiss: { [weak self] in
+                (self?.activeController as? NativeSheetCloseGuarding)?
+                    .guardingClosePage == nil
+            },
+            onAttemptToDismiss: { [weak self] in
+                guard let navigation = self?.activeController
+                    as? NativeSheetCloseGuarding,
+                    let guarding = navigation.guardingClosePage
+                else { return }
+                guarding.page.askBeforeLeaving(always: guarding.always) { [weak self] in
+                    navigation.dropUnsavedChanges()
+                    self?.dismissActive()
+                }
+            },
             onDismiss: { [weak self] in
                 if let pending = self?.pendingModelSelectorResult {
                     self?.pendingModelSelectorResult = nil
@@ -2043,13 +2575,23 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
             }
         )
 
-        controller.modalPresentationStyle = .pageSheet
+        if let columns = controller as? NativeSettingsColumnsController {
+            // Two columns need more room than a page sheet: a form sheet as
+            // large as the window allows, which UIKit turns into a page
+            // sheet itself when the window is narrow (Slide Over).
+            columns.modalPresentationStyle = .formSheet
+            columns.sizeToFit(presenter.view.bounds.size)
+        } else {
+            controller.modalPresentationStyle = .pageSheet
+        }
         controller.presentationController?.delegate = presentationDelegate
-        applySheetStyle(
-            to: controller,
-            initialDetent: initialDetent,
-            maxHeightFraction: maxHeightFraction
-        )
+        if !(controller is NativeSettingsColumnsController) {
+            applySheetStyle(
+                to: controller,
+                initialDetent: initialDetent,
+                maxHeightFraction: maxHeightFraction
+            )
+        }
         if let configureSheet, let sheet = controller.sheetPresentationController {
             configureSheet(sheet)
         }
@@ -2368,14 +2910,31 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = true
     }
 
-    private func handleSelection(_ item: NativeSheetItem) {
+    private func handleSelection(
+        _ item: NativeSheetItem,
+        confirmed: Bool = false,
+        fromRoot: Bool = false
+    ) {
+        // A root row's picker opens in the root's own column, so the page
+        // beside it stays.
+        let rootColumns = fromRoot ? activeSettingsColumns : nil
         if item.kind == "searchablePicker" {
-            presentInlineOptionsSelector(for: item)
+            presentInlineOptionsSelector(
+                for: item,
+                on: rootColumns?.isExpanded == true ? rootColumns?.sidebar : nil
+            )
             return
         }
 
         if item.id == "sign-out" {
             presentSignOutOptions(for: item)
+            return
+        }
+
+        if !confirmed, let message = item.confirmMessage, !message.isEmpty {
+            presentConfirmation(for: item, message: message) { [weak self] in
+                self?.handleSelection(item, confirmed: true, fromRoot: fromRoot)
+            }
             return
         }
 
@@ -2424,11 +2983,47 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         }
 
         if detailPayloads[item.id] != nil {
+            if let columns = rootColumns {
+                // In two columns the page fills the second one; in one, it
+                // is pushed as on iPhone, and shown beside the root once
+                // there is room.
+                if columns.isExpanded {
+                    columns.showRootPage(item.id)
+                    return
+                }
+                columns.noteRootPageOpened(item.id)
+            }
             presentDetail(id: item.id)
             return
         }
 
         sendControlChanged(id: item.id, value: item.value ?? true)
+    }
+
+    /// Asks [message] before the row acts, the row's title being the answer
+    /// that goes ahead, in red when the row is destructive.
+    private func presentConfirmation(
+        for item: NativeSheetItem,
+        message: String,
+        onConfirm: @escaping () -> Void
+    ) {
+        guard let presenter = activeNavigationController?.visibleViewController else {
+            onConfirm()
+            return
+        }
+        let alert = UIAlertController(
+            title: item.title,
+            message: message,
+            preferredStyle: .alert
+        )
+        let cancelTitle = configuration?.editProfileSheet.cancelLabel
+            ?? nativeLocalized("native.cancel", "Cancel")
+        alert.addAction(UIAlertAction(title: cancelTitle, style: .cancel))
+        alert.addAction(UIAlertAction(
+            title: item.title,
+            style: item.destructive ? .destructive : .default
+        ) { _ in onConfirm() })
+        presenter.present(alert, animated: true)
     }
 
     private func presentSignOutOptions(for item: NativeSheetItem) {
@@ -2508,10 +3103,38 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         activeNavigationController?.view.endEditing(true)
     }
 
+    /// Settings's own Close: beside a page holding unsaved changes (two
+    /// columns), that page asks first, as a swipe down does.
+    private func closeSettingsAsking() {
+        guard let sheet = activeController as? NativeSheetCloseGuarding,
+              let guarding = sheet.guardingClosePage
+        else {
+            dismissActive()
+            return
+        }
+        guarding.page.askBeforeLeaving(always: guarding.always) { [weak self] in
+            sheet.dropUnsavedChanges()
+            self?.dismissActive()
+        }
+    }
+
     private func dismissActive(completion: (() -> Void)? = nil) {
         flushActiveSheetEditing()
         let controller = activeController
-        controller?.dismiss(animated: true, completion: completion)
+        // Closed from Dart, or after its discard question, Settings tells
+        // Flutter as a swipe does: UIKit reports only a swipe, and the
+        // presentation delegate goes below.
+        let notifyDismiss = controller != nil && activeSheetMode == .profileMenu
+        let presentation = settingsPresentations
+        // Told once the sheet has gone, so Dart can present what comes next
+        // (a sign-out question) rather than over a sheet still leaving --
+        // unless Settings has opened again since.
+        controller?.dismiss(animated: true) { [weak self] in
+            completion?()
+            if notifyDismiss, let self, self.settingsPresentations == presentation {
+                self.flutterApi?.onDismissed { _ in }
+            }
+        }
         if controller == nil {
             completion?()
         }
@@ -2551,8 +3174,16 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
         activeSheetMode = .profileMenu
     }
 
+    /// The column pages are pushed into: the only one, or the second of
+    /// Settings's two columns on iPad.
     private var activeNavigationController: UINavigationController? {
-        activeController as? UINavigationController
+        if let columns = activeSettingsColumns { return columns.pageNavigation }
+        return activeController as? UINavigationController
+    }
+
+    /// Settings in two columns, on iPad.
+    private var activeSettingsColumns: NativeSettingsColumnsController? {
+        activeController as? NativeSettingsColumnsController
     }
 
     private func topViewController() -> UIViewController? {
@@ -2575,7 +3206,33 @@ final class NativeSheetBridge: ConduitBridge, NativeSheetHostApi {
     fileprivate func markDetailVisible(_ controller: NativeDetailTableViewController) {
         activeDetailTableController = controller
         guard activeSheetMode == .profileMenu else { return }
+        // Carried between Settings's columns, the page was already showing:
+        // this is no new visit, which would start its drafts over.
+        if activeSettingsColumns?.takeMoved(controller) == true { return }
         flutterApi?.onDetailAppeared(
+            event: PlatformNativeSheetDetailAppearedEvent(
+                detailId: controller.detailId
+            )
+        ) { _ in }
+    }
+
+    /// Page [controller] is gone: popped, or its sheet closed. Moved between
+    /// Settings's two columns, or replaced there (told separately), it is
+    /// not.
+    fileprivate func markDetailLeft(_ controller: NativeDetailTableViewController) {
+        // Settings closing leaves every page, wherever it was.
+        if let columns = activeSettingsColumns,
+           !columns.isBeingDismissed,
+           columns.presentingViewController != nil,
+           columns.isRelocating || columns.holds(controller) {
+            return
+        }
+        notifyDetailLeft(controller)
+    }
+
+    private func notifyDetailLeft(_ controller: NativeDetailTableViewController) {
+        guard activeSheetMode == .profileMenu else { return }
+        flutterApi?.onDetailLeft(
             event: PlatformNativeSheetDetailAppearedEvent(
                 detailId: controller.detailId
             )
@@ -2806,6 +3463,7 @@ private final class NativeProfilePhotoEditorViewController: UIViewController, PH
         navigationItem.title = nativeLocalized("native.editPhoto", "Edit Photo")
         navigationItem.leftBarButtonItem = iconBarButton(
             systemName: "xmark",
+            label: nativeLocalized("native.cancel", "Cancel"),
             action: UIAction { [weak self] _ in self?.cancelTapped() }
         )
         navigationItem.rightBarButtonItem = iconBarButton(
@@ -3012,6 +3670,7 @@ private final class NativeProfileNameEditorViewController: UIViewController {
         navigationItem.title = copy.nameLabel
         navigationItem.leftBarButtonItem = iconBarButton(
             systemName: "xmark",
+            label: nativeLocalized("native.cancel", "Cancel"),
             action: UIAction { [weak self] _ in self?.cancelTapped() }
         )
         navigationItem.rightBarButtonItem = iconBarButton(
@@ -3077,6 +3736,7 @@ private final class NativeProfileAboutEditorViewController: UIViewController {
         navigationItem.title = copy.bioLabel
         navigationItem.leftBarButtonItem = iconBarButton(
             systemName: "xmark",
+            label: nativeLocalized("native.cancel", "Cancel"),
             action: UIAction { [weak self] _ in self?.cancelTapped() }
         )
         navigationItem.rightBarButtonItem = iconBarButton(
@@ -3157,6 +3817,7 @@ private final class NativeProfileDetailsEditorViewController: UIViewController {
         navigationItem.title = copy.title
         navigationItem.leftBarButtonItem = iconBarButton(
             systemName: "xmark",
+            label: nativeLocalized("native.cancel", "Cancel"),
             action: UIAction { [weak self] _ in self?.cancelTapped() }
         )
         navigationItem.rightBarButtonItem = iconBarButton(
@@ -3347,8 +4008,12 @@ private func inputContainer(caption: String, field: UITextField) -> UIStackView 
     return stack
 }
 
-private func iconBarButton(
+/// A bar button drawn as [systemName] alone, read by VoiceOver as [label],
+/// else by what the symbol does ([nativeBarButtonLabel]). Left to itself,
+/// VoiceOver reads the symbol's name: a checkmark as "selected".
+func iconBarButton(
     systemName: String,
+    label: String? = nil,
     style: UIBarButtonItem.Style = .plain,
     action: UIAction
 ) -> UIBarButtonItem {
@@ -3357,7 +4022,31 @@ private func iconBarButton(
         primaryAction: action
     )
     button.style = style
+    if let label, !label.isEmpty {
+        button.accessibilityLabel = label
+    } else {
+        button.accessibilityLabel = nativeBarButtonLabel(systemName)
+    }
     return button
+}
+
+/// The system's own Close button, read by VoiceOver as Close in the app's
+/// strings. Left to itself, it is read by its symbol's name, "close".
+func systemCloseBarButton(action: UIAction) -> UIBarButtonItem {
+    let button = UIBarButtonItem(systemItem: .close, primaryAction: action)
+    button.accessibilityLabel = nativeBarButtonLabel("xmark")
+    return button
+}
+
+/// What a bar button drawn as [systemName] alone does, in the device's
+/// language: Close, Done or Add.
+func nativeBarButtonLabel(_ systemName: String) -> String? {
+    switch systemName {
+    case "xmark": return nativeLocalized("native.close", "Close")
+    case "checkmark": return nativeLocalized("native.done", "Done")
+    case "plus": return nativeLocalized("native.add", "Add")
+    default: return nil
+    }
 }
 
 private extension UIViewController {
@@ -3538,6 +4227,361 @@ private final class NativeSignOutOptionsViewController: UITableViewController {
     }
 }
 
+// MARK: - Settings in two columns (iPad)
+
+/// Settings on iPad as the system Settings app shows itself: the root list
+/// in a column of its own, beside the page it opened. Narrower than two
+/// columns allow (Slide Over, a narrow Split View), every page stacks on the
+/// root in one column, as on iPhone, and the page shown is kept.
+final class NativeSettingsColumnsController: UIViewController, NativeSheetCloseGuarding {
+    /// The width below which Settings keeps one column.
+    static let minimumTwoColumnWidth: CGFloat = 700
+
+    /// The root list's column; in one column, every page too.
+    let sidebar: NativeSheetNavigationController
+    /// The pages opened from the root, beside it.
+    let pages = NativeSheetNavigationController()
+    private let separator = UIView()
+
+    /// Whether the root list and its page show side by side.
+    private(set) var isExpanded = false
+    /// Set while pages move between the columns, so a page moved is not
+    /// taken for one the person left.
+    private(set) var isRelocating = false
+    /// The root row whose page the second column shows, or showed last.
+    private(set) var selectedRootId: String?
+
+    /// The page on top that the last move between the columns carried
+    /// over, until it appears where it was moved: that appearance is not a
+    /// new visit. Pages under it describe themselves when uncovered, and a
+    /// page the move made anew is not this one. Held weakly, so a page gone
+    /// meanwhile is never taken for another.
+    private weak var movedPage: UIViewController?
+
+    /// What root rows had opened over the list when the columns narrowed:
+    /// kept on top of the one column then, it goes back over the list as
+    /// the columns return, rather than into the page column. Held weakly.
+    private let overListWhenNarrowed = NSHashTable<UIViewController>.weakObjects()
+
+    /// Whether [controller] appears because the last move carried it over;
+    /// true once.
+    func takeMoved(_ controller: UIViewController) -> Bool {
+        guard let moved = movedPage, moved === controller else { return false }
+        movedPage = nil
+        return true
+    }
+
+    /// Builds the page a root row opens.
+    var makePage: ((String) -> UIViewController?)?
+    /// The root row whose page shows first, when nothing was opened yet.
+    var defaultRootId: (() -> String?)?
+    /// A page closed for good by the columns themselves, told as a page
+    /// popped is.
+    var onPageLeft: ((UIViewController) -> Void)?
+    /// The root list keeps the row of the page beside it selected; nil in
+    /// one column.
+    var onSelectionChanged: ((String?) -> Void)?
+    /// Two columns came or went.
+    var onColumnsChanged: ((Bool) -> Void)?
+
+    init(root: UIViewController) {
+        sidebar = NativeSheetNavigationController(rootViewController: root)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    /// The column pages are pushed into.
+    var pageNavigation: NativeSheetNavigationController {
+        isExpanded ? pages : sidebar
+    }
+
+    /// Every page open, in either column, the root list first.
+    var allViewControllers: [UIViewController] {
+        sidebar.viewControllers + (isExpanded ? pages.viewControllers : [])
+    }
+
+    /// Whether [controller] is still open in either column: one moved
+    /// between them has not been left.
+    func holds(_ controller: UIViewController) -> Bool {
+        allViewControllers.contains { $0 === controller }
+            || pages.viewControllers.contains { $0 === controller }
+    }
+
+    /// Sizes the sheet to the window it opens over: as large as leaves the
+    /// window's edges showing, up to what Settings can use.
+    func sizeToFit(_ window: CGSize) {
+        let size = CGSize(
+            width: max(min(window.width - 96, 1180), 320),
+            height: max(min(window.height - 96, 1000), 320)
+        )
+        if preferredContentSize != size { preferredContentSize = size }
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = NativeSheetTheme.shared.background
+        addChild(sidebar)
+        view.addSubview(sidebar.view)
+        sidebar.didMove(toParent: self)
+        separator.backgroundColor = .separator
+        separator.isHidden = true
+        separator.isAccessibilityElement = false
+        view.addSubview(separator)
+    }
+
+    override func viewWillTransition(
+        to size: CGSize,
+        with coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            guard let self, let window = self.presentingViewController?.view.bounds.size
+            else { return }
+            self.sizeToFit(window)
+        }
+    }
+
+    /// The window's size as it changes. A sheet sized to its window keeps
+    /// that size as the window widens, and is told nothing then; this sizes
+    /// it again, so a wider window gets two columns.
+    private var windowGeometry: NSKeyValueObservation?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard windowGeometry == nil, let scene = view.window?.windowScene else { return }
+        windowGeometry = scene.observe(\.effectiveGeometry, options: [.new]) { [weak self] scene, _ in
+            DispatchQueue.main.async {
+                self?.sizeToFit(scene.coordinateSpace.bounds.size)
+            }
+        }
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        let wantsTwoColumns = view.bounds.width >= Self.minimumTwoColumnWidth
+        if wantsTwoColumns != isExpanded {
+            if wantsTwoColumns { expand() } else { collapse() }
+        }
+        layoutColumns()
+    }
+
+    private var sidebarWidth: CGFloat {
+        // Larger text needs a wider list, as the system's sidebars do.
+        let large = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        let width = view.bounds.width * 0.36
+        return min(max(width, 300), large ? 440 : 375)
+    }
+
+    private func layoutColumns() {
+        let bounds = view.bounds
+        guard isExpanded else {
+            sidebar.view.frame = bounds
+            return
+        }
+        let listWidth = sidebarWidth
+        let hairline = 1 / max(traitCollection.displayScale, 1)
+        let rightToLeft = view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+        let listX = rightToLeft ? bounds.width - listWidth : 0
+        let pageX = rightToLeft ? 0 : listWidth
+        sidebar.view.frame = CGRect(x: listX, y: 0, width: listWidth, height: bounds.height)
+        pages.view.frame = CGRect(
+            x: pageX,
+            y: 0,
+            width: bounds.width - listWidth,
+            height: bounds.height
+        )
+        separator.frame = CGRect(
+            x: rightToLeft ? listX - hairline : listWidth - hairline,
+            y: 0,
+            width: hairline,
+            height: bounds.height
+        )
+    }
+
+    /// Two columns: the pages above the root move beside it, or the page of
+    /// the row chosen last (the first one, at first) opens there.
+    private func expand() {
+        view.endEditing(true)
+        isRelocating = true
+        let stack = sidebar.viewControllers
+        guard let root = stack.first else {
+            finishRelocating()
+            return
+        }
+        let above = Array(stack.dropFirst())
+        // Kept over the list as the columns narrowed: back over the list.
+        var overList = above.filter { overListWhenNarrowed.contains($0) }
+        overListWhenNarrowed.removeAllObjects()
+        var opened = above.filter { !overList.contains($0) }
+        if let first = opened.first as? NativeDetailTableViewController {
+            selectedRootId = first.detailId
+        } else {
+            // A root row's picker stays over the list, with what is typed
+            // into it; the page beside it opens anew.
+            overList = opened + overList
+            opened = []
+        }
+        if opened.isEmpty,
+           let id = selectedRootId ?? defaultRootId?(),
+           let page = makePage?(id) {
+            selectedRootId = id
+            opened = [page]
+        }
+        movedPage = opened.last.flatMap { stack.contains($0) ? $0 : nil }
+        sidebar.setViewControllers([root] + overList, animated: false)
+        pages.setViewControllers(opened, animated: false)
+        addChild(pages)
+        view.insertSubview(pages.view, belowSubview: separator)
+        pages.didMove(toParent: self)
+        isExpanded = true
+        separator.isHidden = false
+        // VoiceOver reads the list, then the page beside it.
+        view.accessibilityElements = [sidebar.view as Any, pages.view as Any]
+        finishRelocating()
+        onColumnsChanged?(true)
+        onSelectionChanged?(selectedRootId)
+    }
+
+    /// One column: the page shown stacks on the root, as on iPhone.
+    private func collapse() {
+        view.endEditing(true)
+        isRelocating = true
+        let opened = pages.viewControllers
+        movedPage = opened.last
+        pages.willMove(toParent: nil)
+        pages.view.removeFromSuperview()
+        pages.removeFromParent()
+        pages.setViewControllers([], animated: false)
+        let root = Array(sidebar.viewControllers.prefix(1))
+        // A picker a root row opened over the list stays on top, with what
+        // is typed into it.
+        let overList = Array(sidebar.viewControllers.dropFirst())
+        for controller in overList { overListWhenNarrowed.add(controller) }
+        sidebar.setViewControllers(root + opened + overList, animated: false)
+        isExpanded = false
+        separator.isHidden = true
+        view.accessibilityElements = nil
+        finishRelocating()
+        onColumnsChanged?(false)
+        onSelectionChanged?(nil)
+    }
+
+    /// Moves are done once UIKit has told the pages they moved.
+    private func finishRelocating() {
+        DispatchQueue.main.async { [weak self] in
+            self?.isRelocating = false
+        }
+    }
+
+    /// One column: the root row [id] opened its page on top of the list,
+    /// which shows beside the list once there is room.
+    func noteRootPageOpened(_ id: String) {
+        selectedRootId = id
+    }
+
+    /// Two columns: root row [id] opens its page beside the list, asking
+    /// first when the pages there would lose unsaved changes. Its own row
+    /// again goes back to its page's top.
+    func showRootPage(_ id: String) {
+        let stack = pages.viewControllers
+        let again = id == selectedRootId &&
+            (stack.first as? NativeDetailTableViewController)?.detailId == id
+        // Its own row again keeps its page, with what it holds: only the
+        // pages above it go, and only they are asked.
+        let leaving = again ? Array(stack.dropFirst()) : stack
+        guard let guarding = nativeSheetGuardingPage(in: leaving) else {
+            openRootPage(id)
+            return
+        }
+        guarding.page.askBeforeLeaving(always: guarding.always) { [weak self] in
+            for controller in leaving {
+                (controller as? NativeSheetLeaveGuarding)?.dropUnsavedChanges()
+            }
+            self?.openRootPage(id)
+        }
+    }
+
+    /// Opens root row [id]'s page as the columns are now -- the sheet may
+    /// have narrowed while it asked -- or goes back to its top when it
+    /// shows already.
+    private func openRootPage(_ id: String) {
+        guard isExpanded else {
+            // One column: the page stacks on the list, over nothing else.
+            let stack = sidebar.viewControllers
+            guard let root = stack.first else { return }
+            if id == selectedRootId, stack.count > 1,
+               (stack[1] as? NativeDetailTableViewController)?.detailId == id {
+                let popped = stack.dropFirst(2)
+                for controller in popped.dropLast() { onPageLeft?(controller) }
+                sidebar.popToViewController(stack[1], animated: true)
+                return
+            }
+            guard let page = makePage?(id) else { return }
+            let covered = stack.dropFirst().dropLast()
+            sidebar.setViewControllers([root, page], animated: false)
+            selectedRootId = id
+            for controller in covered { onPageLeft?(controller) }
+            return
+        }
+        let first = pages.viewControllers.first
+        if id == selectedRootId,
+           (first as? NativeDetailTableViewController)?.detailId == id {
+            popPagesToFirst()
+            return
+        }
+        replacePages(withPageOf: id)
+    }
+
+    /// Replaces the second column's pages with root row [id]'s, and returns
+    /// whether it did. The page on top says it left as it disappears; those
+    /// under it, which UIKit does not tell, are told here.
+    @discardableResult
+    private func replacePages(withPageOf id: String) -> Bool {
+        guard let page = makePage?(id) else { return false }
+        let covered = pages.viewControllers.dropLast()
+        pages.setViewControllers([page], animated: false)
+        selectedRootId = id
+        onSelectionChanged?(id)
+        for controller in covered { onPageLeft?(controller) }
+        return true
+    }
+
+    /// Pops the second column to its first page; the pages popped under the
+    /// top one are told they left, as the top one tells itself.
+    private func popPagesToFirst() {
+        let popped = pages.viewControllers.dropFirst()
+        for controller in popped.dropLast() { onPageLeft?(controller) }
+        pages.popToRootViewController(animated: true)
+    }
+
+    /// Two columns: a page closing itself that is the second column's first
+    /// gives way to the first root row's page -- a new one, when it was that
+    /// page -- with the pages above it. Returns whether it did; otherwise the
+    /// page is closed as in one column.
+    func closeRootPage(where matches: (UIViewController) -> Bool) -> Bool {
+        guard isExpanded,
+              let first = pages.viewControllers.first,
+              matches(first),
+              let id = defaultRootId?() ?? selectedRootId
+        else { return false }
+        return replacePages(withPageOf: id)
+    }
+
+    // MARK: NativeSheetCloseGuarding
+
+    var guardingClosePage: (page: NativeSheetLeaveGuarding, always: Bool)? {
+        (isExpanded ? pages.guardingClosePage : nil) ?? sidebar.guardingClosePage
+    }
+
+    func dropUnsavedChanges() {
+        sidebar.dropUnsavedChanges()
+        pages.dropUnsavedChanges()
+    }
+}
+
 private final class NativeProfileMenuTableViewController: UITableViewController {
     private var configuration: NativeSheetConfiguration
     private let onSelect: (NativeSheetItem) -> Void
@@ -3592,13 +4636,83 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
         title = newConfiguration.profileMenuTitle
         guard isViewLoaded else { return }
         tableView.reloadData()
+        applyRowSelection(animated: false)
+    }
+
+    /// The row whose page shows beside the list, when Settings has two
+    /// columns; it stays selected, as a sidebar's does. Nil in one column.
+    var selectedRowId: String? {
+        didSet {
+            guard selectedRowId != oldValue, isViewLoaded else { return }
+            applyRowSelection(animated: false)
+        }
+    }
+
+    /// Where the list carries Close: at its trailing edge alone, or at its
+    /// leading edge beside a page -- the sheet's corner, which stays put
+    /// whatever the page column shows.
+    var closesFromLeadingEdge = false {
+        didSet {
+            guard closesFromLeadingEdge != oldValue, isViewLoaded else { return }
+            placeCloseButton()
+        }
+    }
+
+    private func placeCloseButton() {
+        navigationItem.leftBarButtonItem = closesFromLeadingEdge ? closeButton() : nil
+        navigationItem.rightBarButtonItem = closesFromLeadingEdge ? nil : closeButton()
+    }
+
+    /// The id of the first row, from the top, that [matches].
+    func firstRowId(where matches: (NativeSheetItem) -> Bool) -> String? {
+        for section in tableSections {
+            if let item = section.items.first(where: matches) { return item.id }
+        }
+        return nil
+    }
+
+    private func applyRowSelection(animated: Bool) {
+        for indexPath in tableView.indexPathsForSelectedRows ?? [] {
+            tableView.deselectRow(at: indexPath, animated: animated)
+        }
+        guard let id = selectedRowId else { return }
+        for (section, rows) in tableSections.enumerated() {
+            if let row = rows.items.firstIndex(where: { $0.id == id }) {
+                tableView.selectRow(
+                    at: IndexPath(row: row, section: section),
+                    animated: animated,
+                    scrollPosition: .none
+                )
+                return
+            }
+        }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        applyRowSelection(animated: false)
+    }
+
+    // A reload -- new rows, or the theme drawn again -- clears a table's
+    // selection; the row of the page beside the list takes it back as it
+    // shows.
+    override func tableView(
+        _ tableView: UITableView,
+        willDisplay cell: UITableViewCell,
+        forRowAt indexPath: IndexPath
+    ) {
+        guard let id = selectedRowId,
+              item(at: indexPath).id == id,
+              tableView.indexPathForSelectedRow != indexPath
+        else { return }
+        tableView.selectRow(at: indexPath, animated: false, scrollPosition: .none)
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         title = configuration.profileMenuTitle
         navigationItem.largeTitleDisplayMode = .never
-        navigationItem.rightBarButtonItem = closeButton()
+        placeCloseButton()
         navigationController?.navigationBar.prefersLargeTitles = false
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "profileCell")
@@ -3665,8 +4779,15 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
         onSelect(item(at: indexPath))
+        // In two columns the row of the page beside the list stays selected
+        // -- this one once its page shows, the last one if the tap asked
+        // first, opened nothing, or was cancelled.
+        if selectedRowId == nil {
+            tableView.deselectRow(at: indexPath, animated: true)
+        } else {
+            applyRowSelection(animated: true)
+        }
     }
 
     private func item(at indexPath: IndexPath) -> NativeSheetItem {
@@ -3735,9 +4856,8 @@ private final class NativeProfileMenuTableViewController: UITableViewController 
     }
 
     private func closeButton() -> UIBarButtonItem {
-        UIBarButtonItem(
-            systemItem: .close,
-            primaryAction: UIAction { [weak self] _ in self?.onClose() }
+        systemCloseBarButton(
+            action: UIAction { [weak self] _ in self?.onClose() }
         )
     }
 }
@@ -3792,7 +4912,10 @@ private final class NativeSheetChoiceMenuTableViewCell: UITableViewCell {
         titleLabel.numberOfLines = 0
         titleLabel.isAccessibilityElement = false
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // At large text sizes the title keeps its words and the value gives
+        // way first, truncating ("Does Not Re…"), rather than the title
+        // being squeezed to a letter a line.
+        titleLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
         subtitleLabel.font = .preferredFont(forTextStyle: .footnote)
         subtitleLabel.adjustsFontForContentSizeCategory = true
@@ -3805,7 +4928,10 @@ private final class NativeSheetChoiceMenuTableViewCell: UITableViewCell {
         valueButton.changesSelectionAsPrimaryAction = true
         valueButton.translatesAutoresizingMaskIntoConstraints = false
         valueButton.setContentHuggingPriority(.required, for: .horizontal)
-        valueButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        valueButton.setContentCompressionResistancePriority(
+            UILayoutPriority(UILayoutPriority.defaultHigh.rawValue - 1),
+            for: .horizontal
+        )
 
         contentView.addSubview(iconView)
         contentView.addSubview(textStack)
@@ -3880,8 +5006,10 @@ private final class NativeSheetChoiceMenuTableViewCell: UITableViewCell {
         let theme = NativeSheetTheme.shared
         titleLabel.textColor = theme.foreground
         subtitleLabel.textColor = theme.secondaryForeground
-        // The symbol at the size, weight and tint of every row's.
-        iconView.tintColor = NativeSheetSettingsStyle.iconForeground
+        // The symbol at the size, weight and tint of every row's, unless the
+        // row has a colour of its own (a calendar's, say).
+        iconView.tintColor = item.symbolColor
+            ?? NativeSheetSettingsStyle.iconForeground
         iconView.image = nativeSettingsSymbolImage(item.sfSymbol)?.withConfiguration(
             UIImage.SymbolConfiguration(
                 pointSize: NativeSheetSettingsStyle.symbolPointSize(for: item.sfSymbol),
@@ -3903,6 +5031,9 @@ private final class NativeSheetChoiceMenuTableViewCell: UITableViewCell {
         valueButton.menu = UIMenu(children: options.map { option in
             UIAction(
                 title: option.label,
+                // An option this device or server cannot use now stays
+                // listed, greyed, so the choice still reads in full.
+                attributes: option.enabled ? [] : .disabled,
                 state: option.id == selectedId ? .on : .off
             ) { [weak self] _ in
                 guard let self else { return }
@@ -4532,6 +5663,18 @@ private final class NativeSheetTextFieldTableViewCell: UITableViewCell {
         textField.isSecureTextEntry = false
     }
 
+    /// What a secure field holds, for AutoFill. Only the account's own
+    /// password is one: the system offers to save it. Any other secret (an
+    /// API key, a token) is marked a one-time code, which it never offers to
+    /// save.
+    static func secureContentType(passwordRole: String?) -> UITextContentType {
+        switch passwordRole {
+        case "current": return .password
+        case "newPassword": return .newPassword
+        default: return .oneTimeCode
+        }
+    }
+
     func configure(
         item: NativeSheetItem,
         value: String,
@@ -4544,9 +5687,33 @@ private final class NativeSheetTextFieldTableViewCell: UITableViewCell {
         textField.text = value
         textField.placeholder = item.placeholder
         textField.isSecureTextEntry = item.kind == "secureTextField"
-        textField.textContentType = item.kind == "secureTextField" ? .password : nil
+        textField.textContentType = item.kind == "secureTextField"
+            ? Self.secureContentType(passwordRole: item.passwordRole)
+            : nil
         textField.autocorrectionType = item.kind == "secureTextField" ? .no : .yes
         textField.autocapitalizationType = item.kind == "secureTextField" ? .none : .sentences
+        textField.keyboardType = .default
+        switch item.keyboard {
+        case "url":
+            textField.keyboardType = .URL
+            textField.textContentType = .URL
+            textField.autocapitalizationType = .none
+            textField.autocorrectionType = .no
+        case "email":
+            textField.keyboardType = .emailAddress
+            textField.textContentType = .emailAddress
+            textField.autocapitalizationType = .none
+            textField.autocorrectionType = .no
+        case "number":
+            textField.keyboardType = .numberPad
+            textField.autocorrectionType = .no
+        case "decimal":
+            // The number pad has no minus sign or decimal point.
+            textField.keyboardType = .numbersAndPunctuation
+            textField.autocorrectionType = .no
+        default:
+            break
+        }
         textField.accessibilityLabel = item.title
         onChange = onTextChanged
         onDone = onReturn
@@ -4597,6 +5764,242 @@ private final class NativeSheetReadOnlyTextTableViewCell: UITableViewCell {
     func configure(item: NativeSheetItem) {
         captionLabel.text = item.title
         textView.text = (item.value as? String) ?? item.subtitle ?? ""
+    }
+}
+
+/// A row of source code filling its page: monospaced, edited as is, with a
+/// Tab key above the keyboard. Long lines wrap.
+private final class NativeSheetCodeTableViewCell: UITableViewCell, UITextViewDelegate {
+    static let reuseId = "NativeSheetCodeTableViewCell"
+
+    private let textView = UITextView()
+    private var onChange: ((String) -> Void)?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        selectionStyle = .none
+        NativeSheetSettingsStyle.applyCellStyle(self)
+        textView.tintColor = NativeSheetTheme.shared.accent
+        textView.backgroundColor = .clear
+        textView.textContainerInset = UIEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
+        // Code is typed as is.
+        textView.autocorrectionType = .no
+        textView.autocapitalizationType = .none
+        textView.spellCheckingType = .no
+        textView.smartQuotesType = .no
+        textView.smartDashesType = .no
+        textView.smartInsertDeleteType = .no
+        // The person's own keyboard: a skill's instructions are prose, in
+        // any language, beside code.
+        textView.keyboardType = .default
+        textView.alwaysBounceVertical = true
+        setCode("")
+        textView.delegate = self
+        textView.inputAccessoryView = makeKeyBar()
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(textView)
+        NSLayoutConstraint.activate([
+            textView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
+            textView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+            textView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    /// Tab, which the keyboard lacks, and a key putting the keyboard away.
+    private func makeKeyBar() -> UIToolbar {
+        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 320, height: 44))
+        let tab = UIBarButtonItem(
+            title: nativeLocalized("native.sheet.code.tab", "Tab"),
+            primaryAction: UIAction { [weak self] _ in self?.insertTab() }
+        )
+        tab.accessibilityLabel = nativeLocalized("native.sheet.code.tab", "Tab")
+        let done = UIBarButtonItem(
+            systemItem: .done,
+            primaryAction: UIAction { [weak self] _ in
+                self?.textView.resignFirstResponder()
+            }
+        )
+        bar.items = [tab, .flexibleSpace(), done]
+        bar.sizeToFit()
+        return bar
+    }
+
+    private func insertTab() {
+        guard textView.isEditable else { return }
+        textView.insertText("    ")
+    }
+
+    /// Long lines wrap; what a line wraps onto starts two columns in, so it
+    /// reads as the same line rather than a new one.
+    private func codeAttributes() -> [NSAttributedString.Key: Any] {
+        // Scaled here rather than by the text view, so the indent follows a
+        // new text size with it.
+        let font = UIFontMetrics(forTextStyle: .body).scaledFont(
+            for: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular),
+            compatibleWith: traitCollection
+        )
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.headIndent = ("  " as NSString).size(withAttributes: [.font: font]).width
+        return [
+            .font: font,
+            .foregroundColor: NativeSheetTheme.shared.foreground,
+            .paragraphStyle: paragraph,
+        ]
+    }
+
+    private func setCode(_ value: String) {
+        let selection = textView.selectedRange
+        let attributes = codeAttributes()
+        textView.attributedText = NSAttributedString(string: value, attributes: attributes)
+        textView.typingAttributes = attributes
+        let length = (value as NSString).length
+        if selection.location <= length {
+            textView.selectedRange = NSRange(
+                location: selection.location,
+                length: min(selection.length, length - selection.location)
+            )
+        }
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        // A new text size moves the wrapped lines' indent with it.
+        if previousTraitCollection?.preferredContentSizeCategory
+            != traitCollection.preferredContentSizeCategory {
+            setCode(textView.text ?? "")
+        }
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onChange = nil
+        setCode("")
+    }
+
+    func configure(
+        item: NativeSheetItem,
+        value: String,
+        onTextChanged: @escaping (String) -> Void
+    ) {
+        if textView.text != value { setCode(value) }
+        textView.isEditable = !item.disabled
+        textView.accessibilityLabel = item.title
+        onChange = onTextChanged
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+        onChange?(textView.text ?? "")
+    }
+}
+
+/// One line of a comparison between two texts: monospaced, a − or + glyph
+/// in front, and a tinted band for a line removed or added. VoiceOver reads
+/// the row's subtitle, which says what happened to the line.
+private final class NativeSheetDiffLineTableViewCell: UITableViewCell {
+    static let reuseId = "NativeSheetDiffLineTableViewCell"
+
+    private let band = UIView()
+    private let glyphLabel = UILabel()
+    private let lineLabel = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        selectionStyle = .none
+        NativeSheetSettingsStyle.applyCellStyle(self)
+        let font = UIFontMetrics(forTextStyle: .callout).scaledFont(
+            for: .monospacedSystemFont(ofSize: 15, weight: .regular)
+        )
+        band.translatesAutoresizingMaskIntoConstraints = false
+        glyphLabel.translatesAutoresizingMaskIntoConstraints = false
+        lineLabel.translatesAutoresizingMaskIntoConstraints = false
+        glyphLabel.font = font
+        glyphLabel.adjustsFontForContentSizeCategory = true
+        glyphLabel.setContentHuggingPriority(.required, for: .horizontal)
+        glyphLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        lineLabel.font = font
+        lineLabel.adjustsFontForContentSizeCategory = true
+        lineLabel.numberOfLines = 0
+        lineLabel.lineBreakMode = .byCharWrapping
+        contentView.addSubview(band)
+        contentView.addSubview(glyphLabel)
+        contentView.addSubview(lineLabel)
+        NSLayoutConstraint.activate([
+            band.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            band.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            band.topAnchor.constraint(equalTo: contentView.topAnchor),
+            band.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            glyphLabel.leadingAnchor.constraint(
+                equalTo: contentView.layoutMarginsGuide.leadingAnchor
+            ),
+            glyphLabel.firstBaselineAnchor.constraint(equalTo: lineLabel.firstBaselineAnchor),
+            lineLabel.leadingAnchor.constraint(equalTo: glyphLabel.trailingAnchor, constant: 8),
+            lineLabel.trailingAnchor.constraint(
+                equalTo: contentView.layoutMarginsGuide.trailingAnchor
+            ),
+            lineLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            lineLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+        ])
+        isAccessibilityElement = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func configure(item: NativeSheetItem) {
+        // Styled on each use, so a row drawn again after the theme changed
+        // takes the new colours with its text.
+        NativeSheetSettingsStyle.applyCellStyle(self)
+        let change = item.value as? String
+        let tint: UIColor? = switch change {
+        case "added": .systemGreen
+        case "removed": .systemRed
+        default: nil
+        }
+        glyphLabel.text = switch change {
+        case "added": "+"
+        case "removed": "\u{2212}"
+        default: " "
+        }
+        glyphLabel.textColor = tint ?? NativeSheetTheme.shared.secondaryForeground
+        // An empty line keeps its height.
+        lineLabel.text = item.title.isEmpty ? " " : item.title
+        lineLabel.textColor = change == "context"
+            ? NativeSheetTheme.shared.secondaryForeground
+            : NativeSheetTheme.shared.foreground
+        band.backgroundColor = tint?.withAlphaComponent(0.14) ?? .clear
+        accessibilityLabel = item.subtitle ?? item.title
+    }
+}
+
+/// The value of a date or time row: local wall-clock time as ISO 8601
+/// without a zone, so a set time reads the same in Dart and here.
+private enum NativeSheetDateValue {
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        // Follows the device's zone as it changes, as the picker does, so a
+        // set time is not shifted after travel with the app open.
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return formatter
+    }()
+
+    static func date(from value: Any?) -> Date? {
+        guard let text = value as? String else { return nil }
+        // Fractional seconds are no part of a wall-clock setting.
+        let whole = text.split(separator: ".").first.map(String.init) ?? text
+        return formatter.date(from: whole)
+    }
+
+    static func string(from date: Date) -> String {
+        formatter.string(from: date)
     }
 }
 
@@ -5140,11 +6543,44 @@ private final class NativeSheetStatusTableViewCell: UITableViewCell {
     }
 }
 
-private final class NativeDetailTableViewController: UITableViewController {
+/// A Settings page drawn from [payload], acting on nothing, for tests.
+func makeNativeDetailPageForTesting(
+    _ payload: [String: Any],
+    onControlChanged: @escaping (String, Any?) -> Void = { _, _ in }
+) -> UITableViewController? {
+    NativeDetailTableViewController.makeForTesting(
+        payload,
+        onControlChanged: onControlChanged
+    )
+}
+
+/// Gives [page] (made by [makeNativeDetailPageForTesting]) the page
+/// [payload], as Dart sending it again does, for tests.
+func applyNativeDetailPageForTesting(_ page: UITableViewController, _ payload: [String: Any]) {
+    guard let page = page as? NativeDetailTableViewController,
+          let detail = NativeSheetDetail(payload)
+    else { return }
+    page.applyUpdatedDetail(detail)
+}
+
+/// Lets [page] come back as a leave of it was let go of, for tests.
+func resumeNativeDetailPageForTesting(_ page: UITableViewController) {
+    (page as? NativeDetailTableViewController)?.resumeSearch()
+}
+
+/// Starts [page] leaving, as a back swipe does, for tests.
+func leaveNativeDetailPageForTesting(_ page: UITableViewController) {
+    (page as? NativeDetailTableViewController)?.startLeavingForTesting()
+}
+
+private final class NativeDetailTableViewController: UITableViewController, NativeSheetLeaveGuarding {
     private var detail: NativeSheetDetail
     private let canNavigate: (NativeSheetItem) -> Bool
     private let onSelect: (NativeSheetItem) -> Void
-    private let onControlChanged: (NativeSheetItem, Any?) -> Void
+    private let sendControlChange: (NativeSheetItem, Any?) -> Void
+    /// Whether anything changed on the page since it appeared. On a page
+    /// that confirms with Done, those changes wait in Dart until then.
+    private var controlEdits = false
     private let onReorder: (String, [String]) -> Void
     private let onConfirmAction: (String) -> Void
     private let onClose: () -> Void
@@ -5155,6 +6591,40 @@ private final class NativeDetailTableViewController: UITableViewController {
     /// any new rows arrive, and a speed is not sent back at all, so the rows
     /// draw this rather than the value they came with.
     private var chosenOptionValues: [String: String] = [:]
+    /// Dates and times set in their pickers since Dart last sent the page. A
+    /// result sheet keeps them without sending the page back, so a row drawn
+    /// again (scrolled away and back) shows this, not the value it came with.
+    private var chosenDateValues: [String: String] = [:]
+
+    /// The page's search bar, kept above its rows as the list's filter.
+    private var searchController: UISearchController?
+    /// The query Dart last put in the search bar; text typed since stays
+    /// until Dart sends another.
+    private var shownSearchValue: String?
+    /// Queries sent that the page has not echoed yet, oldest first,
+    /// trimmed as the page echoes them.
+    private var unechoedSearchQueries: [String] = []
+    /// The query the search bar last sent, trimmed: what the page was last
+    /// asked for since it last showed a query of its own.
+    private var lastSentSearchQuery: String?
+    private var searchDebounce: Timer?
+    /// Set as the page is popped or its sheet closes: it sends no search.
+    private var leaving = false
+    /// The query waiting for typing to pause, kept when a back swipe drops
+    /// its wait: a swipe let go of sends it after all.
+    private var pendingSearchQuery: String?
+
+    /// The page's month grid, the table's header, with its single-day
+    /// selection.
+    private var calendarView: UICalendarView?
+    private var calendarSelection: UICalendarSelectionSingleDate?
+    /// The month Dart last asked for (`yyyy-MM-dd`); the month the person
+    /// paged to since stays until Dart asks for another.
+    private var askedCalendarMonth: String?
+    /// The month the grid shows now.
+    private var visibleCalendarMonth: String?
+    /// The width the header was last sized for.
+    private var calendarHeaderWidth: CGFloat = 0
 
     var detailId: String { detail.id }
 
@@ -5193,7 +6663,7 @@ private final class NativeDetailTableViewController: UITableViewController {
         self.detail = detail
         self.canNavigate = canNavigate
         self.onSelect = onSelect
-        self.onControlChanged = onControlChanged
+        self.sendControlChange = onControlChanged
         self.onReorder = onReorder
         self.onConfirmAction = onConfirmAction
         self.onClose = onClose
@@ -5204,12 +6674,477 @@ private final class NativeDetailTableViewController: UITableViewController {
         nil
     }
 
+    fileprivate static func makeForTesting(
+        _ payload: [String: Any],
+        onControlChanged: @escaping (String, Any?) -> Void
+    ) -> UITableViewController? {
+        guard let detail = NativeSheetDetail(payload) else { return nil }
+        let controller = NativeDetailTableViewController(
+            detail: detail,
+            canNavigate: { _ in false },
+            onSelect: { _ in },
+            onControlChanged: { item, value in onControlChanged(item.id, value) },
+            onReorder: { _, _ in },
+            onConfirmAction: { _ in },
+            onClose: {}
+        )
+        controller.loadViewIfNeeded()
+        return controller
+    }
+
+    private func onControlChanged(_ item: NativeSheetItem, _ value: Any?) {
+        controlEdits = true
+        // Text typed on the page goes first: the change can describe the
+        // page again, which would drop it.
+        if !Self.textKinds.contains(item.kind) {
+            commitPendingTextChanges()
+        }
+        sendControlChange(item, value)
+    }
+
+    private static let textKinds: Set<String> = [
+        "textField", "secureTextField", "multilineTextField",
+    ]
+
+    /// Unsaved changes: text not yet done, or, on a page that confirms with
+    /// Done, anything changed since it appeared. Only a page with a discard
+    /// question holds them back.
+    var blocksLeaving: Bool {
+        guard detail.discardPrompt != nil else { return false }
+        let confirms = detail.confirmActionId.map { !$0.isEmpty } ?? false
+        return detail.edited
+            || !pendingTextValues.isEmpty
+            || (confirms && controlEdits)
+    }
+
+    var asksBeforeDiscarding: Bool { detail.discardPrompt != nil }
+
+    var holdsUnfinishedText: Bool { !pendingTextValues.isEmpty }
+
+    /// Asks the page's discard question, then runs [leave] once the user
+    /// chooses to discard; leaves at once when nothing would be lost. With
+    /// [always], a page it opened holds the changes, so it asks regardless.
+    func askBeforeLeaving(always: Bool, then leave: @escaping () -> Void) {
+        guard always || blocksLeaving, let prompt = detail.discardPrompt else {
+            leave()
+            return
+        }
+        // The page asking may sit under the page on top; the question shows
+        // over the sheet either way.
+        let presenter: UIViewController = navigationController ?? self
+        presenter.view.endEditing(true)
+        let alert = UIAlertController(
+            title: prompt.title,
+            message: prompt.message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: prompt.keepLabel, style: .cancel))
+        alert.addAction(UIAlertAction(
+            title: prompt.discardLabel,
+            style: .destructive
+        ) { [weak self] _ in
+            self?.dropUnsavedChanges()
+            leave()
+        })
+        presenter.present(alert, animated: true)
+    }
+
+    func dropUnsavedChanges() {
+        pendingTextValues.removeAll()
+        controlEdits = false
+    }
+
+    /// Puts the page's search bar in its navigation item, always shown, so
+    /// it reads as the list's filter. Text being typed stays when the page
+    /// is described again; only a new query from Dart replaces it.
+    private func configureSearch() {
+        guard let search = detail.search else {
+            if searchController != nil {
+                navigationItem.searchController = nil
+                searchController = nil
+                shownSearchValue = nil
+                // A search bar made again shows the query it is given, and
+                // nothing typed into this one is searched for later.
+                unechoedSearchQueries.removeAll()
+                lastSentSearchQuery = nil
+                searchDebounce?.invalidate()
+                searchDebounce = nil
+                pendingSearchQuery = nil
+            }
+            return
+        }
+        let controller: UISearchController
+        if let existing = searchController {
+            controller = existing
+        } else {
+            controller = UISearchController(searchResultsController: nil)
+            controller.obscuresBackgroundDuringPresentation = false
+            controller.hidesNavigationBarDuringPresentation = false
+            controller.searchBar.delegate = self
+            searchController = controller
+            navigationItem.searchController = controller
+            navigationItem.hidesSearchBarWhenScrolling = false
+            definesPresentationContext = true
+        }
+        controller.searchBar.placeholder = search.placeholder
+        if search.value != shownSearchValue {
+            shownSearchValue = search.value
+            // The page echoes a query trimmed; what is typed (a trailing
+            // space included) stays. Only a query from elsewhere -- Show All
+            // -- replaces it, and the send waiting for typing to pause goes.
+            let trimmed = { (text: String?) in
+                (text ?? "").trimmingCharacters(in: .whitespaces)
+            }
+            // An echo of a query sent -- the last or an earlier one answered
+            // late -- leaves what is typed alone.
+            if let echo = unechoedSearchQueries.firstIndex(of: trimmed(search.value)) {
+                // Only this one: an earlier query answered later is still
+                // known as an echo.
+                unechoedSearchQueries.remove(at: echo)
+            } else {
+                // The page's own query: it is what the page was last asked.
+                lastSentSearchQuery = nil
+                if trimmed(controller.searchBar.text) != trimmed(search.value) {
+                    // What was typed and not yet sent is dropped with it, so
+                    // coming back to the page does not search for it.
+                    searchDebounce?.invalidate()
+                    searchDebounce = nil
+                    pendingSearchQuery = nil
+                    unechoedSearchQueries.removeAll()
+                    controller.searchBar.text = search.value
+                }
+            }
+        }
+    }
+
+    /// Keeps the page's month grid above its rows, as the table's header:
+    /// the month Dart asks for, the chosen day selected, and a mark under
+    /// each day that holds something. [previous] is what the page showed
+    /// before, so only days whose marks changed are drawn again.
+    private func configureCalendar(previous: NativeSheetMonthCalendar?) {
+        guard let calendar = detail.calendar else {
+            if calendarView != nil {
+                tableView.tableHeaderView = nil
+                calendarView = nil
+                calendarSelection = nil
+                askedCalendarMonth = nil
+                visibleCalendarMonth = nil
+            }
+            return
+        }
+        let animated = !UIAccessibility.isReduceMotionEnabled
+            && view.window != nil
+        let grid: UICalendarView
+        if let existing = calendarView {
+            grid = existing
+        } else {
+            grid = UICalendarView()
+            grid.fontDesign = .default
+            grid.backgroundColor = .clear
+            grid.delegate = self
+            let selection = UICalendarSelectionSingleDate(delegate: self)
+            grid.selectionBehavior = selection
+            calendarSelection = selection
+            grid.translatesAutoresizingMaskIntoConstraints = false
+            let header = UIView()
+            header.backgroundColor = .clear
+            header.addSubview(grid)
+            NSLayoutConstraint.activate([
+                grid.topAnchor.constraint(equalTo: header.topAnchor),
+                grid.bottomAnchor.constraint(equalTo: header.bottomAnchor),
+                grid.leadingAnchor.constraint(
+                    equalTo: header.leadingAnchor,
+                    constant: 16
+                ),
+                grid.trailingAnchor.constraint(
+                    equalTo: header.trailingAnchor,
+                    constant: -16
+                ),
+            ])
+            calendarView = grid
+            calendarHeaderWidth = 0
+            tableView.tableHeaderView = header
+        }
+        // The app's language for the month and weekday names, which may not
+        // be the device's; the days stay Gregorian, as the rows' are.
+        let gridLocale = calendar.locale ?? Locale.current
+        var gridCalendar = NativeSheetMonthCalendar.gregorian
+        gridCalendar.locale = gridLocale
+        if grid.locale != gridLocale { grid.locale = gridLocale }
+        if grid.calendar != gridCalendar { grid.calendar = gridCalendar }
+        let asked = NativeSheetMonthCalendar.key(calendar.month)
+        if asked != askedCalendarMonth {
+            askedCalendarMonth = asked
+            if asked != visibleCalendarMonth {
+                // Shown before the grid says so, so the change it reports
+                // for this is not sent back as the person's.
+                visibleCalendarMonth = asked
+                grid.setVisibleDateComponents(
+                    calendar.month,
+                    animated: animated && calendarHeaderWidth > 0
+                )
+            }
+        }
+        let selected = calendarSelection?.selectedDate
+            .flatMap(NativeSheetMonthCalendar.key)
+        if selected != NativeSheetMonthCalendar.key(calendar.selectedDay) {
+            calendarSelection?.setSelected(calendar.selectedDay, animated: animated)
+        }
+        if let previous {
+            let changed = Set(previous.marks.keys)
+                .union(calendar.marks.keys)
+                .filter { previous.marks[$0] != calendar.marks[$0] }
+                .compactMap(NativeSheetMonthCalendar.components)
+            if !changed.isEmpty {
+                grid.reloadDecorations(forDateComponents: changed, animated: animated)
+            }
+        }
+        layoutCalendarHeader(force: true)
+    }
+
+    /// Sizes the month grid's header to the table's width, as its height
+    /// follows the width and the text size.
+    private func layoutCalendarHeader(force: Bool = false) {
+        guard calendarView != nil, let header = tableView.tableHeaderView else {
+            return
+        }
+        let width = tableView.bounds.width
+        guard width > 0, force || width != calendarHeaderWidth else { return }
+        calendarHeaderWidth = width
+        let height = header.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        ).height
+        guard header.frame.size != CGSize(width: width, height: height) else {
+            return
+        }
+        header.frame = CGRect(x: 0, y: 0, width: width, height: height)
+        tableView.tableHeaderView = header
+    }
+
+    /// Sends a change of the month grid: `:month` with the month paged to,
+    /// or `:day` with the day chosen.
+    fileprivate func sendCalendarChange(_ suffix: String, _ day: String) {
+        guard let calendar = detail.calendar,
+              let item = NativeSheetItem([
+                  "id": calendar.id + suffix,
+                  "title": calendar.id,
+                  "kind": "calendar",
+              ])
+        else { return }
+        sendControlChange(item, day)
+    }
+
+    /// The grid shows another month: one the person paged to is sent; the
+    /// one Dart just asked for is not.
+    fileprivate func calendarMonthPaged(_ components: DateComponents) {
+        var month = components
+        month.day = 1
+        guard let key = NativeSheetMonthCalendar.key(month),
+              key != visibleCalendarMonth
+        else { return }
+        visibleCalendarMonth = key
+        sendCalendarChange(":month", key)
+    }
+
+    fileprivate func calendarMarkColors(
+        _ components: DateComponents
+    ) -> [UIColor] {
+        guard let key = NativeSheetMonthCalendar.key(components),
+              let colors = detail.calendar?.marks[key]
+        else { return [] }
+        return colors.prefix(3).map(nativeSheetColor)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutCalendarHeader()
+        refreshCodeRowHeight()
+    }
+
+    // -- A page of code ---------------------------------------------------------
+
+    /// Whether the page is one row of code, which fills it.
+    private var isCodePage: Bool {
+        let items = detail.allItems
+        return items.count == 1 && items[0].kind == "code"
+    }
+
+    /// How much of the table the keyboard covers.
+    private var keyboardOverlap: CGFloat = 0
+    private var codeRowHeight: CGFloat = 0
+    private var codeKeyboardObserver: NSObjectProtocol?
+
+    /// A page of code does not scroll: its row fills what the keyboard
+    /// leaves, and the code scrolls inside it.
+    private func configureCodePage() {
+        tableView.isScrollEnabled = !isCodePage
+        // A page patched into one that is not code needs no keyboard watch.
+        if !isCodePage, let observer = codeKeyboardObserver {
+            NotificationCenter.default.removeObserver(observer)
+            codeKeyboardObserver = nil
+            keyboardOverlap = 0
+        }
+        guard isCodePage, codeKeyboardObserver == nil else { return }
+        codeKeyboardObserver = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
+                      as? NSValue)?.cgRectValue,
+                  let window = self.tableView.window
+            else { return }
+            let table = self.tableView.convert(self.tableView.bounds, to: window)
+            let keyboard = window.convert(end, from: window.screen.coordinateSpace)
+            self.keyboardOverlap = max(0, table.maxY - keyboard.minY)
+            self.refreshCodeRowHeight()
+        }
+    }
+
+    private func codeRowHeightNow() -> CGFloat {
+        let top = tableView.adjustedContentInset.top
+        let bottom = max(keyboardOverlap, tableView.safeAreaInsets.bottom)
+        let room = tableView.bounds.height - top - bottom - 32
+        // Above the keyboard, the row fits what is left, however little: the
+        // page does not scroll, so a taller row would hide its end.
+        return keyboardOverlap > 0 ? max(44, room) : max(160, room)
+    }
+
+    deinit {
+        if let observer = codeKeyboardObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Fits the row of code to the room there is, as the page or the
+    /// keyboard changes size.
+    private func refreshCodeRowHeight() {
+        guard isCodePage else { return }
+        let height = codeRowHeightNow()
+        guard abs(height - codeRowHeight) > 0.5 else { return }
+        codeRowHeight = height
+        UIView.performWithoutAnimation {
+            tableView.performBatchUpdates(nil)
+        }
+        tableView.setContentOffset(
+            CGPoint(x: 0, y: -tableView.adjustedContentInset.top),
+            animated: false
+        )
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        heightForRowAt indexPath: IndexPath
+    ) -> CGFloat {
+        guard isCodePage else { return UITableView.automaticDimension }
+        if codeRowHeight <= 0 { codeRowHeight = codeRowHeightNow() }
+        return codeRowHeight
+    }
+
+    override func traitCollectionDidChange(
+        _ previousTraitCollection: UITraitCollection?
+    ) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if previousTraitCollection?.preferredContentSizeCategory
+            != traitCollection.preferredContentSizeCategory {
+            layoutCalendarHeader(force: true)
+        }
+    }
+
+    /// Sends [query] as the page's search, as a change of its search id.
+    fileprivate func sendSearch(_ query: String) {
+        searchDebounce?.invalidate()
+        searchDebounce = nil
+        pendingSearchQuery = nil
+        guard !leaving, let search = detail.search,
+              let item = NativeSheetItem([
+                  "id": search.id,
+                  "title": search.placeholder ?? search.id,
+                  "kind": "search",
+              ])
+        else { return }
+        let asked = query.trimmingCharacters(in: .whitespaces)
+        let previous = lastSentSearchQuery
+            ?? (shownSearchValue ?? "").trimmingCharacters(in: .whitespaces)
+        lastSentSearchQuery = asked
+        // The page draws nothing for a query it was already asked for (a
+        // field typed into and cleared before it searched, say), so no echo
+        // of it is waited for: Show All's empty query is not taken for one.
+        if asked != previous {
+            unechoedSearchQueries.append(asked)
+        }
+        sendControlChange(item, query)
+    }
+
+    /// Sends what is typed once typing pauses for a moment.
+    fileprivate func searchTextChanged(_ query: String) {
+        searchDebounce?.invalidate()
+        searchDebounce = nil
+        // Cleared (its clear button, say): the whole list comes back at
+        // once, as the field shows it empty.
+        if query.isEmpty {
+            sendSearch("")
+            return
+        }
+        pendingSearchQuery = query
+        searchDebounce = Timer.scheduledTimer(
+            withTimeInterval: 0.25,
+            repeats: false
+        ) { [weak self] _ in
+            self?.sendSearch(query)
+        }
+    }
+
+    fileprivate func startLeavingForTesting() {
+        leaving = true
+        searchDebounce?.invalidate()
+        searchDebounce = nil
+    }
+
+    /// Back on screen after a leave was let go of: what was typed and not yet
+    /// sent is searched for, so the rows match the field.
+    fileprivate func resumeSearch() {
+        leaving = false
+        if let pending = pendingSearchQuery { sendSearch(pending) }
+    }
+
     func applyUpdatedDetail(_ newDetail: NativeSheetDetail) {
         let previousSectionCount = tableSections.count
+        let previousAnnouncement = detail.announcement
+        let previousCalendar = detail.calendar
+        // Its owner had it edited and says it no longer is: what was
+        // changed on it has been saved.
+        if detail.edited && !newDetail.edited {
+            controlEdits = false
+        }
+        // Text typed and not yet done stays in a field the update leaves as
+        // it was (another row filled in meanwhile, say); every other field
+        // starts from the page.
+        var previousValues: [String: String] = [:]
+        for item in detail.allItems {
+            previousValues[item.id] = item.value as? String ?? ""
+        }
+        let keptText = pendingTextValues.filter { id, _ in
+            guard let item = newDetail.allItems.first(where: { $0.id == id }),
+                  let previous = previousValues[id]
+            else { return false }
+            return previous == (item.value as? String ?? "")
+        }
         detail = newDetail
-        pendingTextValues.removeAll()
+        configureSearch()
+        configureCalendar(previous: previousCalendar)
+        configureCodePage()
+        if let announcement = newDetail.announcement, !announcement.isEmpty,
+           announcement != previousAnnouncement {
+            UIAccessibility.post(notification: .announcement, argument: announcement)
+        }
+        pendingTextValues = keptText
         committedTextValues.removeAll()
         chosenOptionValues.removeAll()
+        chosenDateValues.removeAll()
         title = newDetail.title
         navigationItem.title = newDetail.title
         refreshNavigationAction()
@@ -5234,6 +7169,9 @@ private final class NativeDetailTableViewController: UITableViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // Back on screen, as after a back swipe or a pull of the sheet let go
+        // of: the page is not leaving, and searches again.
+        resumeSearch()
         NativeSheetBridge.shared.markDetailVisible(self)
         refreshNavigationAction()
     }
@@ -5243,6 +7181,8 @@ private final class NativeDetailTableViewController: UITableViewController {
         title = detail.title
         navigationItem.largeTitleDisplayMode = .never
         refreshNavigationAction()
+        configureSearch()
+        configureCalendar(previous: nil)
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
         tableView.register(
             NativeSheetChoiceMenuTableViewCell.self,
@@ -5269,6 +7209,15 @@ private final class NativeDetailTableViewController: UITableViewController {
             forCellReuseIdentifier: NativeSheetReadOnlyTextTableViewCell.reuseId
         )
         tableView.register(
+            NativeSheetDiffLineTableViewCell.self,
+            forCellReuseIdentifier: NativeSheetDiffLineTableViewCell.reuseId
+        )
+        tableView.register(
+            NativeSheetCodeTableViewCell.self,
+            forCellReuseIdentifier: NativeSheetCodeTableViewCell.reuseId
+        )
+        configureCodePage()
+        tableView.register(
             NativeSheetSliderTableViewCell.self,
             forCellReuseIdentifier: NativeSheetSliderTableViewCell.reuseId
         )
@@ -5294,7 +7243,13 @@ private final class NativeDetailTableViewController: UITableViewController {
     override func tableView(
         _ tableView: UITableView,
         editingStyleForRowAt indexPath: IndexPath
-    ) -> UITableViewCell.EditingStyle { .none }
+    ) -> UITableViewCell.EditingStyle {
+        // Reordering shows handles only; outside it a row with actions
+        // offers them on a swipe.
+        tableView.isEditing || item(at: indexPath).rowActions.isEmpty
+            ? .none
+            : .delete
+    }
 
     override func tableView(
         _ tableView: UITableView,
@@ -5329,7 +7284,36 @@ private final class NativeDetailTableViewController: UITableViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Popped, a page with no discard question keeps the text typed into
+        // it, as if done: an address's key password typed on its Advanced
+        // page, say, then Back.
+        if isMovingFromParent, detail.discardPrompt == nil {
+            commitPendingTextChanges()
+        }
+        // Left, a search still waiting for typing to pause is for no page,
+        // nor is the field emptied as its bar goes.
+        if isMovingFromParent || navigationController?.isBeingDismissed == true {
+            leaving = true
+            searchDebounce?.invalidate()
+            searchDebounce = nil
+            // A swipe let go of before it finishes leaves the page where it
+            // was: it searches again, for what was waiting too.
+            transitionCoordinator?.notifyWhenInteractionChanges { [weak self] context in
+                if context.isCancelled { self?.resumeSearch() }
+            }
+        }
         view.endEditing(true)
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Gone, not covered by a page it opened: popped, or the sheet closed.
+        let sheetClosed = navigationController?.isBeingDismissed == true
+            || navigationController?.parent?.isBeingDismissed == true
+            || navigationController?.presentingViewController == nil
+        if isMovingFromParent || sheetClosed {
+            NativeSheetBridge.shared.markDetailLeft(self)
+        }
     }
 
     override func tableView(
@@ -5373,6 +7357,105 @@ private final class NativeDetailTableViewController: UITableViewController {
     override func tableView(
         _ tableView: UITableView,
         cellForRowAt indexPath: IndexPath
+    ) -> UITableViewCell {
+        let cell = makeCell(tableView, at: indexPath)
+        let item = item(at: indexPath)
+        // A row waiting on another row's action, or on the page's Done,
+        // takes no taps; one disabled outright is dimmed as well. Read-only
+        // code still scrolls: its text view is not editable, and the page
+        // itself does not scroll.
+        let readOnlyCode = item.kind == "code" && item.disabled
+        cell.isUserInteractionEnabled =
+            readOnlyCode ? !detail.busy : !(item.disabled || detail.busy)
+        cell.contentView.alpha = item.disabled ? 0.4 : 1
+        cell.accessoryView?.alpha = item.disabled ? 0.4 : 1
+        if item.disabled {
+            cell.accessibilityTraits.insert(.notEnabled)
+        } else {
+            cell.accessibilityTraits.remove(.notEnabled)
+        }
+        return cell
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        shouldHighlightRowAt indexPath: IndexPath
+    ) -> Bool {
+        let item = item(at: indexPath)
+        return !(item.disabled || detail.busy)
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        canEditRowAt indexPath: IndexPath
+    ) -> Bool {
+        tableSections[indexPath.section].reorderActionId != nil
+            || !item(at: indexPath).rowActions.isEmpty
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        let item = item(at: indexPath)
+        guard !item.rowActions.isEmpty, !item.disabled, !detail.busy else {
+            return nil
+        }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            UIMenu(children: item.rowActions.map { action in
+                UIAction(
+                    title: action.label,
+                    image: action.sfSymbol.flatMap { UIImage(systemName: $0) },
+                    attributes: action.destructive ? .destructive : []
+                ) { _ in
+                    self?.performRowAction(action)
+                }
+            })
+        }
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        let item = item(at: indexPath)
+        // A page reordering its rows keeps its handles; the long press still
+        // lists what a row can do.
+        guard !tableView.isEditing, !item.rowActions.isEmpty,
+              !item.disabled, !detail.busy
+        else { return nil }
+        // The destructive one outermost, as Mail puts Delete.
+        let ordered = item.rowActions.filter(\.destructive)
+            + item.rowActions.filter { !$0.destructive }
+        let configuration = UISwipeActionsConfiguration(actions: ordered.map { action in
+            let contextual = UIContextualAction(
+                style: action.destructive ? .destructive : .normal,
+                title: action.label
+            ) { [weak self] _, _, done in
+                self?.performRowAction(action)
+                done(true)
+            }
+            contextual.image = action.sfSymbol.flatMap { UIImage(systemName: $0) }
+            return contextual
+        })
+        // Nothing happens on a full swipe that the user did not choose.
+        configuration.performsFirstActionWithFullSwipe = false
+        return configuration
+    }
+
+    /// Acts on one of a row's other actions as on a tapped row: text typed
+    /// on the page goes first, then the question when it has one, then the
+    /// action's own id.
+    private func performRowAction(_ action: NativeSheetRowAction) {
+        commitPendingTextChanges()
+        guard let actionItem = action.asItem else { return }
+        onSelect(actionItem)
+    }
+
+    private func makeCell(
+        _ tableView: UITableView,
+        at indexPath: IndexPath
     ) -> UITableViewCell {
         let item = item(at: indexPath)
         switch item.kind {
@@ -5443,6 +7526,22 @@ private final class NativeDetailTableViewController: UITableViewController {
             ) as! NativeSheetReadOnlyTextTableViewCell
             cell.configure(item: item)
             return cell
+        case "diffLine":
+            let cell = tableView.dequeueReusableCell(
+                withIdentifier: NativeSheetDiffLineTableViewCell.reuseId,
+                for: indexPath
+            ) as! NativeSheetDiffLineTableViewCell
+            cell.configure(item: item)
+            return cell
+        case "code":
+            let cell = tableView.dequeueReusableCell(
+                withIdentifier: NativeSheetCodeTableViewCell.reuseId,
+                for: indexPath
+            ) as! NativeSheetCodeTableViewCell
+            cell.configure(item: item, value: currentTextValue(for: item)) { [weak self] text in
+                self?.trackTextValueChanged(for: item, value: text)
+            }
+            return cell
         case "source":
             let cell = tableView.dequeueReusableCell(
                 withIdentifier: NativeSheetSourceTableViewCell.reuseId,
@@ -5479,6 +7578,7 @@ private final class NativeDetailTableViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         let item = item(at: indexPath)
+        guard !item.disabled, !detail.busy else { return }
         switch item.kind {
         case "toggle":
             NativeSheetHaptics.selection()
@@ -5490,7 +7590,7 @@ private final class NativeDetailTableViewController: UITableViewController {
             }
         case "info", "textField", "secureTextField", "dropdown", "segment",
              "appearanceTiles", "multilineTextField", "slider", "readOnlyText",
-             "statusUpdate":
+             "statusUpdate", "date", "time", "diffLine", "code":
             break
         case "source":
             guard item.url != nil || canNavigate(item) else { break }
@@ -5543,6 +7643,48 @@ private final class NativeDetailTableViewController: UITableViewController {
         case "searchablePicker":
             configureNavigationCell(cell, item: item, showsDisclosure: true)
 
+        case "date", "time":
+            // The system's compact pill, as a form's date and time rows have.
+            configureNavigationCell(cell, item: item, showsDisclosure: false)
+            let picker = UIDatePicker()
+            picker.preferredDatePickerStyle = .compact
+            picker.datePickerMode = item.kind == "time" ? .time : .date
+            picker.minimumDate = item.sliderMin.map {
+                Date(timeIntervalSince1970: $0 / 1000)
+            }
+            picker.maximumDate = item.sliderMax.map {
+                Date(timeIntervalSince1970: $0 / 1000)
+            }
+            picker.date = NativeSheetDateValue.date(
+                from: chosenDateValues[item.id] ?? item.value
+            ) ?? Date()
+            picker.isEnabled = !item.disabled && !detail.busy
+            picker.accessibilityLabel = item.title
+            picker.addAction(UIAction { [weak self, weak picker] _ in
+                guard let picker else { return }
+                let value = NativeSheetDateValue.string(from: picker.date)
+                self?.chosenDateValues[item.id] = value
+                self?.onControlChanged(item, value)
+            }, for: .valueChanged)
+            picker.sizeToFit()
+            // A compact picker sizes itself far wider than its pill, which
+            // squeezes the row's title onto two lines ("Start Time"). The
+            // accessory takes the pill's own width; the title gets the rest.
+            let pill = picker.systemLayoutSizeFitting(
+                UIView.layoutFittingCompressedSize,
+                withHorizontalFittingPriority: .fittingSizeLevel,
+                verticalFittingPriority: .fittingSizeLevel
+            )
+            if pill.width > 0, pill.width < picker.frame.width {
+                picker.frame.size = CGSize(
+                    width: ceil(pill.width),
+                    height: max(picker.frame.height, ceil(pill.height))
+                )
+            }
+            cell.accessoryView = picker
+            cell.editingAccessoryView = picker
+            cell.selectionStyle = .none
+
         default:
             // Rows that close the sheet to open a page get a chevron, as on
             // the root.
@@ -5552,6 +7694,14 @@ private final class NativeDetailTableViewController: UITableViewController {
                 showsDisclosure: item.showsDisclosure
                     ?? (item.url != nil || item.dismissOnSelect || canNavigate(item))
             )
+        }
+        // A row whose action is running shows it turning, in place of its
+        // chevron or check.
+        if item.pending, item.kind == "navigation" || item.kind == "info" {
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.startAnimating()
+            cell.accessoryView = spinner
+            cell.editingAccessoryView = spinner
         }
     }
 
@@ -5565,6 +7715,7 @@ private final class NativeDetailTableViewController: UITableViewController {
     private func confirmButton(actionId: String, label: String? = nil) -> UIBarButtonItem {
         iconBarButton(
             systemName: "checkmark",
+            label: label,
             style: .done,
             action: UIAction { [weak self] _ in
                 self?.confirmConfiguredAction(actionId)
@@ -5572,10 +7723,45 @@ private final class NativeDetailTableViewController: UITableViewController {
         )
     }
 
+    /// Back asks first when it would drop unsaved changes. Set only with a
+    /// page to go back to: UIKit shows a Back button for a backAction even
+    /// on a stack's first page, as the first page of Settings's second
+    /// column on iPad is.
+    private func refreshBackAction() {
+        let isFirst = navigationController?.viewControllers.first === self
+        navigationItem.backAction = isFirst ? nil : UIAction { [weak self] _ in
+            self?.askBeforeLeaving { [weak self] in
+                _ = self?.navigationController?.popViewController(animated: true)
+            }
+        }
+    }
+
+    /// Whether this page carries the sheet's Close: the first page of a
+    /// one-column sheet does; in Settings's second column on iPad, the root
+    /// list beside it carries Close instead.
+    private var carriesClose: Bool {
+        guard let navigation = navigationController,
+              navigation.viewControllers.first === self
+        else { return false }
+        if let columns = navigation.parent as? NativeSettingsColumnsController,
+           columns.pages === navigation {
+            return false
+        }
+        return true
+    }
+
     private func refreshNavigationAction() {
+        refreshBackAction()
+        if detail.busy {
+            // Done is working: it turns until the page is described again.
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.startAnimating()
+            navigationItem.rightBarButtonItem = UIBarButtonItem(customView: spinner)
+            return
+        }
         navigationItem.leftBarButtonItem = nil
         if let confirmActionId = detail.confirmActionId, !confirmActionId.isEmpty {
-            if navigationController?.viewControllers.first === self {
+            if carriesClose {
                 navigationItem.leftBarButtonItem = closeButton()
             }
             navigationItem.rightBarButtonItem = confirmButton(
@@ -5586,6 +7772,15 @@ private final class NativeDetailTableViewController: UITableViewController {
         }
 
         if pendingTextValues.isEmpty {
+            if let detailId = detail.trailingActionDetailId, !detailId.isEmpty,
+               let page = NativeSheetItem(["id": detailId, "title": detailId]) {
+                // Handled as a row leading to the page: it pushes it.
+                navigationItem.rightBarButtonItem = iconBarButton(
+                    systemName: detail.trailingActionSfSymbol ?? "plus",
+                    action: UIAction { [weak self] _ in self?.onSelect(page) }
+                )
+                return
+            }
             if let trailingActionId = detail.trailingActionId, !trailingActionId.isEmpty,
                let action = NativeSheetItem([
                    "id": trailingActionId,
@@ -5604,10 +7799,7 @@ private final class NativeDetailTableViewController: UITableViewController {
             // A pushed detail already has a Back button. Showing Close as
             // well creates two competing exit actions, so reserve Close for
             // the root controller of a presented sheet.
-            navigationItem.rightBarButtonItem =
-                navigationController?.viewControllers.first === self
-                ? closeButton()
-                : nil
+            navigationItem.rightBarButtonItem = carriesClose ? closeButton() : nil
             return
         }
 
@@ -5631,6 +7823,7 @@ private final class NativeDetailTableViewController: UITableViewController {
         guard item.kind == "textField"
             || item.kind == "secureTextField"
             || item.kind == "multilineTextField"
+            || item.kind == "code"
         else {
             return
         }
@@ -5966,9 +8159,8 @@ private final class NativeModelSelectorTableViewController: UITableViewControlle
     }
 
     private func closeButton() -> UIBarButtonItem {
-        UIBarButtonItem(
-            systemItem: .close,
-            primaryAction: UIAction { [weak self] _ in self?.onClose() }
+        systemCloseBarButton(
+            action: UIAction { [weak self] _ in self?.onClose() }
         )
     }
 
@@ -6353,6 +8545,7 @@ private final class NativeMoreModelsTableViewController: UITableViewController, 
         filteredModels = query.isEmpty ? models : models.filter { model in
             model.name.lowercased().contains(query)
                 || model.id.lowercased().contains(query)
+                || (model.subtitle?.lowercased().contains(query) ?? false)
                 || model.tags.contains { $0.lowercased().contains(query) }
         }
         if isViewLoaded { tableView.reloadData() }
@@ -6587,9 +8780,8 @@ final class NativeOptionsSelectorTableViewController: UIViewController, UITableV
     }
 
     private func closeButton() -> UIBarButtonItem {
-        UIBarButtonItem(
-            systemItem: .close,
-            primaryAction: UIAction { [weak self] _ in self?.onClose() }
+        systemCloseBarButton(
+            action: UIAction { [weak self] _ in self?.onClose() }
         )
     }
 }
@@ -8029,6 +10221,7 @@ private final class NativeDatePickerViewController: UIViewController {
         view.backgroundColor = NativeSheetTheme.shared.background
         navigationItem.leftBarButtonItem = iconBarButton(
             systemName: "xmark",
+            label: nativeLocalized("native.cancel", "Cancel"),
             action: UIAction { [weak self] _ in self?.cancelTapped() }
         )
         navigationItem.rightBarButtonItem = iconBarButton(
@@ -8108,6 +10301,9 @@ private func configureNavigationCell(
         content.image = nativeSettingsSymbolImage(item.sfSymbol)
     }
     NativeSheetSettingsStyle.applyContentStyle(&content, symbol: item.sfSymbol)
+    if avatar == nil, let symbolColor = item.symbolColor {
+        content.imageProperties.tintColor = symbolColor
+    }
     if avatar != nil {
         // A picture keeps its own colors, at the size a symbol takes.
         content.imageProperties.tintColor = nil
@@ -8366,5 +10562,340 @@ private final class NativeAvatarView: UIView {
                 initialsLabel: self.initialsLabel
             )
         }
+    }
+}
+
+
+/// A sign-in page in a web view over Settings: a dashboard's own sign-in,
+/// whose session stays in the web view's cookies. What it types never
+/// reaches Conduit. Each main-frame load is Dart's to allow; on the pages
+/// Dart names, the request's check runs, and once it says the user is
+/// signed in the page closes.
+final class NativeWebSignInViewController: UIViewController,
+    WKNavigationDelegate,
+    WKUIDelegate,
+    UIAdaptivePresentationControllerDelegate
+{
+    typealias Question = (String, @escaping (Bool) -> Void) -> Void
+
+    private let request: PlatformWebSignInRequest
+    private let startURL: URL
+    private let allowsNavigation: Question
+    private let checksPage: Question
+    private var onFinish: ((Bool) -> Void)?
+    private var webView: WKWebView?
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let failureLabel = UILabel()
+    private var checking = false
+
+    /// The page whose load failed, which Retry loads again: an identity
+    /// provider's, when that is where the sign-in failed. Reloading the
+    /// dashboard's sign-in instead would count as its return, after which
+    /// the flow may not leave for the provider again.
+    private var failedURL: URL?
+
+    /// What Retry loads.
+    var retryURL: URL { failedURL ?? startURL }
+
+    init(
+        request: PlatformWebSignInRequest,
+        startURL: URL,
+        allowsNavigation: @escaping Question,
+        checksPage: @escaping Question,
+        onFinish: @escaping (Bool) -> Void
+    ) {
+        self.request = request
+        self.startURL = startURL
+        self.allowsNavigation = allowsNavigation
+        self.checksPage = checksPage
+        self.onFinish = onFinish
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = request.title
+        view.backgroundColor = .systemBackground
+        // An opaque bar: the page under it brings its own colours, which a
+        // see-through bar would put behind the title.
+        let bar = UINavigationBarAppearance()
+        bar.configureWithOpaqueBackground()
+        navigationItem.standardAppearance = bar
+        navigationItem.scrollEdgeAppearance = bar
+        navigationItem.compactAppearance = bar
+        // The default store: the app reads the session's cookies there.
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(webView)
+        self.webView = webView
+
+        failureLabel.text = request.loadFailedMessage
+        failureLabel.textAlignment = .center
+        failureLabel.numberOfLines = 0
+        failureLabel.font = .preferredFont(forTextStyle: .body)
+        failureLabel.adjustsFontForContentSizeCategory = true
+        failureLabel.textColor = .secondaryLabel
+        failureLabel.isHidden = true
+        failureLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(failureLabel)
+
+        spinner.hidesWhenStopped = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(spinner)
+
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: view.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            failureLabel.leadingAnchor.constraint(
+                equalTo: view.layoutMarginsGuide.leadingAnchor
+            ),
+            failureLabel.trailingAnchor.constraint(
+                equalTo: view.layoutMarginsGuide.trailingAnchor
+            ),
+            failureLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: request.cancelLabel,
+            style: .plain,
+            target: self,
+            action: #selector(cancelTapped)
+        )
+        let reload = UIBarButtonItem(
+            barButtonSystemItem: .refresh,
+            target: self,
+            action: #selector(reloadTapped)
+        )
+        reload.accessibilityLabel = request.reloadLabel
+        navigationItem.rightBarButtonItem = reload
+        webView.load(URLRequest(url: startURL))
+    }
+
+    @objc private func cancelTapped() {
+        finish(false)
+        dismiss(animated: true)
+    }
+
+    @objc private func reloadTapped() {
+        failureLabel.isHidden = true
+        let url = retryURL
+        failedURL = nil
+        webView?.load(URLRequest(url: url))
+    }
+
+    private func finish(_ signedIn: Bool) {
+        let finish = onFinish
+        onFinish = nil
+        finish?(signedIn)
+    }
+
+    func presentationControllerDidDismiss(
+        _ presentationController: UIPresentationController
+    ) {
+        finish(false)
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Gone with whatever closed it -- Settings closed from Dart under
+        // it, say, which UIKit reports to no delegate: the sign-in ends,
+        // not signed in, so Dart stops waiting.
+        let navigation = navigationController
+        if navigation?.isBeingDismissed == true
+            || navigation?.presentingViewController == nil {
+            finish(false)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let frame = navigationAction.targetFrame else {
+            // A new window opens nothing.
+            decisionHandler(.cancel)
+            return
+        }
+        guard frame.isMainFrame else {
+            // Frames load as the page asks.
+            decisionHandler(.allow)
+            return
+        }
+        guard let target = navigationAction.request.url?.absoluteString else {
+            decisionHandler(.cancel)
+            return
+        }
+        allowsNavigation(target) { allowed in
+            decisionHandler(allowed ? .allow : .cancel)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didStartProvisionalNavigation navigation: WKNavigation!
+    ) {
+        failureLabel.isHidden = true
+        spinner.startAnimating()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        spinner.stopAnimating()
+        guard let loaded = webView.url?.absoluteString else { return }
+        // Finished while a check runs: looked at once that check ends.
+        guard !checking else {
+            finishedWhileChecking = loaded
+            return
+        }
+        considerChecking(loaded)
+    }
+
+    /// The page that finished loading while a check ran, if any.
+    private var finishedWhileChecking: String?
+
+    private func considerChecking(_ loaded: String) {
+        checksPage(loaded) { [weak self] check in
+            guard check else { return }
+            self?.checkSignedIn(approved: loaded)
+        }
+    }
+
+    /// A check ended without a sign-in: a page that finished meanwhile, and
+    /// is still the one shown, is looked at now.
+    private func checkLatestPage() {
+        guard let latest = finishedWhileChecking else { return }
+        finishedWhileChecking = nil
+        guard webView?.url?.absoluteString == latest else { return }
+        considerChecking(latest)
+    }
+
+    /// Runs the signed-in check on [approved], the page Dart said to check,
+    /// and only while it is still the page shown: another may have loaded
+    /// while Dart answered.
+    private func checkSignedIn(approved: String) {
+        guard let webView, !checking, onFinish != nil,
+              webView.url?.absoluteString == approved
+        else { return }
+        checking = true
+        webView.callAsyncJavaScript(
+            request.checkScript,
+            arguments: ["url": request.checkUrl],
+            in: nil,
+            in: .page
+        ) { [weak self] result in
+            guard let self else { return }
+            self.checking = false
+            guard case .success(let value) = result,
+                  (value as? Bool) == true || (value as? NSNumber)?.boolValue == true
+            else {
+                self.checkLatestPage()
+                return
+            }
+            self.finish(true)
+            self.dismiss(animated: true)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFail navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        showFailure(error)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        showFailure(error)
+    }
+
+    private func showFailure(_ error: Error) {
+        spinner.stopAnimating()
+        let nsError = error as NSError
+        // A load this page refused, or replaced with another, is no failure.
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+            return
+        }
+        if nsError.domain == "WebKitErrorDomain", nsError.code == 102 { return }
+        failedURL = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            ?? webView?.url
+            ?? failedURL
+        failureLabel.isHidden = false
+    }
+}
+
+extension NativeDetailTableViewController: UICalendarViewDelegate,
+    UICalendarSelectionSingleDateDelegate {
+    func calendarView(
+        _ calendarView: UICalendarView,
+        decorationFor dateComponents: DateComponents
+    ) -> UICalendarView.Decoration? {
+        let colors = calendarMarkColors(dateComponents)
+        switch colors.count {
+        case 0:
+            return nil
+        case 1:
+            return .default(color: colors[0], size: .medium)
+        default:
+            return .customView { NativeCalendarDotsView(colors: colors) }
+        }
+    }
+
+    func calendarView(
+        _ calendarView: UICalendarView,
+        didChangeVisibleDateComponentsFrom previousDateComponents: DateComponents
+    ) {
+        calendarMonthPaged(calendarView.visibleDateComponents)
+    }
+
+    func dateSelection(
+        _ selection: UICalendarSelectionSingleDate,
+        didSelectDate dateComponents: DateComponents?
+    ) {
+        guard let dateComponents else {
+            // The chosen day tapped again deselects it; the page still
+            // shows that day, so the grid keeps it chosen.
+            if let day = detail.calendar?.selectedDay {
+                selection.setSelected(day, animated: false)
+            }
+            return
+        }
+        guard let key = NativeSheetMonthCalendar.key(dateComponents) else {
+            return
+        }
+        sendCalendarChange(":day", key)
+    }
+}
+
+extension NativeDetailTableViewController: UISearchBarDelegate {
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+        searchTextChanged(searchText)
+    }
+
+    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+        sendSearch(searchBar.text ?? "")
+    }
+
+    func searchBarCancelButtonClicked(_ searchBar: UISearchBar) {
+        // Cancel clears the field: the whole list comes back at once, and
+        // the field shows it empty (the page's echo of "" changes nothing).
+        searchBar.text = ""
+        sendSearch("")
     }
 }

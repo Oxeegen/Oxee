@@ -165,8 +165,13 @@ OpenWebUiComposerPrompt? parseOpenWebUiAskUserPrompt(
   );
 }
 
-/// Whether the call [callId] in [output] is a request from one of Open WebUI
-/// 0.13.1's coding agents: it carries the agent's own request as `native`.
+/// Whether [item] holds a coding agent's own request: as `provider_data`
+/// from Open WebUI 0.13.4, as `native` from 0.13.1.
+bool _carriesAgentRequest(Map<String, dynamic> item) =>
+    item['provider_data'] != null || item['native'] != null;
+
+/// Whether the call [callId] in [output] is a request from one of Open WebUI's
+/// coding agents (0.13.1 and later).
 bool isOpenWebUiAgentRequest(
   List<Map<String, dynamic>>? output,
   String callId,
@@ -178,7 +183,7 @@ bool isOpenWebUiAgentRequest(
         item['type']?.toString() == 'function_call' &&
         (item['call_id']?.toString().trim() ?? item['id']?.toString().trim()) ==
             id &&
-        item['native'] != null,
+        _carriesAgentRequest(item),
   );
 }
 
@@ -273,7 +278,7 @@ OpenWebUiPendingToolPrompt? findPendingOpenWebUiToolPrompt(
       if (name == 'ask_user') {
         final arguments = _decodeArguments(item['arguments']);
         final identity = 'saved:${message.id}:$callId';
-        final prompt = item['native'] != null
+        final prompt = _carriesAgentRequest(item)
             ? _parseAgentQuestions(arguments, identity: identity)
             : parseOpenWebUiAskUserPrompt(arguments, identity: identity);
         if (prompt == null) continue;
@@ -300,6 +305,54 @@ OpenWebUiPendingToolPrompt? findPendingOpenWebUiToolPrompt(
     }
   }
   return null;
+}
+
+/// Whether Open WebUI's stop of [chat], asked with no task running, would
+/// reject a tool call an answer waits on, as the chat takes one
+/// ([findPendingOpenWebUiToolPrompt]). [chat] is the chat as
+/// `GET /api/v1/chats/{id}` answers it. The stop finishes each answer of
+/// [userId]'s that its whole stored history holds as not done, on every
+/// branch: by the message's `user_id`, or the chat owner's when it names
+/// none, an empty id naming no one (`main.py`,
+/// `stop_tasks_by_chat_id_endpoint`, `message.get('user_id') or
+/// chat.user_id`). With no [userId], every answer counts.
+bool openWebUiChatStopRejectsPrompt(
+  Map<String, dynamic>? chat, {
+  String? userId,
+}) {
+  final blob = chat?['chat'];
+  final history = blob is Map ? blob['history'] : null;
+  final messages = history is Map ? history['messages'] : null;
+  if (messages is! Map) return false;
+  for (final message in messages.values) {
+    if (message is! Map ||
+        message['role'] != 'assistant' ||
+        message['done'] != false) {
+      continue;
+    }
+    final named = message['user_id'];
+    final author = named is String && named.isNotEmpty
+        ? named
+        : chat?['user_id'];
+    if (userId != null && author != userId) continue;
+    final output = message['output'];
+    final waits = findPendingOpenWebUiToolPrompt([
+      ChatMessage(
+        id: '${message['id']}',
+        role: 'assistant',
+        content: '',
+        timestamp: DateTime.fromMillisecondsSinceEpoch(0),
+        output: output is List
+            ? <Map<String, dynamic>>[
+                for (final item in output)
+                  if (item is Map) Map<String, dynamic>.from(item),
+              ]
+            : null,
+      ),
+    ]);
+    if (waits != null) return true;
+  }
+  return false;
 }
 
 /// The title and message a socket `confirmation` request shows.

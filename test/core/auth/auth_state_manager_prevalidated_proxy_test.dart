@@ -92,6 +92,8 @@ void main() {
         publish: any(named: 'publish'),
         canCommit: any(named: 'canCommit'),
         onRollbackUncertain: any(named: 'onRollbackUncertain'),
+        joins: any(named: 'joins'),
+        onWriting: any(named: 'onWriting'),
       ),
     ).thenAnswer((invocation) async {
       final config = invocation.positionalArguments.single as ServerConfig;
@@ -104,6 +106,8 @@ void main() {
         await releaseFirst.future;
       }
       if (!canCommit()) return false;
+      // As storage does: its first write is announced before publication.
+      (invocation.namedArguments[#onWriting] as void Function()?)?.call();
       await publish();
       publishedServerIds.add(config.id);
       return true;
@@ -1275,6 +1279,225 @@ void main() {
     gate.complete();
 
     check(await recheck).isFalse();
+    final kept = container.read(authStateManagerProvider).requireValue;
+    check(kept.status).equals(AuthStatus.error);
+    check(kept.token).equals(token);
+  });
+
+  // The connection issue's Retry, behind a sign-in proxy whose own session
+  // ran out: the server is asked before the kept session is shown signed in
+  // again, so the app never flashes the chat while the proxy still turns
+  // the session away.
+  test('the connection issue Retry asks the server before showing the kept '
+      'session signed in', () async {
+    SharedPreferences.setMockInitialValues({});
+    PreferencesStore.debugOverride(await FlutterKeyValueStore.load());
+    addTearDown(PreferencesStore.debugReset);
+    final storage = _Storage();
+    var storedToken = '';
+    when(() => storage.getAuthTokenStrict())
+        .thenAnswer((_) async => storedToken);
+    when(() => storage.getSavedCredentialsStrict())
+        .thenAnswer((_) async => null);
+    when(() => storage.getLocalUserWithAvatar()).thenAnswer((_) async => user);
+    when(() => storage.saveLocalUser(null)).thenAnswer((_) async {});
+    when(() => storage.saveLocalUserWithAvatar(user, avatarUrl: null))
+        .thenAnswer((_) async {});
+    when(
+      () => storage.captureServerSessionOwnership(
+        validatedConfig: any(named: 'validatedConfig'),
+        requireActive: true,
+      ),
+    ).thenAnswer(
+      (_) async =>
+          (revision: 1, serverConfig: previousConfig, requireActive: true),
+    );
+    when(
+      () => storage.commitExistingServerSession(
+        ownership: any(named: 'ownership'),
+        token: any(named: 'token'),
+        canCommit: any(named: 'canCommit'),
+        publish: any(named: 'publish'),
+        rememberedCredentials: any(named: 'rememberedCredentials'),
+        onRollbackUncertain: any(named: 'onRollbackUncertain'),
+      ),
+    ).thenAnswer((invocation) async {
+      final publish =
+          invocation.namedArguments[#publish] as FutureOr<void> Function();
+      await publish();
+      storedToken = token;
+      return true;
+    });
+    final api = _SuccessfulAuthApi();
+    final container = ProviderContainer(
+      overrides: [
+        optimizedStorageServiceProvider.overrideWithValue(storage),
+        apiServiceProvider.overrideWithValue(api),
+        activeServerProvider.overrideWith((ref) async => previousConfig),
+        defaultModelProvider.overrideWith((ref) async => null),
+      ],
+    );
+    addTearDown(container.dispose);
+    addTearDown(api.dispose);
+    await container.read(authStateManagerProvider.future);
+    await _waitForAuthStatus(container, AuthStatus.unauthenticated);
+    final notifier = container.read(authStateManagerProvider.notifier);
+    check(await notifier.login('user', 'password')).isTrue();
+    notifier.onAuthIssue();
+    final seen = <AuthStatus?>[];
+    final watch = container.listen(
+      authStateManagerProvider,
+      (_, next) => seen.add(next.value?.status),
+    );
+    addTearDown(watch.close);
+
+    // The proxy answers with its own sign-in page, not Open WebUI's.
+    final request = RequestOptions(path: '/api/v1/auths/');
+    api.currentUserFailure = DioException(
+      requestOptions: request,
+      response: Response<void>(requestOptions: request, statusCode: 302),
+      type: DioExceptionType.badResponse,
+    );
+    await notifier.retryConnectionIssue();
+    await pumpEventQueue();
+    check(seen).not((it) => it.contains(AuthStatus.authenticated));
+    final refused = container.read(authStateManagerProvider).requireValue;
+    check(refused.status).equals(AuthStatus.error);
+    check(refused.token).equals(token);
+    check(refused.user).equals(user);
+
+    // The proxy's sign-in page sent with a 401 refuses the route, not the
+    // token, as every other request reads it.
+    api.currentUserFailure = DioException(
+      requestOptions: request,
+      response: Response<void>(
+        requestOptions: request,
+        statusCode: 401,
+        headers: Headers.fromMap({
+          Headers.contentTypeHeader: ['text/html; charset=utf-8'],
+        }),
+      ),
+      type: DioExceptionType.badResponse,
+    );
+    await notifier.retryConnectionIssue();
+    await pumpEventQueue();
+    check(seen).not((it) => it.contains(AuthStatus.authenticated));
+    final pageRefused = container.read(authStateManagerProvider).requireValue;
+    check(pageRefused.status).equals(AuthStatus.error);
+    check(pageRefused.token).equals(token);
+
+    // A proxy that holds the request until it times out has not answered,
+    // but neither is the device offline: the issue stays shown.
+    api.currentUserFailure = DioException(
+      requestOptions: request,
+      type: DioExceptionType.receiveTimeout,
+    );
+    await notifier.retryConnectionIssue();
+    await pumpEventQueue();
+    check(seen).not((it) => it.contains(AuthStatus.authenticated));
+    final timedOut = container.read(authStateManagerProvider).requireValue;
+    check(timedOut.status).equals(AuthStatus.error);
+    check(timedOut.token).equals(token);
+
+    // The proxy lets the session through again.
+    api.currentUserFailure = null;
+    await notifier.retryConnectionIssue();
+    final restored = container.read(authStateManagerProvider).requireValue;
+    check(restored.status).equals(AuthStatus.authenticated);
+    check(restored.token).equals(token);
+
+    // Back on the connection issue, a connection that could not even be
+    // opened in time is offline (a network that drops the packets):
+    // refreshed as on launch, which reads the stored session again. Last,
+    // since a refresh shows the stored session signed in.
+    notifier.onAuthIssue();
+    check(container.read(authStateManagerProvider).requireValue.status)
+        .equals(AuthStatus.error);
+    api.currentUserFailure = DioException(
+      requestOptions: request,
+      type: DioExceptionType.connectionTimeout,
+    );
+    clearInteractions(storage);
+    await notifier.retryConnectionIssue();
+    await pumpEventQueue();
+    verify(() => storage.getAuthTokenStrict()).called(greaterThanOrEqualTo(1));
+  });
+
+  test('a Retry refused on an address moved away from meanwhile keeps the '
+      'session', () async {
+    SharedPreferences.setMockInitialValues({});
+    PreferencesStore.debugOverride(await FlutterKeyValueStore.load());
+    addTearDown(PreferencesStore.debugReset);
+    final storage = _Storage();
+    when(() => storage.getAuthTokenStrict()).thenAnswer((_) async => '');
+    when(() => storage.getSavedCredentialsStrict())
+        .thenAnswer((_) async => null);
+    when(() => storage.saveLocalUser(null)).thenAnswer((_) async {});
+    when(() => storage.saveLocalUserWithAvatar(user, avatarUrl: null))
+        .thenAnswer((_) async {});
+    when(
+      () => storage.captureServerSessionOwnership(
+        validatedConfig: any(named: 'validatedConfig'),
+        requireActive: true,
+      ),
+    ).thenAnswer(
+      (_) async =>
+          (revision: 1, serverConfig: previousConfig, requireActive: true),
+    );
+    when(
+      () => storage.commitExistingServerSession(
+        ownership: any(named: 'ownership'),
+        token: any(named: 'token'),
+        canCommit: any(named: 'canCommit'),
+        publish: any(named: 'publish'),
+        rememberedCredentials: any(named: 'rememberedCredentials'),
+        onRollbackUncertain: any(named: 'onRollbackUncertain'),
+      ),
+    ).thenAnswer((invocation) async {
+      final publish =
+          invocation.namedArguments[#publish] as FutureOr<void> Function();
+      await publish();
+      return true;
+    });
+    final moved = _SuccessfulAuthApi();
+    final api = _SuccessfulAuthApi();
+    var inUse = api;
+    final container = ProviderContainer(
+      overrides: [
+        optimizedStorageServiceProvider.overrideWithValue(storage),
+        apiServiceProvider.overrideWith((ref) => inUse),
+        activeServerProvider.overrideWith((ref) async => previousConfig),
+        defaultModelProvider.overrideWith((ref) async => null),
+      ],
+    );
+    addTearDown(container.dispose);
+    addTearDown(api.dispose);
+    addTearDown(moved.dispose);
+    await container.read(authStateManagerProvider.future);
+    await _waitForAuthStatus(container, AuthStatus.unauthenticated);
+    final notifier = container.read(authStateManagerProvider.notifier);
+    check(await notifier.login('user', 'password')).isTrue();
+    notifier.onAuthIssue();
+
+    // The address being asked turns the session away, but only after the
+    // server has moved on to another address.
+    final request = RequestOptions(path: '/api/v1/auths/');
+    api.currentUserFailure = DioException(
+      requestOptions: request,
+      response: Response<void>(requestOptions: request, statusCode: 401),
+      type: DioExceptionType.badResponse,
+    );
+    final gate = api.currentUserGate = Completer<void>();
+    final asked = api.currentUserCalls;
+    final retry = notifier.retryConnectionIssue();
+    while (api.currentUserCalls == asked) {
+      await pumpEventQueue();
+    }
+    inUse = moved;
+    container.invalidate(apiServiceProvider);
+    gate.complete();
+    await retry;
+
     final kept = container.read(authStateManagerProvider).requireValue;
     check(kept.status).equals(AuthStatus.error);
     check(kept.token).equals(token);
@@ -3269,7 +3492,10 @@ void main() {
       role: 'user',
     );
     final storage = _Storage();
-    when(() => storage.getAuthTokenStrict()).thenAnswer((_) async => '');
+    // As storage does: the token a commit saved is the one read back.
+    var savedToken = '';
+    when(() => storage.getAuthTokenStrict())
+        .thenAnswer((_) async => savedToken);
     when(() => storage.getSavedCredentialsStrict())
         .thenAnswer((_) async => null);
     when(() => storage.saveLocalUser(null)).thenAnswer((_) async {});
@@ -3321,6 +3547,7 @@ void main() {
       // As the storage does: a commit no longer owned leaves the account
       // active before it as it was.
       if (!canCommit()) return false;
+      savedToken = invocation.namedArguments[#token] as String;
       await publish();
       published.add(committing.id);
       return true;
@@ -3381,7 +3608,10 @@ void main() {
       role: 'user',
     );
     final storage = _Storage();
-    when(() => storage.getAuthTokenStrict()).thenAnswer((_) async => '');
+    // As storage does: the token a commit saved is the one read back.
+    var savedToken = '';
+    when(() => storage.getAuthTokenStrict())
+        .thenAnswer((_) async => savedToken);
     when(() => storage.getSavedCredentialsStrict())
         .thenAnswer((_) async => null);
     when(() => storage.saveLocalUser(null)).thenAnswer((_) async {});
@@ -3420,6 +3650,7 @@ void main() {
       final publish =
           invocation.namedArguments[#publish] as FutureOr<void> Function();
       if (!canCommit()) return false;
+      savedToken = invocation.namedArguments[#token] as String;
       await publish();
       return true;
     });
@@ -3602,8 +3833,9 @@ final class _Storage extends Mock implements OptimizedStorageService {}
 
 void _routeConditionalAuthClearToLegacyMock(_Storage storage) {
   when(
-    () =>
-        storage.clearActiveAccountAuthDataIf(canClear: any(named: 'canClear')),
+    () => storage.clearActiveAccountAuthDataIf(
+      canClear: any(named: 'canClear'),
+    ),
   ).thenAnswer((invocation) async {
     final canClear = invocation.namedArguments[#canClear] as bool Function();
     if (!canClear()) return false;

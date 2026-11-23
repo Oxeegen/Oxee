@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:checks/checks.dart';
 import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
 import 'package:conduit_core/features/workspace/providers/workspace_knowledge_files.dart';
+import 'package:conduit_core/features/workspace/providers/workspace_session.dart';
 import 'package:conduit_core/models/server_config.dart';
 import 'package:conduit_core/models/user.dart';
 import 'package:conduit_core/network/upload_timeout.dart';
@@ -54,6 +55,20 @@ class _KnowledgeServer implements HttpClientAdapter {
 
   /// The receive timeout of every upload.
   final uploadTimeouts = <Duration?>[];
+
+  /// The body of every single-file link.
+  final links = <Map<String, dynamic>>[];
+
+  /// Holds the next upload until completed, when set.
+  Completer<void>? uploadGate;
+
+  /// Holds the next read of the pending files until completed, when set.
+  Completer<void>? pendingGate;
+
+  /// Holds the next deletion until completed, when set; [deleting] completes
+  /// as it arrives.
+  Completer<void>? deleteGate;
+  final deleting = Completer<void>();
   var _uploads = 0;
   final _polls = <String, int>{};
 
@@ -82,6 +97,9 @@ class _KnowledgeServer implements HttpClientAdapter {
       };
     }
     if (path == '/api/v1/files/' && options.method == 'POST') {
+      final gate = uploadGate;
+      uploadGate = null;
+      await gate?.future;
       uploadQueries.add(Map<String, dynamic>.of(options.queryParameters));
       uploadTimeouts.add(options.receiveTimeout);
       if (++_uploads == failUpload) {
@@ -103,6 +121,9 @@ class _KnowledgeServer implements HttpClientAdapter {
           'errors': ['upload-2: Unsupported file'],
         },
       });
+    }
+    if (path.endsWith('/file/add')) {
+      links.add(Map<String, dynamic>.from(options.data as Map));
     }
     if (path.endsWith('/file/add') || path.endsWith('/files/batch/add')) {
       return attachStatus == 200
@@ -142,8 +163,19 @@ class _KnowledgeServer implements HttpClientAdapter {
         'status': poll <= statuses.length ? statuses[poll - 1] : 'completed',
       });
     }
-    if (options.method == 'DELETE') return _json({'ok': true});
-    if (path.endsWith('/files/pending')) return _json(<Object>[]);
+    if (options.method == 'DELETE') {
+      final gate = deleteGate;
+      deleteGate = null;
+      if (!deleting.isCompleted) deleting.complete();
+      await gate?.future;
+      return _json({'ok': true});
+    }
+    if (path.endsWith('/files/pending')) {
+      final gate = pendingGate;
+      pendingGate = null;
+      await gate?.future;
+      return _json(<Object>[]);
+    }
     if (path.endsWith('/files')) return _json({'items': <Object>[], 'total': 0});
     return _json(<String, dynamic>{});
   }
@@ -160,7 +192,11 @@ class _KnowledgeServer implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+/// The signed-in session's token; a test changes it to switch accounts.
+String _token = 'token';
+
 Future<ProviderContainer> _container(_KnowledgeServer server) async {
+  _token = 'token';
   final api = ApiService(serverConfig: _server, workerManager: WorkerManager())
     ..dio.httpClientAdapter = server;
   api.dio.interceptors.clear();
@@ -171,7 +207,7 @@ Future<ProviderContainer> _container(_KnowledgeServer server) async {
       currentUserProvider2.overrideWithValue(
         const User(id: 'owner', username: 'o', email: 'o@e.com', role: 'user'),
       ),
-      authTokenProvider3.overrideWithValue('token'),
+      authTokenProvider3.overrideWith((ref) => _token),
     ],
   );
   await container.read(activeServerProvider.future);
@@ -184,6 +220,78 @@ WorkspaceUploadSource _file(String name, int size) =>
     (name: name, size: size, read: () async => List<int>.filled(size, 1));
 
 void main() {
+  group('the folder open in the browser', () {
+    test('a file uploaded while another folder opens goes into the one it '
+        'began in', () async {
+      final server = _KnowledgeServer();
+      final container = await _container(server);
+      addTearDown(container.dispose);
+      final files = container.read(
+        workspaceKnowledgeFilesProvider('kb-1').notifier,
+      );
+      await files.openDirectory('dir-1');
+      final gate = server.uploadGate = Completer<void>();
+
+      final uploading = files.uploadBytes('trail.txt', [1, 2, 3]);
+      await pumpEventQueue();
+      // Back to the base's root while the upload is on its way.
+      await files.openDirectory('');
+      gate.complete();
+      await uploading;
+
+      check(server.links.single['directory_id']).equals('dir-1');
+    });
+
+    test(
+      'a batch says which file is on its way, as a single upload does',
+      () async {
+        final server = _KnowledgeServer();
+        final container = await _container(server);
+        addTearDown(container.dispose);
+        final provider = workspaceKnowledgeFilesProvider('kb-1');
+        final gate = server.uploadGate = Completer<void>();
+
+        final uploading = container.read(provider.notifier).uploadMany([
+          _file('a.txt', 3),
+          _file('b.txt', 7),
+        ]);
+        await pumpEventQueue();
+
+        check(container.read(provider).value!.upload)
+            .isNotNull()
+            .has((upload) => upload.filename, 'filename')
+            .equals('a.txt');
+        gate.complete();
+        await uploading;
+        // Done, nothing is on its way.
+        check(container.read(provider).value!.upload).isNull();
+      },
+    );
+
+    test('a pending read begun in one folder leaves the folder opened '
+        'meanwhile', () async {
+      final server = _KnowledgeServer();
+      final container = await _container(server);
+      addTearDown(container.dispose);
+      final files = container.read(
+        workspaceKnowledgeFilesProvider('kb-1').notifier,
+      );
+      final gate = server.pendingGate = Completer<void>();
+
+      final polling = files.refreshPending();
+      await pumpEventQueue();
+      await files.openDirectory('dir-1');
+      gate.complete();
+      await polling;
+
+      final browser = container
+          .read(workspaceKnowledgeFilesProvider('kb-1'))
+          .value!;
+      check(browser.directoryId).equals('dir-1');
+      check(browser.isLoading).isFalse();
+    });
+  });
+
   group('knowledge base file limits on upload (Open WebUI 0.13)', () {
     test('a batch is checked by count and largest size before any upload', () async {
       final server = _KnowledgeServer();
@@ -304,6 +412,44 @@ void main() {
       check(
         server.requests.where((r) => r.endsWith('/files/batch/add')),
       ).isEmpty();
+    });
+
+    test('an account change while a failed upload is deleted links nothing, '
+        'and deletes the rest', () async {
+      for (final attach in <
+        Future<void> Function(WorkspaceKnowledgeFiles files)
+      >[
+        (files) => files.uploadMany([_file('a.txt', 3), _file('b.txt', 7)]),
+        (files) => files.attachUploaded(['upload-1', 'upload-2']),
+      ]) {
+        final server = _KnowledgeServer(
+          processing: {
+            'upload-2': ['failed'],
+          },
+        );
+        final container = await _container(server);
+        addTearDown(container.dispose);
+        final gate = server.deleteGate = Completer<void>();
+
+        final adding = attach(
+          container.read(workspaceKnowledgeFilesProvider('kb-1').notifier),
+        );
+        await server.deleting.future;
+        _token = 'another-account';
+        container.invalidate(authTokenProvider3);
+        gate.complete();
+
+        await check(adding).throws<WorkspaceSessionChanged>();
+        check(
+          server.requests.where(
+            (r) => r.endsWith('/file/add') || r.endsWith('/files/batch/add'),
+          ),
+        ).isEmpty();
+        check(server.deletions.toList()).deepEquals([
+          'DELETE /api/v1/files/upload-2',
+          'DELETE /api/v1/files/upload-1',
+        ]);
+      }
     });
 
     test('an unprocessed upload is deleted even when the link then fails', () async {

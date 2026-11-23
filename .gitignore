@@ -47,8 +47,10 @@ app.*.symbols
 app.*.map.json
 
 # Workspace package build output (the root `/build/` rule is root-anchored
-# and does not cover the packages).
+# and does not cover the packages). `dart build cli` writes the daemon's
+# bundle under apps/daemon/build/.
 packages/*/build/
+apps/*/build/
 
 # Android Studio will place build artifacts here
 /android/app/debug
@@ -105,6 +107,8 @@ coverage/
 # Generated files
 *.g.dart
 !lib/core/platform/conduit_platform_apis.g.dart
+# Published with the vendored plugin, which nothing here regenerates.
+!third_party/flutter_callkit_incoming/lib/**/*.g.dart
 *.freezed.dart
 lib/l10n/app_localizations.dart
 lib/l10n/app_localizations_*.dart
@@ -162,3 +166,14 @@ GoogleService-Info.plist
 !**/ios/**/default.pbxuser
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
+.venv/
+
+# Push relay (Rust) build output
+relay/target/
+
+# T3 Code worktree setup markers (tool/setup_worktree.dart).
+.t3/
+
+# Unpacked in CI by brand/tools/onnxruntime_pods.py from Microsoft's NuGet package.
+brand/vendor/onnxruntime-c/onnxruntime.xcframework/
+brand/vendor/onnxruntime-c/Headers/

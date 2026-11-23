@@ -88,6 +88,7 @@ class SocketService {
   bool _wasBackgrounded = false;
   bool _resumeReconnectInFlight = false;
   bool _signalReconnectOnConnect = false;
+  bool _hasConnected = false;
   bool _hasNetwork = true;
   int _backgroundActivityLeases = 0;
   final Set<String> _backgroundLeaseHandlerIds = <String>{};
@@ -136,6 +137,10 @@ class SocketService {
     try {
       final transport = engine.transport;
       if (transport != null) {
+        // On native platforms polling runs inside the library's WebSocket
+        // transport, which is named for that; the address says which it is.
+        final requested = transport.query?['transport'];
+        if (requested is String && requested.isNotEmpty) return requested;
         return transport.name ?? 'unknown';
       }
     } catch (_) {}
@@ -481,6 +486,8 @@ class SocketService {
     final phase = lifecycle.current;
     _isAppForeground = phase == null || phase.isForeground;
     _wasBackgrounded = phase != null && phase.isBackground;
+    _publishedForeground = _isAppForeground;
+    _publishedMayMaintainTransport = _mayMaintainTransport;
     _lifecycleSubscription = lifecycle.changes.listen(_onLifecyclePhase);
   }
 
@@ -513,6 +520,7 @@ class SocketService {
           }
         }
     }
+    _publishTransportPolicy();
   }
 
   Future<void> _reconnectAfterResume() async {
@@ -554,9 +562,17 @@ class SocketService {
     if (!shouldSignalReconnect) return;
 
     _signalReconnectOnConnect = false;
+    _announceReconnect();
+  }
+
+  /// Tells listeners a connection came back so they refresh what it may have
+  /// missed. That includes the user's devices: one that joined or left
+  /// meanwhile sent its `terminals:changed` to a socket that wasn't there.
+  void _announceReconnect() {
     if (!_reconnectController.isClosed) {
       _reconnectController.add(null);
     }
+    tetherDevicesChangedHandler?.call();
   }
 
   void _clearPendingResumeReconnect() {
@@ -572,6 +588,14 @@ class SocketService {
   }
 
   String? get sessionId => _socket?.id;
+
+  /// Whether a connection starts on a WebSocket, falling back to polling when
+  /// that fails. In WebSocket mode it does; in polling mode, a session that
+  /// cannot upgrade (native platforms, see [socketPollingCanUpgrade]) does too
+  /// when the server allows WebSockets, which keeps that mode's promise of a
+  /// WebSocket when possible and polling when it is blocked.
+  bool get _triesWebsocketFirst =>
+      websocketOnly || (allowWebsocketUpgrade && !socketPollingCanUpgrade);
 
   /// How long the server's `execute:tool` call may wait for this client.
   static const Duration toolExecutionTimeout = Duration(seconds: 120);
@@ -599,6 +623,12 @@ class SocketService {
       _toolExecutionHandler = handler;
 
   SocketChatHandoffHandler? _chatHandoffHandler;
+
+  /// Told when the user's Tether devices change what they offer (Open
+  /// WebUI's `terminals:changed`, sent to the account rather than a chat).
+  /// Set by the owner that ties the service to an account, and cleared
+  /// with it.
+  void Function()? tetherDevicesChangedHandler;
 
   /// Who answers `chat:handoff` events for this service, or null for nobody;
   /// a call then gets an `unsupported` reply. Set by the owner that ties the
@@ -654,6 +684,33 @@ class SocketService {
 
   bool get _mayMaintainTransport =>
       _hasNetwork && (_isAppForeground || _backgroundActivityLeases > 0);
+
+  /// Whether the transport is kept up now: the network is reachable, and the
+  /// app is in the foreground or a background activity lease holds it.
+  bool get mayMaintainTransport => _mayMaintainTransport;
+
+  final _transportPolicyController = StreamController<void>.broadcast();
+  bool _publishedForeground = true;
+  bool _publishedMayMaintainTransport = true;
+
+  /// Emits when [isAppForeground] or [mayMaintainTransport] changes. A return
+  /// to the foreground while offline, for one, connects nothing, so neither
+  /// [healthStream] nor [onReconnect] says it happened.
+  Stream<void> get transportPolicyChanges => _transportPolicyController.stream;
+
+  void _publishTransportPolicy() {
+    final foreground = _isAppForeground;
+    final mayMaintain = _mayMaintainTransport;
+    if (foreground == _publishedForeground &&
+        mayMaintain == _publishedMayMaintainTransport) {
+      return;
+    }
+    _publishedForeground = foreground;
+    _publishedMayMaintainTransport = mayMaintain;
+    if (!_transportPolicyController.isClosed) {
+      _transportPolicyController.add(null);
+    }
+  }
 
   /// Starts a connection that has no caller awaiting its result while still
   /// observing every asynchronous failure. Lifecycle/provider kicks are
@@ -722,6 +779,7 @@ class SocketService {
   }
 
   void _applyTransportActivityPolicy() {
+    _publishTransportPolicy();
     if (_mayMaintainTransport) {
       _setAutomaticReconnection(true);
       if (isConnected) _startHeartbeat();
@@ -822,19 +880,29 @@ class SocketService {
     final path = '/ws/socket.io';
 
     final usePollingFallback = _forcePollingFallback;
-    final effectiveWebsocketOnly = websocketOnly && !usePollingFallback;
-    final usePollingOnly = !effectiveWebsocketOnly && !allowWebsocketUpgrade;
+    final effectiveWebsocketOnly = _triesWebsocketFirst && !usePollingFallback;
+    // On native platforms a polling session cannot move to a WebSocket (see
+    // socketPollingCanUpgrade), so there polling means polling alone.
+    final upgradeFromPolling =
+        !effectiveWebsocketOnly &&
+        allowWebsocketUpgrade &&
+        socketPollingCanUpgrade;
     final transports = effectiveWebsocketOnly
         ? const ['websocket']
-        : usePollingOnly
-        ? const ['polling']
-        : const ['polling', 'websocket'];
+        : upgradeFromPolling
+        ? const ['polling', 'websocket']
+        : const ['polling'];
 
     final builder = io.OptionBuilder()
+        // socket_io_client keeps one Manager per host and hands it to the next
+        // socket for that host with the options it was first made with. Each
+        // connection here gets its own, or a change of transports (the polling
+        // fallback, or the server's policy arriving) would reuse the old ones.
+        .enableForceNew()
         // Transport selection switches between WebSocket-only and polling fallback
         .setTransports(transports)
-        .setRememberUpgrade(!effectiveWebsocketOnly && allowWebsocketUpgrade)
-        .setUpgrade(!effectiveWebsocketOnly && allowWebsocketUpgrade)
+        .setRememberUpgrade(upgradeFromPolling)
+        .setUpgrade(upgradeFromPolling)
         // Tune reconnect/backoff and timeouts
         // Keep eventual recovery, but let a persistently unavailable Socket.IO
         // endpoint cool down. Foreground and connectivity transitions still
@@ -1172,6 +1240,7 @@ class SocketService {
     _backgroundLeaseHandlerIds.clear();
     _reconnectController.close();
     _healthController.close();
+    _transportPolicyController.close();
     _connectionCompleter?.completeError(StateError('Service disposed'));
     _connectionCompleter = null;
     final pendingForcedConnect = _pendingForcedConnect;
@@ -1329,7 +1398,18 @@ class SocketService {
     // Emit health update
     _emitHealthUpdate();
 
-    _publishPendingResumeReconciliation();
+    // Any connection after the first is a reconnect, however it came back:
+    // Socket.IO reconnecting this socket (socket_io_client 3 sends
+    // `reconnect` to the manager alone, so only `connect` arrives here), or a
+    // new socket after the network gate, a resume or a chat's lease.
+    final reconnected = _hasConnected;
+    _hasConnected = true;
+    if (reconnected) {
+      _clearPendingResumeReconnect();
+      _announceReconnect();
+    } else {
+      _publishPendingResumeReconciliation();
+    }
   }
 
   void _handleReconnectAttempt(dynamic attempt) {
@@ -1397,9 +1477,7 @@ class SocketService {
     _connectionCompleter = null;
 
     // Notify listeners that a reconnection occurred so they can refresh state
-    if (!_reconnectController.isClosed) {
-      _reconnectController.add(null);
-    }
+    _announceReconnect();
     _clearPendingResumeReconnect();
 
     // Emit health update
@@ -1416,8 +1494,14 @@ class SocketService {
     );
 
     // If WebSocket-only handshake fails, retry once with polling+websocket
-    // transports to avoid endless spinners (issue #172).
-    if (websocketOnly && !_forcePollingFallback) {
+    // transports to avoid endless spinners (issue #172). Not when the server
+    // could not be reached at all (refused, no route, no such host): polling
+    // would fail the same way, and the fallback, cleared only by a successful
+    // connection, would keep a WebSocket-only server's later recovery out of
+    // reach (it answers every polling handshake 400).
+    if (_triesWebsocketFirst &&
+        !_forcePollingFallback &&
+        !_serverUnreachable(err)) {
       _forcePollingFallback = true;
       DebugLogger.warning(
         'WebSocket connect failed; retrying with polling fallback',
@@ -1432,6 +1516,27 @@ class SocketService {
     }
     _runPendingForcedConnectBestEffort(reason: 'connect-error');
   }
+
+  /// Whether a connect error says the server could not be reached at all:
+  /// a platform socket error from before any connection existed (refused, no
+  /// route, network down, a failed host lookup). A connection that was made
+  /// and then reset or timed out, or a WebSocket that was refused, may be a
+  /// proxy that blocks WebSockets, so those still fall back to polling.
+  static bool _serverUnreachable(Object? err) {
+    final text = '$err';
+    if (!text.startsWith('SocketException')) return false;
+    final lower = text.toLowerCase();
+    return _unreachableReasons.any(lower.contains);
+  }
+
+  static const _unreachableReasons = <String>[
+    'connection refused',
+    'failed host lookup',
+    'no route to host',
+    'network is unreachable',
+    'network is down',
+    'host is down',
+  ];
 
   void _handleReconnectFailed(dynamic _) {
     _isConnecting = false;
@@ -1569,6 +1674,17 @@ class SocketService {
     // Says an interactive request was answered or timed out on the server.
     // Conduit's prompts keep their own deadline, so there is nothing to do.
     if (type == 'request:interaction:done') return;
+
+    if (type == 'terminals:changed') {
+      tetherDevicesChangedHandler?.call();
+      return;
+    }
+
+    // Open WebUI 0.13.4 sends what older servers sent as `events:app` here.
+    if (type == 'channel:app') {
+      _handleAppEvent((event as Map)['data']);
+      return;
+    }
 
     // A direct tool call is consumed here for the same reason: the server
     // blocks until this session answers, whichever chat is open.

@@ -13,6 +13,7 @@ import 'package:conduit_core/services/openwebui_stream_parser.dart';
 import 'package:conduit_core/models/server_config.dart';
 import 'package:conduit_core/services/worker_manager.dart';
 import 'package:dio/dio.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:test/test.dart';
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,81 @@ class _HookedAdapter implements HttpClientAdapter {
 
   @override
   void close({bool force = false}) => inner.close(force: force);
+}
+
+/// Times out every request while waiting for the response, as Dio does when
+/// a server holds the answer longer than the request may wait.
+class _TimingOutAdapter implements HttpClientAdapter {
+  int requests = 0;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelOnError,
+  ) async {
+    requests += 1;
+    throw DioException.receiveTimeout(
+      timeout: options.receiveTimeout ?? Duration.zero,
+      requestOptions: options,
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+/// A queued response that times out waiting for the server, as Dio does when
+/// a server holds the answer longer than the request may wait.
+class _TimeoutResponse extends _FakeAdapter {
+  _TimeoutResponse()
+    : super(statusCode: 0, headers: const {}, bodyBytes: const []);
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelOnError,
+  ) async {
+    throw DioException.receiveTimeout(
+      timeout: options.receiveTimeout ?? Duration.zero,
+      requestOptions: options,
+    );
+  }
+}
+
+/// Answers `/api/config` with [version], and each chat completion with the
+/// next of [completions], whose bodies it keeps; anything else gets `{}`.
+class _VersionedServer implements HttpClientAdapter {
+  _VersionedServer({required this.version, required this.completions});
+
+  String? version;
+  final List<_FakeAdapter> completions;
+  final completionBodies = <Map<String, dynamic>>[];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelOnError,
+  ) {
+    final answer = switch (options.path) {
+      '/api/chat/completions' => completions.removeAt(0),
+      '/api/config' => _FakeAdapter.json({
+        'status': true,
+        'version': version,
+        'features': <String, dynamic>{},
+      }),
+      _ => _FakeAdapter.json({}),
+    };
+    if (options.path == '/api/chat/completions') {
+      completionBodies.add(Map<String, dynamic>.from(options.data as Map));
+    }
+    return answer.fetch(options, requestStream, cancelOnError);
+  }
+
+  @override
+  void close({bool force = false}) {}
 }
 
 /// Builds an [ApiService] for testing whose Dio adapter is [adapter].
@@ -606,6 +682,44 @@ void main() {
   // -----------------------------------------------------------------------
   // 1. taskSocket classification from JSON with task_id
   // -----------------------------------------------------------------------
+  group('a chat\'s stops under way', () {
+    // A stop decided on the chat's task list ends every task the account runs
+    // there: a request for the chat goes only once none is under way.
+    test('a completion for the chat waits until every stop under way there '
+        'has ended, though a later one ends first', () {
+      fakeAsync((async) {
+        final adapter = _FakeAdapter.json({
+          'status': true,
+          'task_ids': ['task-next'],
+        });
+        final api = _buildApiServiceForTest(adapter);
+        final first = Completer<void>();
+        final second = Completer<void>();
+        unawaited(api.holdingChatCompletions('chat-1', () => first.future));
+        unawaited(api.holdingChatCompletions('chat-1', () => second.future));
+        second.complete();
+        async.flushMicrotasks();
+
+        unawaited(
+          api.sendMessageSession(
+            messages: const [
+              {'role': 'user', 'content': 'And the ebb?'},
+            ],
+            model: 'tide-model',
+            conversationId: 'chat-1',
+            responseMessageId: 'answer-next',
+          ),
+        );
+        async.elapse(Duration.zero);
+        check(adapter.lastRequest).isNull();
+
+        first.complete();
+        async.elapse(Duration.zero);
+        check(adapter.lastRequest?.path).equals('/api/chat/completions');
+      });
+    });
+  });
+
   group('stopTask', () {
     test('posts to the task route and resolves only when the server reports '
         'the task stopped', () async {
@@ -747,6 +861,256 @@ void main() {
       ).throws<MoaCompletionFailed>(
         (it) => it.has((e) => e.statusCode, 'status').equals(500),
       );
+    });
+  });
+
+  group('how long a completion request may wait for its answer', () {
+    // Without a socket session, Open WebUI 0.9+ answers a saved chat's
+    // request only once the reply has finished (issue #848).
+    Future<Duration?> receiveTimeoutFor({
+      String? conversationId,
+      String? sessionId,
+    }) async {
+      final adapter = _FakeAdapter.json({'task_id': 'task-1'});
+      final api = _buildApiServiceForTest(adapter);
+      await api.sendMessageSession(
+        messages: _minimalMessages,
+        model: _model,
+        conversationId: conversationId,
+        sessionIdOverride: sessionId,
+      );
+      return adapter.lastRequest!.receiveTimeout;
+    }
+
+    test('is the whole reply for a saved chat sent without a socket', () async {
+      check(
+        await receiveTimeoutFor(conversationId: 'chat-1'),
+      ).equals(ApiService.heldCompletionReceiveTimeout);
+    });
+
+    test('stays the usual one when the server answers at once', () async {
+      const usual = Duration(seconds: 30);
+      check(
+        await receiveTimeoutFor(conversationId: 'chat-1', sessionId: 'sess-1'),
+      ).equals(usual);
+      check(
+        await receiveTimeoutFor(conversationId: 'local:temporary'),
+      ).equals(usual);
+      check(await receiveTimeoutFor()).equals(usual);
+    });
+
+    group('a held answer that outlives its wait', () {
+      Map<String, dynamic> savedChat(Map<String, dynamic>? reply) => {
+        'id': 'chat-1',
+        'chat': {
+          'history': {
+            'messages': {
+              'user-1': {'id': 'user-1', 'role': 'user', 'content': 'hi'},
+              'reply-1': ?reply,
+            },
+          },
+        },
+      };
+      Map<String, dynamic> reply(String content, {required bool done}) => {
+        'id': 'reply-1',
+        'role': 'assistant',
+        'content': content,
+        'done': done,
+      };
+
+      Future<ChatCompletionSession> send(_QueuedFakeAdapter adapter) =>
+          _buildApiServiceForTest(adapter).sendMessageSession(
+            messages: _minimalMessages,
+            model: _model,
+            conversationId: 'chat-1',
+            responseMessageId: 'reply-1',
+          );
+
+      List<String> requested(_QueuedFakeAdapter adapter) => [
+        for (final request in adapter.requests)
+          '${request.method} ${request.path}',
+      ];
+
+      test('keeps the turn running until the saved reply finishes, and is '
+          'never sent again', () async {
+        final adapter = _QueuedFakeAdapter([
+          _TimeoutResponse(),
+          _FakeAdapter.json(savedChat(reply('Hel', done: false))),
+          _FakeAdapter.json(savedChat(reply('Hello there', done: true))),
+        ]);
+
+        final session = await send(adapter);
+        check(session.transport).equals(ChatCompletionTransport.httpStream);
+        check(session.messageId).equals('reply-1');
+
+        var ended = false;
+        final body = session.byteStream!.toList().whenComplete(
+          () => ended = true,
+        );
+        // Still running at the first read, so the turn stays open.
+        while (adapter.requests.length < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        check(ended).isFalse();
+
+        // Finished at the next read: the stream ends, for the saved reply to
+        // be read as after a JSON null answer.
+        check(await body.timeout(const Duration(seconds: 5))).isEmpty();
+        check(requested(adapter)).deepEquals([
+          'POST /api/chat/completions',
+          'GET /api/v1/chats/chat-1',
+          'GET /api/v1/chats/chat-1',
+        ]);
+      });
+
+      test('stops waiting when the user stops the reply', () async {
+        final adapter = _QueuedFakeAdapter([
+          _TimeoutResponse(),
+          for (var i = 0; i < 5; i++)
+            _FakeAdapter.json(savedChat(reply('Hel', done: false))),
+        ]);
+        final session = await send(adapter);
+
+        final subscription = session.byteStream!.listen((_) {});
+        while (adapter.requests.length < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        await subscription.cancel();
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+        check(adapter.requests).length.equals(2);
+      });
+
+      test('ends unresolved when the saved chat does not hold the reply',
+          () async {
+        final adapter = _QueuedFakeAdapter([
+          _TimeoutResponse(),
+          for (var i = 0; i < 3; i++) _FakeAdapter.json(savedChat(null)),
+        ]);
+        final session = await send(adapter);
+
+        // Not a clean end, which would close the turn as an empty answer.
+        await check(
+          session.byteStream!.toList().timeout(const Duration(seconds: 10)),
+        ).throws<HeldReplyUnresolved>();
+        check(adapter.requests).length.equals(4);
+      });
+
+      // Pullfrog 4651773023.
+      test('ends at once when its client is closed now, so nothing waits on '
+          'the server', () {
+        fakeAsync((async) {
+          final adapter = _QueuedFakeAdapter([
+            _TimeoutResponse(),
+            for (var i = 0; i < 5; i++)
+              _FakeAdapter.json(savedChat(reply('Hel', done: false))),
+          ]);
+          final api = _buildApiServiceForTest(adapter);
+          ChatCompletionSession? session;
+          unawaited(
+            api
+                .sendMessageSession(
+                  messages: _minimalMessages,
+                  model: _model,
+                  conversationId: 'chat-1',
+                  responseMessageId: 'reply-1',
+                )
+                .then((value) => session = value),
+          );
+          async.elapse(Duration.zero);
+          Object? ended;
+          unawaited(
+            session!.byteStream!.drain<void>().then(
+              (_) => ended = 'a clean end',
+              onError: (Object error) => ended = error,
+            ),
+          );
+          async.elapse(Duration.zero);
+          // The saved reply was read once, still running.
+          check(adapter.requests).length.equals(2);
+
+          api.closeNow();
+          async.elapse(Duration.zero);
+
+          check(ended).isA<HeldReplyAbandoned>();
+          check(adapter.requests).length.equals(2);
+        });
+      });
+
+      // Greptile 4651926090, Pullfrog 4651927642.
+      test('ends at once when its client was closed before anything '
+          'listened', () {
+        fakeAsync((async) {
+          final adapter = _QueuedFakeAdapter([
+            _TimeoutResponse(),
+            for (var i = 0; i < 5; i++)
+              _FakeAdapter.json(savedChat(reply('Hel', done: false))),
+          ]);
+          final api = _buildApiServiceForTest(adapter);
+          ChatCompletionSession? session;
+          unawaited(
+            api
+                .sendMessageSession(
+                  messages: _minimalMessages,
+                  model: _model,
+                  conversationId: 'chat-1',
+                  responseMessageId: 'reply-1',
+                )
+                .then((value) => session = value),
+          );
+          async.elapse(Duration.zero);
+          api.closeNow();
+
+          Object? ended;
+          unawaited(
+            session!.byteStream!.drain<void>().then(
+              (_) => ended = 'a clean end',
+              onError: (Object error) => ended = error,
+            ),
+          );
+          async.elapse(Duration.zero);
+
+          check(ended).isA<HeldReplyAbandoned>();
+          check(adapter.requests).length.equals(1);
+        });
+      });
+
+      test('stops waiting when the session is aborted while its stream is '
+          'still drained', () async {
+        // A headless caller that gives up aborts the session, but its drain
+        // keeps listening.
+        final adapter = _QueuedFakeAdapter([
+          _TimeoutResponse(),
+          for (var i = 0; i < 5; i++)
+            _FakeAdapter.json(savedChat(reply('Hel', done: false))),
+        ]);
+        final session = await send(adapter);
+
+        final drained = session.byteStream!.drain<void>();
+        while (adapter.requests.length < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        await session.abort!();
+        await drained.timeout(const Duration(seconds: 5));
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+
+        check(adapter.requests).length.equals(2);
+      });
+    });
+
+    test('a request the server answers at once still fails when it times '
+        'out', () async {
+      final api = _buildApiServiceForTest(_TimingOutAdapter());
+
+      await check(
+        api.sendMessageSession(
+          messages: _minimalMessages,
+          model: _model,
+          conversationId: 'chat-1',
+          sessionIdOverride: 'sess-1',
+        ),
+      ).throws<DioException>();
     });
   });
 
@@ -920,6 +1284,32 @@ void main() {
       check(session.taskId).isNull();
     });
 
+    test('a message the server holds behind a running reply is no answer', () async {
+      // Open WebUI 0.13.4 keeps a message sent while a reply in its chat is
+      // still running, and answers it once that reply ends.
+      final adapter = _FakeAdapter.json({
+        'status': true,
+        'queued': true,
+        'chat_id': 'chat-1',
+      });
+      final api = _buildApiServiceForTest(adapter);
+
+      await check(
+        api.sendMessageSession(
+          messages: _minimalMessages,
+          model: _model,
+          conversationId: 'chat-1',
+          responseMessageId: 'assistant-1',
+          sessionIdOverride: 'socket-1',
+        ),
+      ).throws<ChatCompletionHeld>();
+
+      // Nothing streams, so its Stop is not kept: a later Stop of the answer
+      // reaches no request.
+      api.cancelStreamingMessage('assistant-1');
+      check(adapter.lastRequest!.cancelToken!.isCancelled).isFalse();
+    });
+
     test('JSON null uses an empty HTTP stream for recovery', () async {
       final adapter = _FakeAdapter.raw(
         bytes: utf8.encode('null'),
@@ -1080,18 +1470,63 @@ void main() {
         );
       });
 
-      test('still fails when the server saved nothing', () async {
-        final adapter = _QueuedFakeAdapter([
-          _FakeAdapter.json({'detail': 'Model not found'}, statusCode: 400),
-          _FakeAdapter.json(chatWithReply(null)),
-        ]);
+      // Open WebUI passes a provider's own error body through, its words
+      // under `error.message` (routers/openai.py).
+      for (final (body, words) in <(Map<String, dynamic>, String)>[
+        ({'detail': 'Model not found'}, 'Model not found'),
+        (
+          {
+            'error': {
+              'message': 'Maximum context length exceeded',
+              'code': 400,
+            },
+          },
+          'Maximum context length exceeded',
+        ),
+      ]) {
+        test('still fails when the server saved nothing ($body)', () async {
+          final adapter = _QueuedFakeAdapter([
+            _FakeAdapter.json(body, statusCode: 400),
+            _FakeAdapter.json(chatWithReply(null)),
+          ]);
 
-        await check(send(adapter)).throws<Exception>(
-          (it) => it
-              .has((e) => e.toString(), 'message')
-              .contains('Chat completion failed (400): Model not found'),
-        );
-      });
+          await check(send(adapter)).throws<ChatCompletionHttpException>(
+            (it) => it.has((e) => e.detail, 'detail').equals(words),
+          );
+        });
+      }
+
+      // A relay to one of the user's devices that broke is told by its body's
+      // code: the turn may have run there, so it is not sent again by itself.
+      for (final body in <Map<String, dynamic>>[
+        {'error': 'Connection lost', 'code': 'tether_interrupted'},
+        {
+          'error': {'message': 'Connection lost', 'code': 'tether_interrupted'},
+        },
+        // The code decides, though the words name another relay failure.
+        {
+          'error': {
+            'code': 'tether_interrupted',
+            'message': 'Tether is offline.',
+          },
+        },
+      ]) {
+        test('a relay that broke, by its body\'s code ($body)', () async {
+          final adapter = _QueuedFakeAdapter([
+            _FakeAdapter.json(body, statusCode: 502),
+            _FakeAdapter.json(chatWithReply(null)),
+          ]);
+
+          await check(send(adapter)).throws<ChatCompletionHttpException>(
+            (it) => it
+              ..has(
+                (e) => e.relay,
+                'relay',
+              ).equals(TetherRelayFailure.interrupted)
+              ..has((e) => e.mayPassLater, 'mayPassLater').isFalse(),
+          );
+        });
+      }
 
       test('a temporary chat fails without reading any chat', () async {
         final adapter = _QueuedFakeAdapter([
@@ -1492,6 +1927,220 @@ void main() {
           .isA<Map<String, dynamic>>()
           .deepEquals(userMessage2);
       check(cachedLegacyBody.containsKey('user_message')).isFalse();
+    });
+  });
+
+  // Open WebUI 0.13.4 holds a regeneration under a reply still running unless
+  // it names the answer it regenerates. An older server passes the field on
+  // to the provider, which may refuse it. A version not read yet is read
+  // before the request.
+  test('a regeneration names its answer to 0.13.4 and later only', () async {
+    for (final (version, read, named) in const [
+      ('0.13.3', true, false),
+      ('0.13.4', true, true),
+      (null, true, false),
+      ('0.13.4', false, true),
+      ('0.13.3', false, false),
+      (null, false, false),
+    ]) {
+      final server = _VersionedServer(
+        version: version,
+        completions: [
+          _FakeAdapter.json({'task_id': 'task-1', 'status': true}),
+        ],
+      );
+      final api = _buildApiServiceForTest(server);
+      if (read) await api.getBackendConfig();
+
+      await api.sendMessageSession(
+        messages: _minimalMessages,
+        model: _model,
+        conversationId: 'chat-1',
+        responseMessageId: 'assistant-2',
+        regenerationMessageId: 'assistant-2',
+      );
+
+      check(
+        server.completionBodies.single['regeneration_message_id'],
+        because: '$version, read before: $read',
+      ).equals(named ? 'assistant-2' : null);
+    }
+  });
+
+  test('a version that could not be told is read again later', () async {
+    for (final unusable in const [null, 'main']) {
+      final server = _VersionedServer(
+        version: unusable,
+        completions: [
+          _FakeAdapter.json({'task_id': 'task-1', 'status': true}),
+          _FakeAdapter.json({'task_id': 'task-2', 'status': true}),
+        ],
+      );
+      final api = _buildApiServiceForTest(server);
+      Future<void> regenerate() => api.sendMessageSession(
+        messages: _minimalMessages,
+        model: _model,
+        conversationId: 'chat-1',
+        responseMessageId: 'assistant-2',
+        regenerationMessageId: 'assistant-2',
+      );
+
+      await regenerate();
+      server.version = '0.13.4';
+      await regenerate();
+
+      check([
+        for (final body in server.completionBodies)
+          body['regeneration_message_id'],
+      ], because: '$unusable').deepEquals([null, 'assistant-2']);
+    }
+  });
+
+  // An account switch does not stop a send: the request itself must refuse
+  // to go as the account that signed in meanwhile.
+  test('a request is not sent as an account that signs in during its version '
+      'read', () async {
+    final inner = _QueuedFakeAdapter([
+      _FakeAdapter.json({
+        'status': true,
+        'version': '0.13.4',
+        'features': <String, dynamic>{},
+      }),
+      _FakeAdapter.json({'task_id': 'task-1', 'status': true}),
+    ]);
+    final api = ApiService(
+      serverConfig: const ServerConfig(
+        id: 'test',
+        name: 'Test Server',
+        url: 'http://localhost:9999',
+      ),
+      workerManager: WorkerManager(),
+      authToken: 'account-a',
+    );
+    api.dio.httpClientAdapter = _HookedAdapter(inner, (options) {
+      if (options.path == '/api/config') api.updateAuthToken('account-b');
+    });
+
+    final failure = await api
+        .sendMessageSession(
+          messages: _minimalMessages,
+          model: _model,
+          conversationId: 'chat-1',
+          responseMessageId: 'assistant-2',
+          regenerationMessageId: 'assistant-2',
+        )
+        .then<Object?>((_) => null, onError: (Object error) => error);
+
+    check([
+      for (final request in inner.requests)
+        (request.path, request.headers['Authorization']),
+    ]).deepEquals([('/api/config', 'Bearer account-a')]);
+    check(failure).isA<ChatCompletionStopped>();
+  });
+
+  // Open WebUI read and removed both before 0.13.4. From 0.13.4 it passes
+  // them through to the provider, and a strict provider refuses the request.
+  group('model_item and tool_servers', () {
+    const modelItem = <String, dynamic>{'id': _model, 'name': 'Test model'};
+    const toolServers = <Map<String, dynamic>>[
+      {'url': 'https://tools.example.test', 'specs': <Object>[]},
+    ];
+    _FakeAdapter accepted() =>
+        _FakeAdapter.json({'task_id': 'task-1', 'status': true});
+
+    Future<ChatCompletionSession> send(ApiService api) =>
+        api.sendMessageSession(
+          messages: _minimalMessages,
+          model: _model,
+          modelItem: modelItem,
+          toolServers: toolServers,
+        );
+
+    test('go to a server before 0.13.4 and not to a later one', () async {
+      for (final (version, carried) in const [
+        ('0.13.3', true),
+        ('0.13.4', false),
+        ('v0.14.0', false),
+      ]) {
+        final server = _VersionedServer(
+          version: version,
+          completions: [accepted()],
+        );
+        final api = _buildApiServiceForTest(server);
+        await api.getBackendConfig();
+
+        await send(api);
+
+        final body = server.completionBodies.single;
+        check(body.containsKey('model_item'), because: version).equals(carried);
+        check(
+          body.containsKey('tool_servers'),
+          because: version,
+        ).equals(carried);
+      }
+    });
+
+    test('a server of unknown version whose provider refuses them is asked '
+        'once more without them, and is not sent them again', () async {
+      final server = _VersionedServer(
+        version: null,
+        completions: [
+          _FakeAdapter.json({
+            'error': {
+              'message': 'model_item: Extra inputs are not permitted',
+              'type': 'invalid_request_error',
+            },
+          }, statusCode: 400),
+          accepted(),
+          accepted(),
+        ],
+      );
+      final api = _buildApiServiceForTest(server);
+
+      final session = await send(api);
+      await send(api);
+
+      check(session.taskId).equals('task-1');
+      check([
+        for (final body in server.completionBodies)
+          (body.containsKey('model_item'), body.containsKey('tool_servers')),
+      ]).deepEquals(const [(true, true), (false, false), (false, false)]);
+    });
+
+    test('two sends refused before the version is known both ask again '
+        'without them', () async {
+      final refused = {
+        'error': {
+          'message': 'model_item: Extra inputs are not permitted',
+          'type': 'invalid_request_error',
+        },
+      };
+      final server = _VersionedServer(
+        version: null,
+        completions: [
+          _FakeAdapter.json(refused, statusCode: 400),
+          _FakeAdapter.json(refused, statusCode: 400),
+          accepted(),
+          accepted(),
+        ],
+      );
+      final api = _buildApiServiceForTest(server);
+
+      final sessions = await Future.wait([send(api), send(api)]);
+
+      check([for (final s in sessions) s.taskId]).deepEquals(const [
+        'task-1',
+        'task-1',
+      ]);
+      check([
+        for (final body in server.completionBodies)
+          (body.containsKey('model_item'), body.containsKey('tool_servers')),
+      ]).deepEquals(const [
+        (true, true),
+        (true, true),
+        (false, false),
+        (false, false),
+      ]);
     });
   });
 

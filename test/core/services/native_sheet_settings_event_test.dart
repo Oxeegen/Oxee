@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:checks/checks.dart';
+import 'package:conduit/l10n/app_localizations.dart';
 import 'package:conduit/core/providers/app_startup_providers.dart';
 import 'package:conduit/core/router/app_router.dart';
 import 'package:conduit/core/services/native_sheet_bridge.dart';
@@ -12,11 +13,7 @@ import 'package:conduit/platform/quick_actions_service.dart';
 import 'package:conduit/platform/conduit_platform_apis.g.dart';
 import 'package:conduit/shared/services/navigation_service.dart';
 import 'package:conduit_core/features/chat/providers/chat_providers.dart'
-    show chatDataControlsEntryVisibleProvider, chatWakelockCoordinatorProvider;
-import 'package:conduit_core/features/automations/providers/automation_providers.dart'
-    show scheduledTasksEntryVisibleProvider;
-import 'package:conduit_core/features/calendar/providers/calendar_providers.dart'
-    show calendarAvailableProvider;
+    show chatWakelockCoordinatorProvider;
 import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
 import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart';
 import 'package:conduit_core/models/user.dart';
@@ -33,7 +30,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:material_ui/material_ui.dart' show LicensePage, Scaffold;
+import 'package:material_ui/material_ui.dart' show Scaffold;
 import 'package:mocktail/mocktail.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -75,7 +72,7 @@ final _dismissChannel = BasicMessageChannel<Object?>(
   NativeSheetHostApi.pigeonChannelCodec,
 );
 
-const _unavailable = "That option isn't available right now.";
+final AppLocalizations _l10nEn = lookupAppLocalizations(const Locale('en'));
 
 const _ada = User(
   id: 'user-1',
@@ -285,197 +282,6 @@ void main() {
     },
   );
 
-  for (final visible in <bool>[true, false]) {
-    testWidgets(
-      visible
-          ? 'the native Personal connections action opens the list from the sheet'
-          : 'the native Personal connections action does nothing once hidden',
-      (tester) async {
-        Object? extra;
-        var opened = 0;
-        await pumpApp(
-          tester,
-          routes: [
-            GoRoute(
-              path: Routes.personalConnections,
-              name: RouteNames.personalConnections,
-              builder: (_, state) {
-                opened++;
-                extra = state.extra;
-                return const SizedBox.shrink();
-              },
-            ),
-          ],
-          overrides: [
-            personalConnectionsEntryVisibleProvider.overrideWithValue(visible),
-          ],
-        );
-
-        NativeSheetBridge.instance.onControlChanged(
-          PlatformNativeSheetControlChangedEvent(
-            id: NativeSheetRoutes.personalConnections,
-            value: true,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        // Advanced, the server or the account can change while the sheet is
-        // open; a row that went stale must not navigate.
-        expect(opened, visible ? 1 : 0);
-        if (visible) expect(extra, isA<NativeSheetNavigationOrigin>());
-        // The sheet has already closed, so a stale row says why nothing
-        // opened instead of failing silently.
-        expect(
-          find.text(_unavailable),
-          visible ? findsNothing : findsOneWidget,
-        );
-      },
-    );
-  }
-
-  for (final visible in <bool>[true, false]) {
-    testWidgets(
-      visible
-          ? 'the native Scheduled tasks action opens the list from the sheet'
-          : 'the native Scheduled tasks action does nothing once hidden',
-      (tester) async {
-        Object? extra;
-        var opened = 0;
-        await pumpApp(
-          tester,
-          routes: [
-            GoRoute(
-              path: Routes.scheduledTasks,
-              name: RouteNames.scheduledTasks,
-              builder: (_, state) {
-                opened++;
-                extra = state.extra;
-                return const SizedBox.shrink();
-              },
-            ),
-          ],
-          overrides: [
-            scheduledTasksEntryVisibleProvider.overrideWithValue(visible),
-          ],
-        );
-
-        NativeSheetBridge.instance.onControlChanged(
-          PlatformNativeSheetControlChangedEvent(
-            id: NativeSheetRoutes.scheduledTasks,
-            value: true,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        // Advanced, the server or the account can change while the sheet is
-        // open; a row that went stale must not navigate.
-        expect(opened, visible ? 1 : 0);
-        if (visible) expect(extra, isA<NativeSheetNavigationOrigin>());
-        // The sheet has already closed, so a stale row says why nothing
-        // opened instead of failing silently.
-        expect(
-          find.text(_unavailable),
-          visible ? findsNothing : findsOneWidget,
-        );
-      },
-    );
-  }
-
-  for (final visible in <bool>[true, false]) {
-    testWidgets(
-      visible
-          ? 'the native Calendar action opens the agenda from the sheet'
-          : 'the native Calendar action does nothing once hidden',
-      (tester) async {
-        Object? extra;
-        var opened = 0;
-        await pumpApp(
-          tester,
-          routes: [
-            GoRoute(
-              path: Routes.calendar,
-              name: RouteNames.calendar,
-              builder: (_, state) {
-                opened++;
-                extra = state.extra;
-                return const SizedBox.shrink();
-              },
-            ),
-          ],
-          overrides: [calendarAvailableProvider.overrideWithValue(visible)],
-        );
-
-        NativeSheetBridge.instance.onControlChanged(
-          PlatformNativeSheetControlChangedEvent(
-            id: NativeSheetRoutes.calendar,
-            value: true,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        // The server or the account can change while the sheet is open; a
-        // row that went stale must not navigate.
-        expect(opened, visible ? 1 : 0);
-        if (visible) expect(extra, isA<NativeSheetNavigationOrigin>());
-        // The sheet has already closed, so a stale row says why nothing
-        // opened instead of failing silently.
-        expect(
-          find.text(_unavailable),
-          visible ? findsNothing : findsOneWidget,
-        );
-      },
-    );
-  }
-
-  for (final visible in <bool>[true, false]) {
-    testWidgets(
-      visible
-          ? 'the native Data controls action opens the page from the sheet'
-          : 'the native Data controls action does nothing once hidden',
-      (tester) async {
-        Object? extra;
-        var opened = 0;
-        await pumpApp(
-          tester,
-          routes: [
-            GoRoute(
-              path: Routes.chatDataControls,
-              name: RouteNames.chatDataControls,
-              builder: (_, state) {
-                opened++;
-                extra = state.extra;
-                return const SizedBox.shrink();
-              },
-            ),
-          ],
-          overrides: [
-            chatDataControlsEntryVisibleProvider.overrideWithValue(visible),
-          ],
-        );
-
-        NativeSheetBridge.instance.onControlChanged(
-          PlatformNativeSheetControlChangedEvent(
-            id: NativeSheetRoutes.chatDataControls,
-            value: true,
-          ),
-        );
-        await tester.pumpAndSettle();
-
-        // Advanced or the account can change while the sheet is open; a row
-        // that went stale must not navigate. The sheet has already closed, so
-        // the page opens with no second transition over it.
-        expect(opened, visible ? 1 : 0);
-        if (visible) expect(extra, isA<NativeSheetNavigationOrigin>());
-        // The sheet has already closed, so a stale row says why nothing
-        // opened instead of failing silently.
-        expect(
-          find.text(_unavailable),
-          visible ? findsNothing : findsOneWidget,
-        );
-      },
-    );
-  }
-
   testWidgets(
     'the native Advanced toggle saves its boolean and refreshes Chats',
     (tester) async {
@@ -585,15 +391,19 @@ void main() {
       );
       check(rootRows(off))
           .not((it) => it.contains(NativeSheetRoutes.personalConnections));
-      // A tap on the row it just lost is answered, not ignored.
-      NativeSheetBridge.instance.onControlChanged(
-        PlatformNativeSheetControlChangedEvent(
-          id: NativeSheetRoutes.personalConnections,
-          value: true,
+      // The page of the row it just lost, still open, says why it is closed.
+      NativeSheetBridge.instance.onDetailAppeared(
+        PlatformNativeSheetDetailAppearedEvent(
+          detailId: NativeSheetRoutes.personalConnections,
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text(_unavailable), findsOneWidget);
+      final page = patches.lastWhere(
+        (p) => p.detailId == NativeSheetRoutes.personalConnections,
+      );
+      check(page.items.map((item) => item.title)).deepEquals([
+        _l10nEn.advancedRequiredMessage(_l10nEn.personalConnectionsTitle),
+      ]);
     });
 
     testWidgets('is not rebuilt once another account signed in', (
@@ -750,30 +560,5 @@ void main() {
     await tester.pumpAndSettle();
     check(saved()).isFalse();
     check((await SettingsService.loadSettings()).citationBackground).isFalse();
-  });
-
-  testWidgets('Licenses open as the sheet closes itself, with no second '
-      'dismiss or wait', (tester) async {
-    var dismissCalls = 0;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockDecodedMessageHandler<Object?>(_dismissChannel, (_) async {
-          dismissCalls++;
-          return <Object?>[true];
-        });
-    await pumpApp(tester);
-
-    NativeSheetBridge.instance.onControlChanged(
-      PlatformNativeSheetControlChangedEvent(
-        id: NativeSheetRoutes.openSourceLicenses,
-        value: true,
-      ),
-    );
-    // The page is pushed straight away, well inside the old fixed delay.
-    for (var i = 0; i < 5; i++) {
-      await tester.pump(const Duration(milliseconds: 50));
-    }
-
-    expect(find.byType(LicensePage), findsOneWidget);
-    check(dismissCalls).equals(0);
   });
 }

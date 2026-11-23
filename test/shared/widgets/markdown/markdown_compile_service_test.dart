@@ -118,6 +118,36 @@ void main() {
     expect(debugCompiledMarkdownCacheSize(), 1);
   });
 
+  testWidgets('a service disposed while its worker starts prepares nothing '
+      'on the calling isolate', (tester) async {
+    final paths = <MarkdownPrepareExecutionPath>[];
+    final service = MarkdownCompileService(
+      workerManager: WorkerManager(),
+      debugOnPrepareExecution: paths.add,
+    );
+    final content = List<String>.filled(
+      200,
+      'worker-backed markdown',
+    ).join(' ');
+
+    String? prepared;
+    unawaited(
+      service
+          .prepareContent(content, streaming: false)
+          .then((value) => prepared = value),
+    );
+    await tester.pump();
+    service.dispose();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 200)),
+    );
+    await tester.pump();
+
+    check(prepared).equals(content);
+    check(paths)
+        .not((it) => it.contains(MarkdownPrepareExecutionPath.fallbackSync));
+  });
+
   test('markdown workers retire after the configured idle period', () async {
     final service = MarkdownCompileService(
       workerManager: WorkerManager(),
@@ -141,6 +171,45 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 100));
     expect(service.debugPrepareWorkerRunning, isFalse);
   });
+
+  // A page torn down while the prepare worker is still starting (a prewarm in
+  // flight) disposes the service mid-spawn. The request must fall back at
+  // once, and nothing may outlive the service: no worker, no startup timer
+  // (flutter_test fails the test on a pending timer).
+  testWidgets(
+    'disposing while the prepare worker starts releases its request',
+    (tester) async {
+      final service = MarkdownCompileService(workerManager: WorkerManager());
+      // Should a step fail before the dispose under test, nothing outlives
+      // the test; disposing again is harmless.
+      addTearDown(service.dispose);
+      const content = 'A **settled** reply prepared off the UI isolate.';
+      String? prepared;
+      unawaited(
+        service
+            .prepareContent(content, streaming: false)
+            .then((value) => prepared = value),
+      );
+      // The request reaches the worker, which is now spawning. Only a real
+      // event can finish the spawn, and none runs before runAsync below.
+      await tester.pump();
+      expect(service.debugPrepareWorkerRunning, isTrue);
+
+      service.dispose();
+
+      final elapsed = Stopwatch()..start();
+      while (prepared == null &&
+          elapsed.elapsed < const Duration(seconds: 20)) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)),
+        );
+        await tester.pump();
+      }
+
+      expect(prepared, prepareMarkdownContent(content, streaming: false));
+      expect(service.debugPrepareWorkerRunning, isFalse);
+    },
+  );
 
   test(
     'memory pressure clears settled cache and retires idle workers',

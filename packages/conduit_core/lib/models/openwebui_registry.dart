@@ -13,6 +13,7 @@ import 'dart:convert';
 
 import 'package:collection/collection.dart';
 
+import 'browser_sign_in_config.dart';
 import 'server_config.dart';
 
 const _stringMapEquality = MapEquality<String, String>();
@@ -193,6 +194,7 @@ final class OpenWebUiServer {
     required this.id,
     required this.name,
     required List<OpenWebUiEndpoint> endpoints,
+    this.browserSignIn,
   }) : endpoints = List.unmodifiable(endpoints);
 
   final String id;
@@ -200,6 +202,20 @@ final class OpenWebUiServer {
 
   /// The routes to this server in the user's order of preference. Never empty.
   final List<OpenWebUiEndpoint> endpoints;
+
+  /// How its accounts sign in through the system browser, when set up. Shared
+  /// by every account and route of the server, and never projected onto a
+  /// [ServerConfig].
+  final BrowserSignInConfig? browserSignIn;
+
+  /// This server with [endpoints] in place of its routes, keeping the rest.
+  OpenWebUiServer withEndpoints(List<OpenWebUiEndpoint> endpoints) =>
+      OpenWebUiServer(
+        id: id,
+        name: name,
+        endpoints: endpoints,
+        browserSignIn: browserSignIn,
+      );
 
   OpenWebUiEndpoint? endpoint(String id) =>
       endpoints.where((endpoint) => endpoint.id == id).firstOrNull;
@@ -248,6 +264,7 @@ final class OpenWebUiServer {
     'id': id,
     'name': name,
     'endpoints': [for (final endpoint in endpoints) endpoint.toJson()],
+    if (browserSignIn != null) 'browserSignIn': browserSignIn!.toJson(),
   };
 
   factory OpenWebUiServer.fromJson(Map<String, Object?> json) {
@@ -268,6 +285,9 @@ final class OpenWebUiServer {
       id: _requiredString(json, 'id', 'server'),
       name: _optionalString(json['name']) ?? '',
       endpoints: endpoints,
+      // Optional, and never a reason to refuse the registry: one this build
+      // cannot read is dropped, and the server is set up again.
+      browserSignIn: BrowserSignInConfig.tryFromJson(json['browserSignIn']),
     );
   }
 
@@ -276,13 +296,15 @@ final class OpenWebUiServer {
       other is OpenWebUiServer &&
       other.id == id &&
       other.name == name &&
+      other.browserSignIn == browserSignIn &&
       const ListEquality<OpenWebUiEndpoint>().equals(
         other.endpoints,
         endpoints,
       );
 
   @override
-  int get hashCode => Object.hash(id, name, Object.hashAll(endpoints));
+  int get hashCode =>
+      Object.hash(id, name, Object.hashAll(endpoints), browserSignIn);
 }
 
 /// One signed-in (or signing-in) account on a saved server.
@@ -402,6 +424,33 @@ final class OpenWebUiRegistry {
 
   bool get isEmpty => servers.isEmpty && accounts.isEmpty;
 
+  /// The saved server whose connection a route of another server has in
+  /// this registry, where that route is new or reached otherwise than in
+  /// [before], the registry as stored before this write; null when none.
+  ///
+  /// Two saved servers never reach Open WebUI the same way
+  /// ([OpenWebUiEndpoint.sameConnection]): an account added on one of them
+  /// would be filed under whichever matched first. Routes a write leaves as
+  /// they were never count, so two servers saved alike before this rule
+  /// still save their name, order and other routes.
+  String? connectionTakenSince(OpenWebUiRegistry before) {
+    for (final server in servers) {
+      final was = before.server(server.id);
+      for (final endpoint in server.endpoints) {
+        if (was?.endpoint(endpoint.id)?.sameConnection(endpoint) ?? false) {
+          continue;
+        }
+        for (final other in servers) {
+          if (other.id != server.id &&
+              other.endpoints.any(endpoint.sameConnection)) {
+            return other.id;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   OpenWebUiServer? server(String id) =>
       servers.where((server) => server.id == id).firstOrNull;
 
@@ -470,10 +519,11 @@ final class OpenWebUiRegistry {
   /// which is the selected one unless the config names another of the
   /// server's routes; an unknown one joins the saved server
   /// that already has an identical endpoint, or gets a server of its own.
+  /// Joining never renames the server: the new account takes its name.
   /// Accounts missing from [configs] are removed, and so is any server left
   /// with no account. Projections round-trip exactly: what [projectAll]
   /// returns after a merge is what was passed in, apart from a legacy
-  /// `apiKey`, which is never stored.
+  /// `apiKey`, which is never stored, and a joining account's name.
   ///
   /// A shared endpoint is edited only by a config that differs from it. When
   /// two accounts on one server are saved together and only one was edited,
@@ -528,7 +578,6 @@ final class OpenWebUiRegistry {
         if (match != null) {
           draft = match.draft;
           endpointId = match.endpointId;
-          draft.rename(config.name);
         } else {
           endpointId = uniqueId('endpoint:${config.id}');
           final server = OpenWebUiServer(
@@ -791,6 +840,7 @@ final class _ServerDraft {
     id: original.id,
     name: _name,
     endpoints: currentEndpoints.toList(growable: false),
+    browserSignIn: original.browserSignIn,
   );
 }
 

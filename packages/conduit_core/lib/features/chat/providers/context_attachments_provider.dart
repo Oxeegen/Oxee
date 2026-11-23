@@ -2,6 +2,7 @@ import 'package:riverpod/riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/chat_context_attachment.dart';
+import '../services/url_context.dart';
 
 class ContextAttachmentsNotifier extends Notifier<List<ChatContextAttachment>> {
   @override
@@ -49,6 +50,25 @@ class ContextAttachmentsNotifier extends Notifier<List<ChatContextAttachment>> {
     );
   }
 
+  /// Attaches what [readUrlContext] read: a transcript or a page.
+  void addUrlContext(UrlContext page) {
+    if (page.youtube) {
+      addYoutube(
+        displayName: page.displayName,
+        content: page.content,
+        url: page.url,
+        collectionName: page.collectionName,
+      );
+    } else {
+      addWeb(
+        displayName: page.displayName,
+        content: page.content,
+        url: page.url,
+        collectionName: page.collectionName,
+      );
+    }
+  }
+
   void addKnowledge({
     required String displayName,
     required String fileId,
@@ -64,6 +84,22 @@ class ContextAttachmentsNotifier extends Notifier<List<ChatContextAttachment>> {
         fileId: fileId,
         url: url,
         collectionName: collectionName,
+      ),
+    );
+  }
+
+  /// Attaches the whole knowledge base [id], once.
+  void addKnowledgeBase({
+    required String id,
+    required String name,
+    String? description,
+  }) {
+    if (state.any((item) => item.isKnowledgeBase && item.id == id)) return;
+    add(
+      ChatContextAttachment.knowledgeBase(
+        id: id,
+        name: name,
+        description: description,
       ),
     );
   }

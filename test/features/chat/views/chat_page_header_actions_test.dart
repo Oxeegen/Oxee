@@ -1,9 +1,11 @@
 import 'package:conduit/features/chat/providers/text_to_speech_provider.dart';
 import 'package:conduit/features/chat/widgets/live_connection_button.dart';
 import 'package:conduit/features/chat/views/chat_page.dart';
+import 'package:conduit/features/chat/widgets/modern_chat_input.dart';
 import 'package:conduit/l10n/app_localizations.dart';
 import 'package:conduit/l10n/conduit_localizations.dart';
 import 'package:conduit/shared/theme/app_theme.dart';
+import 'package:conduit/shared/theme/theme_extensions.dart';
 import 'package:conduit/shared/theme/tweakcn_themes.dart';
 import 'package:conduit/shared/widgets/adaptive_toolbar_components.dart';
 import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
@@ -17,11 +19,15 @@ import 'package:conduit_core/models/folder.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:conduit_core/models/server_config.dart';
 import 'package:conduit_core/models/tool.dart';
+import 'package:conduit_core/persistence/preferences_store.dart';
+import 'package:conduit_core/ports/key_value_store.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/connectivity_service.dart';
 import 'package:conduit_core/services/optimized_storage_service.dart';
+import 'package:conduit_core/services/settings_service.dart';
 import 'package:conduit_core/services/worker_manager.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -105,7 +111,10 @@ final _conversation = Conversation(
   updatedAt: DateTime.utc(2026, 10, 1),
 );
 
-Future<ProviderContainer> _pumpChatPage(WidgetTester tester) async {
+Future<ProviderContainer> _pumpChatPage(
+  WidgetTester tester, {
+  EdgeInsets? safePadding,
+}) async {
   tester.view.physicalSize = const Size(402, 874);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
@@ -158,6 +167,14 @@ Future<ProviderContainer> _pumpChatPage(WidgetTester tester) async {
             .copyWith(platform: TargetPlatform.iOS),
         localizationsDelegates: conduitLocalizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
+        builder: safePadding == null
+            ? null
+            : (context, child) => MediaQuery(
+                data: MediaQuery.of(
+                  context,
+                ).copyWith(padding: safePadding, viewPadding: safePadding),
+                child: child!,
+              ),
         home: const ChatPage(),
       ),
     ),
@@ -362,6 +379,26 @@ void main() {
     await _tearDown(tester);
   });
 
+  testWidgets('the header keeps clear of a side safe area, and the model '
+      'pill gives up that room', (tester) async {
+    // iPhone Duo's front display: the status bar runs down the right edge.
+    await _pumpChatPage(
+      tester,
+      safePadding: const EdgeInsets.only(top: 24, right: 54),
+    );
+    final pill = find.byType(ConduitAdaptiveAppBarModelSelector);
+    final sidebar = find.byKey(const ValueKey('chat-sidebar-toggle'));
+    final actions = find.byType(ConduitToolbarActionCluster);
+    expect(tester.getTopLeft(sidebar).dx, Spacing.inputPadding);
+    expect(tester.getTopRight(actions).dx, 402 - 54 - Spacing.inputPadding);
+    // 266 without the strip, less its 54 pt.
+    expect(
+      tester.widget<ConduitAdaptiveAppBarModelSelector>(pill).maxWidth,
+      212,
+    );
+    await _tearDown(tester);
+  });
+
   testWidgets('a tap on the Temporary Chat glyph turns it on and off at once', (
     tester,
   ) async {
@@ -392,6 +429,73 @@ void main() {
     await tester.pumpAndSettle();
     expect(container.read(temporaryChatEnabledProvider), isFalse);
     expect(find.text("This chat won't appear in history"), findsNothing);
+    await _tearDown(tester);
+  });
+
+  test('the composer asks the chat\'s model, or Oxee without one', () {
+    final l10n = lookupAppLocalizations(const Locale('en'));
+    expect(
+      chatComposerPlaceholder(l10n, modelName: 'GPT-5 mini'),
+      'Ask GPT-5 mini',
+    );
+    // A name split over lines still reads as one.
+    expect(
+      chatComposerPlaceholder(l10n, modelName: ' Research\n Assistant '),
+      'Ask Research Assistant',
+    );
+    // A long name is cut short; the header's pill shows it whole.
+    final long = chatComposerPlaceholder(
+      l10n,
+      modelName: 'research-assistant-with-a-long-name-v2-instruct',
+    );
+    expect(long, 'Ask research-assistant-with\u2026');
+    expect(
+      long!.substring('Ask '.length).characters.length,
+      kChatComposerPlaceholderMaxNameLength,
+    );
+    // Whole characters only: an emoji is never split.
+    expect(
+      chatComposerPlaceholder(
+        l10n,
+        modelName: '\u{1F469}\u200D\u{1F52C} ${'a' * 30}',
+      ),
+      'Ask \u{1F469}\u200D\u{1F52C} ${'a' * 21}\u2026',
+    );
+    // No name: the composer keeps "Ask Conduit".
+    expect(chatComposerPlaceholder(l10n, modelName: null), isNull);
+    expect(chatComposerPlaceholder(l10n, modelName: '  '), isNull);
+  });
+
+  testWidgets('the composer names the selected model only once the setting '
+      'is on', (tester) async {
+    PreferencesStore.debugOverride(InMemoryKeyValueStore());
+    addTearDown(PreferencesStore.debugReset);
+    final container = await _pumpChatPage(tester);
+    String? placeholder() => tester
+        .widget<ModernChatInput>(find.byType(ModernChatInput))
+        .placeholder;
+
+    // Off by default: the composer keeps its own "Ask Conduit".
+    expect(container.read(appSettingsProvider).showModelNameInComposer, false);
+    expect(placeholder(), isNull);
+    expect(
+      tester
+          .widget<CupertinoTextField>(find.byType(CupertinoTextField))
+          .placeholder,
+      contains('Ask Oxee'),
+    );
+
+    await container
+        .read(appSettingsProvider.notifier)
+        .setShowModelNameInComposer(true);
+    await tester.pump();
+    expect(placeholder(), 'Ask Fixture model');
+
+    await container
+        .read(appSettingsProvider.notifier)
+        .setShowModelNameInComposer(false);
+    await tester.pump();
+    expect(placeholder(), isNull);
     await _tearDown(tester);
   });
 }

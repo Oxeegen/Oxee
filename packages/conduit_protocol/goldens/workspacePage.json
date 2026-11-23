@@ -1,0 +1,17 @@
+{
+  "kind": "tools",
+  "items": [
+    {
+      "kind": "tools",
+      "id": "t1",
+      "name": "Web",
+      "writeAccess": false,
+      "public": false,
+      "tags": [],
+      "external": false,
+      "hidden": false
+    }
+  ],
+  "total": 3,
+  "hasMore": true
+}

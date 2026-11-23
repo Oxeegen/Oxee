@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:ui' show SemanticsAction;
 
+import 'package:conduit_core/models/backend_config.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:conduit_core/models/server_config.dart';
 import 'package:conduit_core/models/tool.dart';
@@ -12,9 +14,14 @@ import 'package:conduit/features/chat/services/voice_input_service.dart';
 import 'package:conduit/features/chat/widgets/composer_overflow_menu.dart';
 import 'package:conduit/features/chat/widgets/composer_overflow_items.dart';
 import 'package:conduit/features/chat/widgets/composer_prominent_button.dart';
+import 'package:conduit/features/chat/widgets/expanded_text_editor.dart';
 import 'package:conduit/features/chat/widgets/modern_chat_input.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/direct_connections/providers/direct_mcp_providers.dart';
+import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart';
+import 'package:conduit_core/features/terminal/models/terminal_models.dart';
+import 'package:conduit_core/features/terminal/providers/terminal_providers.dart';
+import 'package:conduit_core/features/tools/providers/tools_providers.dart';
 import 'package:conduit_core/features/web_search/services/direct_web_search_mode.dart';
 import 'package:conduit/l10n/app_localizations.dart';
 import 'package:conduit/l10n/app_localizations_en.dart';
@@ -441,6 +448,200 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(api.userSettingsCalls, 0);
+  });
+
+  testWidgets("a server that moved personal connections to Tether offers its "
+      "devices' tools and terminals, and no personal tool server", (
+    tester,
+  ) async {
+    const device = '3f1c9a52-7d4e-4b8a-9c21-5e6f7a8b9c0d';
+    final api = _CountingUserSettingsApi()
+      ..settings = <String, dynamic>{
+        'ui': <String, dynamic>{
+          'toolServers': <dynamic>[
+            <String, dynamic>{
+              'url': 'https://saved-tools.example',
+              'path': 'openapi.json',
+              'config': <String, dynamic>{'enable': true},
+              'info': <String, dynamic>{'name': 'Saved tide tools'},
+            },
+          ],
+        },
+      };
+    addTearDown(api.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          directModelRegistryProvider.overrideWithValue(DirectModelRegistry()),
+          selectedModelProvider.overrideWithValue(
+            const Model(id: 'server-model', name: 'Server model'),
+          ),
+          apiServiceProvider.overrideWithValue(api),
+          personalConnectionsAccessProvider.overrideWithValue(
+            const PersonalConnectionsAccess.blocked(
+              PersonalConnectionsBlock.movedToTether,
+            ),
+          ),
+          toolsListProvider.overrideWith(_DeviceTools.new),
+          terminalAvailableServersProvider.overrideWith(
+            (ref) async => [
+              TerminalServerInfo(
+                kind: TerminalServerKind.system,
+                selectionId: 'tether:$device',
+                systemServerId: 'tether:$device',
+                baseUrl: Uri.parse('https://owui.example/api/v1/terminals/d'),
+                name: 'Studio Mac',
+              ),
+            ],
+          ),
+          webSearchAvailableProvider.overrideWithValue(false),
+          imageGenerationAvailableProvider.overrideWithValue(false),
+        ],
+        child: MaterialApp(
+          localizationsDelegates: conduitLocalizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: const Scaffold(body: ComposerAttachmentKeyboard()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final l10n = AppLocalizationsEn();
+    expect(find.text(l10n.composerYourDevices), findsOneWidget);
+    expect(find.text('Studio Mac · Garage tools'), findsOneWidget);
+    expect(find.text('Studio Mac'), findsOneWidget);
+    expect(find.textContaining('saved-tools.example'), findsNothing);
+  });
+
+  for (final (state, tools) in <(String, ToolsList Function())>[
+    ('fails', _FailingTools.new),
+    ('is still loading', _LoadingTools.new),
+  ]) {
+    testWidgets("a device's terminal stays offered, still selected, while the "
+        'tool list $state', (tester) async {
+      const device = '3f1c9a52-7d4e-4b8a-9c21-5e6f7a8b9c0d';
+      final api = _CountingUserSettingsApi();
+      addTearDown(api.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            directModelRegistryProvider.overrideWithValue(
+              DirectModelRegistry(),
+            ),
+            selectedModelProvider.overrideWithValue(
+              const Model(id: 'server-model', name: 'Server model'),
+            ),
+            apiServiceProvider.overrideWithValue(api),
+            personalConnectionsAccessProvider.overrideWithValue(
+              const PersonalConnectionsAccess.blocked(
+                PersonalConnectionsBlock.movedToTether,
+              ),
+            ),
+            toolsListProvider.overrideWith(tools),
+            terminalAvailableServersProvider.overrideWith(
+              (ref) async => [
+                TerminalServerInfo(
+                  kind: TerminalServerKind.system,
+                  selectionId: 'tether:$device',
+                  systemServerId: 'tether:$device',
+                  baseUrl: Uri.parse('https://owui.example/api/v1/terminals/d'),
+                  name: 'Studio Mac',
+                ),
+              ],
+            ),
+            selectedTerminalIdProvider.overrideWithValue('tether:$device'),
+            webSearchAvailableProvider.overrideWithValue(false),
+            imageGenerationAvailableProvider.overrideWithValue(false),
+          ],
+          child: MaterialApp(
+            localizationsDelegates: conduitLocalizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: const Scaffold(body: ComposerAttachmentKeyboard()),
+          ),
+        ),
+      );
+      // The loading indicator never settles.
+      await tester.pump();
+      await tester.pump();
+
+      final l10n = AppLocalizationsEn();
+      expect(find.text(l10n.composerYourDevices), findsOneWidget);
+      check(
+        tester
+            .widget<ToggleTile>(find.widgetWithText(ToggleTile, 'Studio Mac'))
+            .selected,
+      ).isTrue();
+    });
+  }
+
+  testWidgets('saved tool servers stay offered while the server has not yet '
+      'said whether it takes them, and follow its answer', (tester) async {
+    final api = _CountingUserSettingsApi()
+      ..settings = <String, dynamic>{
+        'ui': <String, dynamic>{
+          'toolServers': <dynamic>[
+            <String, dynamic>{
+              'url': 'https://saved-tools.example',
+              'path': 'openapi.json',
+              'config': <String, dynamic>{'enable': true},
+              'info': <String, dynamic>{'name': 'Saved tide tools'},
+            },
+          ],
+        },
+      };
+    addTearDown(api.dispose);
+    // The saved servers are listed last, below the panel's usual height.
+    tester.view.physicalSize = const Size(800, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final config = Completer<BackendConfig?>();
+    final container = ProviderContainer(
+      overrides: [
+        directModelRegistryProvider.overrideWithValue(DirectModelRegistry()),
+        selectedModelProvider.overrideWithValue(
+          const Model(id: 'server-model', name: 'Server model'),
+        ),
+        apiServiceProvider.overrideWithValue(api),
+        backendConfigProvider.overrideWith(() => _HeldConfig(config.future)),
+        personalConnectionsAccessProvider.overrideWith(
+          (ref) => ref.watch(_accessProvider),
+        ),
+        toolsListProvider.overrideWith(_DeviceTools.new),
+        terminalAvailableServersProvider.overrideWith(
+          (ref) async => const <TerminalServerInfo>[],
+        ),
+        webSearchAvailableProvider.overrideWithValue(false),
+        imageGenerationAvailableProvider.overrideWithValue(false),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          localizationsDelegates: conduitLocalizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: const Scaffold(body: ComposerAttachmentKeyboard(height: 2400)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // The server's config is still on its way, so the refusal is not its.
+    expect(find.textContaining('saved-tools.example'), findsWidgets);
+
+    config.complete(const BackendConfig(serverId: 'test'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('saved-tools.example'), findsNothing);
+
+    container
+        .read(_accessProvider.notifier)
+        .set(const PersonalConnectionsAccess.allowed());
+    await tester.pumpAndSettle();
+    expect(find.textContaining('saved-tools.example'), findsWidgets);
   });
 
   testWidgets('Apple direct overflow loads local MCP tools', (tester) async {
@@ -1509,6 +1710,116 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('a new placeholder re-lays out an empty composer', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    // Wide enough for "Ask Conduit" in the test font, which draws every
+    // character a full em wide.
+    tester.view.physicalSize = const Size(480, 800);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    // With the setting on, the chat's placeholder names its model: turning
+    // the setting on or off, or switching models, swaps it while the field
+    // stays empty and its width stays the same. Null is the setting off.
+    Future<void> show(String? placeholder) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [apiServiceProvider.overrideWithValue(null)],
+          child: MaterialApp(
+            localizationsDelegates: conduitLocalizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: ModernChatInput(
+                onSendMessage: (_) {},
+                placeholder: placeholder,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+    }
+
+    final compact = find.byKey(const ValueKey('compact-composer-shell'));
+    final expanded = find.byKey(const ValueKey('expanded-composer-shell'));
+
+    await show(null);
+    expect(compact, findsOneWidget);
+
+    // Turned on, for a model whose name wraps.
+    await show('Ask Oxee about a detailed multilingual question');
+    expect(compact, findsNothing);
+    expect(expanded, findsOneWidget);
+
+    // Another model, whose name fits.
+    await show('Ask Fox');
+    expect(compact, findsOneWidget);
+
+    await show('Ask Oxee about a detailed multilingual question');
+    expect(expanded, findsOneWidget);
+
+    // Turned off again.
+    await show(null);
+    expect(compact, findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final placeholder in <String?>[null, 'Ask GPT-5 mini']) {
+    testWidgets('the expanded editor rests on the composer\'s placeholder '
+        '(${placeholder ?? 'setting off'})', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(400, 800);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [apiServiceProvider.overrideWithValue(null)],
+          child: MaterialApp(
+            localizationsDelegates: conduitLocalizationsDelegates,
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(
+              body: ModernChatInput(
+                onSendMessage: (_) {},
+                placeholder: placeholder,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      // A long draft shows the expand button; the Flutter sheet opens.
+      await tester.enterText(
+        find.byType(EditableText),
+        'First line\nSecond line\nThird line\nFourth line',
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.byKey(const ValueKey('composer-expand-button')));
+      await tester.pumpAndSettle();
+      final sheet = find.byType(ExpandedTextEditorSheet);
+      expect(sheet, findsOneWidget);
+
+      // Emptied, the editor rests on the composer's placeholder: "Ask
+      // Conduit" with the setting off, the model's name with it on.
+      final hint = placeholder ?? 'Ask Oxee';
+      final field = find.descendant(
+        of: sheet,
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(field, '');
+      await tester.pump();
+      expect(tester.widget<TextField>(field).decoration?.hintText, hint);
+      expect(
+        find.descendant(of: sheet, matching: find.text(hint)),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.android));
+  }
+
   testWidgets('a visually wrapped second line expands the composer', (
     tester,
   ) async {
@@ -2126,11 +2437,12 @@ final class _CountingUserSettingsApi extends ApiService {
 
   final WorkerManager _workerManager;
   int userSettingsCalls = 0;
+  Map<String, dynamic> settings = const <String, dynamic>{};
 
   @override
   Future<Map<String, dynamic>> getUserSettings({Object? authSnapshot}) async {
     userSettingsCalls++;
-    return const <String, dynamic>{};
+    return settings;
   }
 
   @override
@@ -2138,4 +2450,52 @@ final class _CountingUserSettingsApi extends ApiService {
     super.dispose();
     _workerManager.dispose();
   }
+}
+
+/// The server's tools: one of the server's own and one a Tether device
+/// offers, as Open WebUI 0.13.4 names them.
+final class _DeviceTools extends ToolsList {
+  @override
+  Future<List<Tool>> build() async => const <Tool>[
+    Tool(id: 'tide_lookup', name: 'Tide lookup'),
+    Tool(
+      id: 'server:tether:3f1c9a52-7d4e-4b8a-9c21-5e6f7a8b9c0d:garage_tools',
+      name: 'Studio Mac · Garage tools',
+    ),
+  ];
+}
+
+final class _FailingTools extends ToolsList {
+  @override
+  Future<List<Tool>> build() async => throw StateError('tools unreachable');
+}
+
+final class _LoadingTools extends ToolsList {
+  @override
+  Future<List<Tool>> build() => Completer<List<Tool>>().future;
+}
+
+/// The server's config, answered only once [config] completes.
+final class _HeldConfig extends BackendConfigNotifier {
+  _HeldConfig(this.config);
+
+  final Future<BackendConfig?> config;
+
+  @override
+  Future<BackendConfig?> build() => config;
+}
+
+/// Whether the account may use personal connections, as a test sets it;
+/// refused as a server that has not switched them on until then.
+final _accessProvider = NotifierProvider<_Access, PersonalConnectionsAccess>(
+  _Access.new,
+);
+
+final class _Access extends Notifier<PersonalConnectionsAccess> {
+  @override
+  PersonalConnectionsAccess build() => const PersonalConnectionsAccess.blocked(
+    PersonalConnectionsBlock.serverDisabled,
+  );
+
+  void set(PersonalConnectionsAccess access) => state = access;
 }

@@ -1,0 +1,18 @@
+{
+  "configured": true,
+  "reachable": true,
+  "capabilities": {
+    "runApproval": false,
+    "skills": false,
+    "toolsets": false,
+    "jobs": true,
+    "jobsAdmin": false,
+    "sessions": false,
+    "inputImages": false,
+    "inputFiles": false
+  },
+  "details": {
+    "active_sessions": 2
+  },
+  "connection": "run1:2"
+}

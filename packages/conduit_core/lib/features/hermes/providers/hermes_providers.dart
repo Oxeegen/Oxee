@@ -5,7 +5,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:riverpod/misc.dart' show Override;
 import 'package:riverpod/riverpod.dart';
+import 'package:synchronized/synchronized.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:conduit_core/auth/auth_state_manager.dart';
@@ -31,6 +33,7 @@ import 'package:conduit_core/providers/backend_mode_providers.dart';
 import 'package:conduit_core/providers/storage_providers.dart';
 
 import 'package:conduit_core/services/secure_credential_storage.dart';
+import 'package:conduit_core/services/settings_service.dart';
 
 import 'package:conduit_core/utils/debug_logger.dart';
 
@@ -163,6 +166,9 @@ class HermesConfigController extends Notifier<HermesConfig> {
   /// refresh still lands after a switch; a sign-in it carries must not land
   /// after the user signed out.
   final Map<String, int> _desktopSignOuts = <String, int>{};
+
+  /// One per gateway connection, for [tokenAccessFor]'s guard.
+  final Map<String, Lock> _tokenLocks = <String, Lock>{};
 
   /// Counts the live Desktop clients built; the newest is the live one.
   int _liveClientGeneration = 0;
@@ -534,7 +540,20 @@ class HermesConfigController extends Notifier<HermesConfig> {
   HermesDesktopCredentialsWriter credentialsWriterFor(
     HermesConfig connection, {
     bool live = false,
-  }) {
+  }) => tokenAccessFor(connection, live: live).write;
+
+  /// [credentialsWriterFor]'s writer, with a reader the client calls before
+  /// it renews. The reader hands it the stored tokens, which another client
+  /// may have rotated meanwhile, and the writer then expects those: the
+  /// client adopts them rather than send a spent refresh token. The guard,
+  /// shared by every client of [connection]'s connection, makes each
+  /// renewal's read, refresh and save one step.
+  ({
+    HermesDesktopCredentialsWriter write,
+    HermesDesktopTokensReader read,
+    HermesDesktopTokenGuard guard,
+  })
+  tokenAccessFor(HermesConfig connection, {bool live = false}) {
     final generation = live ? ++_liveClientGeneration : null;
     final connectionId = connection.connectionId;
     // The refresh token this writer's client holds. Two clients built from
@@ -545,7 +564,9 @@ class HermesConfigController extends Notifier<HermesConfig> {
     // Signed out with no tokens, as a sign-in starts, the refresh token
     // expected and the one stored after a sign-out are both none.
     final signOuts = _desktopSignOuts[connectionId] ?? 0;
-    return (credentials) => _serializeMutation(() async {
+
+    /// The connection as stored, while it is still [connection]'s.
+    Future<({HermesConfig stored, bool active})> storedConnection() async {
       await _secretsHydration;
       _throwIfSecretsUnavailable();
       final profile = _profile(connectionId);
@@ -562,27 +583,67 @@ class HermesConfigController extends Notifier<HermesConfig> {
               enabled: true,
               secrets: await _readSecrets(connectionId),
             );
-      if (!hermesDesktopConnectionMatches(stored, connection) ||
+      // The tokens are the gateway's, kept across a profile change: a
+      // rotation from a client of the old profile must land, or the stored
+      // refresh token is one Hermes has already spent.
+      if (!hermesDesktopConnectionMatches(
+            stored,
+            connection.copyWith(desktopProfile: stored.desktopProfile),
+          ) ||
           stored.mode != connection.mode ||
           stored.allowSelfSignedCertificates !=
-              connection.allowSelfSignedCertificates ||
-          stored.desktopCredentials?.nativeTokens?.refreshToken !=
-              expectedRefreshToken) {
+              connection.allowSelfSignedCertificates) {
         throw StateError('Hermes connection changed before sign-in completed.');
       }
-      final previous = stored.desktopCredentials;
-      final next = HermesDesktopCredentials(
-        legacyToken: previous?.legacyToken,
-        nativeTokens: credentials.nativeTokens,
-        accessHeaders: previous?.accessHeaders ?? const {},
-      );
-      await _persistDesktopCredentials(connectionId, next);
-      if (active) {
-        state = _withState(desktopCredentials: next);
-        if (generation != _liveClientGeneration) _rebuildLiveClientWhenIdle();
-      }
-      expectedRefreshToken = credentials.nativeTokens?.refreshToken;
-    });
+      return (stored: stored, active: active);
+    }
+
+    Future<void> write(HermesDesktopCredentials credentials) =>
+        _serializeMutation(() async {
+          final (:stored, :active) = await storedConnection();
+          final storedRefreshToken =
+              stored.desktopCredentials?.nativeTokens?.refreshToken;
+          if (storedRefreshToken != expectedRefreshToken) {
+            if (storedRefreshToken != null) {
+              throw HermesTokenRotationSuperseded();
+            }
+            throw StateError(
+              'Hermes connection changed before sign-in completed.',
+            );
+          }
+          final previous = stored.desktopCredentials;
+          final next = HermesDesktopCredentials(
+            legacyToken: previous?.legacyToken,
+            nativeTokens: credentials.nativeTokens,
+            accessHeaders: previous?.accessHeaders ?? const {},
+          );
+          await _persistDesktopCredentials(connectionId!, next);
+          if (active) {
+            state = _withState(desktopCredentials: next);
+            if (generation != _liveClientGeneration) {
+              _rebuildLiveClientWhenIdle();
+            }
+          }
+          expectedRefreshToken = credentials.nativeTokens?.refreshToken;
+        });
+
+    Future<HermesDesktopTokenSet?> read() async {
+      HermesDesktopTokenSet? tokens;
+      await _serializeMutation(() async {
+        final (:stored, active: _) = await storedConnection();
+        tokens = stored.desktopCredentials?.nativeTokens;
+        expectedRefreshToken = tokens?.refreshToken;
+      });
+      return tokens;
+    }
+
+    final lock = connectionId == null
+        ? Lock()
+        : _tokenLocks.putIfAbsent(connectionId, Lock.new);
+    Future<T> guard<T>(Future<T> Function() action) =>
+        lock.synchronized(action);
+
+    return (write: write, read: read, guard: guard);
   }
 
   /// Rebuilds the live client so it takes the stored tokens, but only once
@@ -1267,7 +1328,31 @@ class HermesConfigController extends Notifier<HermesConfig> {
   ///
   /// Deleting the active connection activates the most recently used
   /// remaining one, or leaves Hermes without a connection.
-  Future<void> deleteConnection(String connectionId) =>
+  Future<void> deleteConnection(String connectionId) async {
+    if (_profile(connectionId) != null) {
+      await _beforeConnectionRemoved(connectionId);
+    }
+    return _deleteConnection(connectionId);
+  }
+
+  /// Gives the host a bounded moment, while the connection's address and
+  /// secrets still work, to remove what belongs to it elsewhere: its push
+  /// subscription on the server, its posted notifications.
+  Future<void> _beforeConnectionRemoved(String connectionId) async {
+    try {
+      await ref
+          .read(hostHermesConnectionRemovingProvider)(connectionId)
+          .timeout(const Duration(seconds: 6));
+    } catch (error) {
+      DebugLogger.warning(
+        'connection-removal-hook-failed',
+        scope: 'hermes/connections',
+        data: {'errorType': error.runtimeType.toString()},
+      );
+    }
+  }
+
+  Future<void> _deleteConnection(String connectionId) =>
       _serializeMutation(() async {
         await _secretsHydration;
         _throwIfSecretsUnavailable();
@@ -2109,6 +2194,15 @@ typedef HermesConnectionSwitchPrompt =
 final hermesConnectionSwitchPromptProvider =
     Provider<HermesConnectionSwitchPrompt>((ref) => (_) async => false);
 
+/// Called before a saved Hermes connection is deleted, while its address
+/// and secrets still work. The host removes what the core cannot name, such
+/// as the notifications posted for it. Bounded by the caller, which goes on
+/// with the deletion whatever this does.
+final hostHermesConnectionRemovingProvider =
+    Provider<Future<void> Function(String connectionId)>(
+      (ref) => (_) async {},
+    );
+
 /// Asked when Hermes holds a model switch for the user's confirmation (a
 /// pricier, data-sharing or smaller-context model). The core cannot
 /// localize the question, so the host binds it; without one, the held
@@ -2246,16 +2340,19 @@ final hermesApiServiceProvider = Provider<HermesBackendService?>((ref) {
     // Rotations land even after this client is replaced, as by a switch
     // away: the server has already spent the refresh token they replace.
     // They never overwrite tokens this client did not hold.
-    final writeCredentials = ref
+    final (write: writeCredentials, :read, :guard) = ref
         .read(hermesConfigProvider.notifier)
-        .credentialsWriterFor(config, live: true);
+        .tokenAccessFor(config, live: true);
     final desktopService = HermesDesktopApiService(
       config: config,
       openExternalUrl: ref.read(openExternalUrlProvider),
+      browserAuth: ref.read(browserAuthPortProvider),
       dashboardBridgeFactory: ref.read(
         hostHermesDashboardBridgeFactoryProvider,
       ),
       confirmModelSwitch: ref.read(hermesModelSwitchPromptProvider),
+      readStoredTokens: read,
+      guardTokens: guard,
       onCredentialsChanged: (credentials) async {
         try {
           await writeCredentials(credentials);
@@ -2280,24 +2377,26 @@ final hermesApiServiceProvider = Provider<HermesBackendService?>((ref) {
 /// Authoritative Desktop turn state. Responses mode remains on its existing
 /// dispatcher and therefore always exposes the neutral idle state here.
 final hermesDesktopTurnStateProvider =
-    StreamProvider.autoDispose<HermesDesktopTurnState>((ref) async* {
-      final service = ref.watch(hermesApiServiceProvider);
-      if (service is! HermesDesktopApiService) {
-        yield HermesDesktopTurnState.idle;
-        return;
-      }
-      final conversation = ref.watch(activeConversationProvider);
-      if (!isNativeHermesConversation(conversation)) {
-        yield HermesDesktopTurnState.idle;
-        return;
-      }
-      final storedId = conversation?.metadata['hermesSessionId']?.toString();
-      if (storedId == null || storedId.isEmpty) {
-        yield HermesDesktopTurnState.idle;
-        return;
-      }
-      yield* service.turnStatesFor(storedId);
-    });
+    StreamProvider.autoDispose<HermesDesktopTurnState>(_hermesDesktopTurnState);
+
+Stream<HermesDesktopTurnState> _hermesDesktopTurnState(Ref ref) async* {
+  final service = ref.watch(hermesApiServiceProvider);
+  if (service is! HermesDesktopApiService) {
+    yield HermesDesktopTurnState.idle;
+    return;
+  }
+  final conversation = ref.watch(activeConversationProvider);
+  if (!isNativeHermesConversation(conversation)) {
+    yield HermesDesktopTurnState.idle;
+    return;
+  }
+  final storedId = conversation?.metadata['hermesSessionId']?.toString();
+  if (storedId == null || storedId.isEmpty) {
+    yield HermesDesktopTurnState.idle;
+    return;
+  }
+  yield* service.turnStatesFor(storedId);
+}
 
 /// One change to a Desktop chat's stored transcript, by its stored id.
 /// Each change is its own event (no value equality): a provider drops a
@@ -2512,6 +2611,19 @@ final hermesSessionNavigationEpochProvider =
       HermesSessionNavigationEpoch.new,
     );
 
+/// This library's share of a chat session scope (`ChatSessionScope` in the
+/// chat library): the Hermes state that belongs to the chat on screen rather
+/// than to the connection. The connection, its service, sessions list and
+/// run registry stay shared.
+List<Override> chatSessionScopedHermesOverrides() => <Override>[
+  hermesSessionNavigationEpochProvider.overrideWith(
+    HermesSessionNavigationEpoch.new,
+  ),
+  hermesActiveSessionProvider.overrideWith(HermesActiveSession.new),
+  hermesFastTierSelectionProvider.overrideWith(HermesFastTierSelection.new),
+  hermesDesktopTurnStateProvider.overrideWith(_hermesDesktopTurnState),
+];
+
 /// Aligns a fork's freshly inserted rows with its source history. Any shape,
 /// order, role, content, or identity mismatch rejects the entire mapping so
 /// provenance can never slide onto a merely similar prompt.
@@ -2605,7 +2717,12 @@ class HermesSessionsController
   Future<List<HermesSessionSummary>> build() async {
     final service = ref.watch(hermesApiServiceProvider);
     if (service == null) return const [];
-    final raw = await service.listSessions();
+    final showScheduled = ref.watch(
+      appSettingsProvider.select((s) => s.hermesShowScheduledSessions),
+    );
+    final raw = await service.listSessions(
+      excludeScheduledRuns: !showScheduled,
+    );
     return [
       for (final session in _hermesSessionSummaries(raw))
         if (!session.archived && !session.hidden) session,
@@ -2674,6 +2791,7 @@ class HermesSessionsController
             archived:
                 setAside == HermesSetAsideKind.hidden &&
                 (archived ?? session.archived),
+            source: session.source,
           );
     if (record != null) await HermesSetAsideSessionStore.remember(record);
     // A failed change keeps the record: Hermes may have applied it before
@@ -3421,6 +3539,7 @@ Future<List<HermesSessionSummary>> _hermesSetAsideSessions(
             title: session!.title,
             kind: actual,
             archived: actual == HermesSetAsideKind.hidden && session.archived,
+            source: session.source ?? record.source,
           ),
         );
       }
@@ -3663,9 +3782,21 @@ class HermesJobsController extends AsyncNotifier<List<HermesJob>> {
     }
   }
 
-  /// [deliver] and [catchUp] apply on the Desktop Gateway; the API server
-  /// keeps its default (`local`, Hermes' catch-up policy).
-  Future<void> create({
+  /// Job [id] as the gateway holds it now: read again for a change that
+  /// merges with what the job stores (its delivery), never taken from a list
+  /// read before, which another device may have changed since. A read that
+  /// fails fails it; a job no longer listed is [HermesJobNotFoundException].
+  Future<HermesJob> current(String id) async {
+    final jobs = await _load(_service);
+    return jobs.where((job) => job.id == id).firstOrNull ??
+        (throw const HermesJobNotFoundException());
+  }
+
+  /// Creates a job and answers it as the server returned it, or null when
+  /// the answer named no job. [deliver] and [catchUp] apply on the Desktop
+  /// Gateway; the API server keeps its default (`local`, Hermes' catch-up
+  /// policy).
+  Future<HermesJob?> create({
     required String name,
     required String prompt,
     required String schedule,
@@ -3673,24 +3804,24 @@ class HermesJobsController extends AsyncNotifier<List<HermesJob>> {
     HermesJobCatchUp catchUp = HermesJobCatchUp.hermesDefault,
   }) async {
     final service = _service;
-    await _changing(() async {
+    final created = await _changing(() async {
       if (service is HermesDesktopApiService) {
-        await service.createJob(
+        return service.createJob(
           name: name,
           prompt: prompt,
           schedule: schedule,
           deliver: deliver ?? kHermesLocalDeliveryTarget,
           catchUp: catchUp,
         );
-      } else {
-        await service.createJob(
-          name: name,
-          prompt: prompt,
-          schedule: schedule,
-        );
       }
+      return service.createJob(name: name, prompt: prompt, schedule: schedule);
     });
     ref.invalidateSelf();
+    // The API server wraps the job as {"job": …}; the dashboard does not.
+    final job = created['job'];
+    return HermesJob.fromJson(
+      job is Map ? Map<String, dynamic>.from(job) : created,
+    );
   }
 
   /// A null [deliver] or [catchUp] leaves the job's value as stored.
@@ -3900,9 +4031,67 @@ HermesRunKey legacyHermesRunKey(String assistantMessageId) => (
 /// Tracks the live event subscription + run id for each streaming Hermes
 /// assistant message so a stop request can cancel the right run.
 ///
+/// A Hermes turn this app ran that ended, successfully or not, and was not
+/// stopped.
+///
+/// Announced through [HermesRunRegistry.completions] so the app can notify
+/// about a reply that finished while it was in the background.
+final class HermesTurnCompletion {
+  const HermesTurnCompletion({
+    required this.connectionId,
+    required this.sessionId,
+    required this.message,
+    required this.runId,
+    this.title,
+  });
+
+  /// The saved connection that ran it.
+  final String connectionId;
+
+  /// The server session it belongs to.
+  final String sessionId;
+
+  /// The reply: its content, or its error.
+  final ChatMessage message;
+
+  /// The chat's title, when known.
+  final String? title;
+
+  /// A random id of the run that wrote [message]. A regeneration writes into
+  /// the same assistant message, so this tells its reply from the one it
+  /// replaced.
+  final String runId;
+
+  /// This app's own key for the turn. The server's turn id is unknown here.
+  String get turnKey => '${message.id}:$runId';
+
+  bool get failed => message.error != null;
+}
+
 class HermesRunRegistry {
   final Map<HermesRunKey, _ActiveRun> _runs = {};
   final List<void Function()> _whenIdle = [];
+  final StreamController<HermesTurnCompletion> _completions =
+      StreamController<HermesTurnCompletion>.broadcast();
+
+  /// Hermes turns this app ran, as they end without being stopped.
+  Stream<HermesTurnCompletion> get completions => _completions.stream;
+
+  /// The runs stopped through [cancel], [cancelOwned] or [cancelAll], by
+  /// their cancel token.
+  final Expando<bool> _stopped = Expando<bool>('stopped-hermes-runs');
+
+  /// Whether the run of [cancelToken] was stopped -- by the user, a
+  /// connection change or sign-out -- rather than ending on its own.
+  bool wasStopped(CancelToken cancelToken) => _stopped[cancelToken] ?? false;
+
+  /// Announces on [completions] that a turn ended.
+  void announceCompletion(HermesTurnCompletion completion) {
+    if (_completions.isClosed) return;
+    _completions.add(completion);
+  }
+
+  void dispose() => _completions.close();
 
   /// Calls [callback] once no run is active: now, or when the last one ends.
   void whenIdle(void Function() callback) {
@@ -4207,6 +4396,7 @@ class HermesRunRegistry {
 
   Future<void> _cancelDetached(_ActiveRun run) async {
     run.cancelled = true;
+    _stopped[run.cancelToken] = true;
     run.cancelToken.cancel('stopped');
     for (final callback in run.onCancelled) {
       try {
@@ -4313,6 +4503,8 @@ class _ActiveRun {
   bool cleanupReported = false;
 }
 
-final hermesRunRegistryProvider = Provider<HermesRunRegistry>(
-  (ref) => HermesRunRegistry(),
-);
+final hermesRunRegistryProvider = Provider<HermesRunRegistry>((ref) {
+  final registry = HermesRunRegistry();
+  ref.onDispose(registry.dispose);
+  return registry;
+});

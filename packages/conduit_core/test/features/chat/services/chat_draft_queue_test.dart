@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:checks/checks.dart';
+import 'package:conduit_core/auth/api_auth_interceptor.dart'
+    show ApiAuthSnapshot;
 import 'package:conduit_core/database/app_database.dart';
 import 'package:conduit_core/database/chat_database_repository.dart';
 import 'package:conduit_core/database/database_provider.dart';
@@ -142,12 +144,42 @@ class _Api extends ApiService {
   }
 
   @override
+  Future<void> stopTaskRaw(String taskId, {ApiAuthSnapshot? authSnapshot}) =>
+      stopTask(taskId);
+
+  @override
   Future<void> stopTask(String taskId) async {
     stoppedTasks.add(taskId);
   }
 
   @override
   Future<List<String>> getTaskIdsByChat(String chatId) async => chatTaskIds;
+
+  // A Stop asked again goes by the raw routes, bound to its session.
+  @override
+  Future<List<String>> getChatTaskIdsRaw(
+    String chatId, {
+    ApiAuthSnapshot? authSnapshot,
+  }) => getTaskIdsByChat(chatId);
+
+  @override
+  Future<void> stopChatTasksRaw(
+    String chatId, {
+    ApiAuthSnapshot? authSnapshot,
+  }) => stopTasksByChat(chatId);
+
+  /// The server's copy, read before a refused Stop is asked again with no
+  /// task running: no answer in it waits for a tool's approval.
+  @override
+  Future<Map<String, dynamic>?> getChatRaw(
+    String id, {
+    ApiAuthSnapshot? authSnapshot,
+  }) async => <String, dynamic>{
+    'id': id,
+    'chat': <String, dynamic>{
+      'history': <String, dynamic>{'messages': <String, dynamic>{}},
+    },
+  };
 }
 
 /// The outbox drain and the remap announcements, which belong to the sync
@@ -300,6 +332,7 @@ class _Session {
     bool advanced = true,
     bool online = true,
     Model? model,
+    ChatDraftQueueAdmissionWait? admissionWait,
   }) async {
     final db = AppDatabase(NativeDatabase.memory());
     addTearDown(db.close);
@@ -348,6 +381,8 @@ class _Session {
         selectedTerminalIdProvider.overrideWithValue(null),
         syncEngineProvider.overrideWith(() => engine),
         attachedFilesProvider.overrideWith(_Tray.new),
+        if (admissionWait != null)
+          chatDraftQueueAdmissionWaitProvider.overrideWithValue(admissionWait),
       ],
     );
     addTearDown(container.dispose);
@@ -409,6 +444,24 @@ class _Session {
   void signInElsewhere(_Api api) {
     container.read(_wires.api.notifier).use(api);
     container.read(_wires.epoch.notifier).use(Object());
+  }
+
+  /// Completes once the queue reaches [condition]: at once if it holds now,
+  /// else at the first change of the queue that makes it hold.
+  Future<void> reaches(bool Function() condition) {
+    if (condition()) return Future<void>.value();
+    final reached = Completer<void>();
+    late final ProviderSubscription<List<ChatDraftQueue>> watch;
+    // Asked once the change has reached what is derived from the queue.
+    watch = container.listen(chatDraftQueueProvider, (_, _) {
+      scheduleMicrotask(() {
+        if (!reached.isCompleted && condition()) {
+          reached.complete();
+          watch.close();
+        }
+      });
+    });
+    return reached.future;
   }
 
   Future<void> until(bool Function() condition) async {
@@ -499,6 +552,22 @@ void main() {
       check(s.parked.last.upload).identicalTo(uploading);
     });
 
+    // Send takes files without words; Queue refused them.
+    test('takes files without words, and refuses a draft of neither', () async {
+      final s = await _Session.start();
+
+      check(s.queue.enqueue('  ')).isNull();
+      check(s.active).isNull();
+
+      s.attach([_file('a.txt')]);
+      final draft = s.queue.enqueue('');
+
+      check(draft).isNotNull();
+      check(draft!.text).equals('');
+      check(s.parked.map((held) => held.upload.fileName)).deepEquals(['a.txt']);
+      check(s.tray).isEmpty();
+    });
+
     test('is refused, and the composer left alone, when no response runs',
         () async {
       final s = await _Session.start();
@@ -580,6 +649,24 @@ void main() {
       check(s.engine.drains).equals(1);
     });
 
+    test(
+      'a draft of files alone adds its files, and no blank line, to the turn',
+      () async {
+        final s = await _Session.start();
+        s.queue.enqueue('first');
+        s.attach([_file('b.txt')]);
+        s.queue.enqueue('');
+
+        s.finishResponse();
+        await s.reaches(() => s.active == null);
+
+        final rows = await s.sentUserRows();
+        check(rows).length.equals(1);
+        check(rows.single.content).equals('first');
+        check(s.userFileIds(rows.single)).deepEquals(['id-b.txt']);
+      },
+    );
+
     test('carries each draft\'s context attachments into the one turn',
         () async {
       final s = await _Session.start();
@@ -631,15 +718,27 @@ void main() {
       final s = await _Session.start();
       s.attach([_file('bad.txt', status: FileUploadStatus.failed)]);
       final broken = s.queue.enqueue('has a bad file')!;
+      // A draft of files alone has nothing left once its file goes.
+      s.attach([_file('also-bad.txt', status: FileUploadStatus.failed)]);
+      final filesOnly = s.queue.enqueue('')!;
       s.queue.enqueue('fine');
 
       s.finishResponse();
       await s.settle();
       check(await s.sentUserRows()).isEmpty();
-      check(s.active!.drafts).length.equals(2);
+      check(s.active!.drafts).length.equals(3);
 
       check(s.queue.removeDraftAttachment(broken.id, broken.attachmentIds.single))
           .isTrue();
+      check(
+        s.queue.removeDraftAttachment(
+          filesOnly.id,
+          filesOnly.attachmentIds.single,
+        ),
+      ).isTrue();
+      check(s.active!.drafts.map((draft) => draft.id)).not(
+        (it) => it.contains(filesOnly.id),
+      );
       await s.until(() => s.active == null);
 
       check((await s.sentUserRows()).single.content)
@@ -669,6 +768,102 @@ void main() {
       check(rows.single.content).equals('frozen');
       check(s.active!.drafts.single.text).equals('later');
       check(await s.completions()).length.equals(1);
+    });
+
+    test('a batch the host holds before admission leaves the composer free: '
+        'a message sent meanwhile goes first, and the batch follows its '
+        'answer', () async {
+      final hold = Completer<void>();
+      var waits = 0;
+      final s = await _Session.start(
+        // The host lets the chat settle after the first answer only.
+        admissionWait: () => ++waits == 1 ? hold.future : null,
+      );
+      addTearDown(() {
+        if (!hold.isCompleted) hold.complete();
+      });
+      final queued = s.queue.enqueue('queued')!;
+
+      s.finishResponse();
+      await s.reaches(() => s.active?.phase == ChatDraftQueuePhase.admitting);
+      check(s.active!.frozenDraftIds).deepEquals([queued.id]);
+      check(await s.sentUserRows()).isEmpty();
+      // Nothing is running while the host holds the batch, so the composer
+      // sends, as it does while a Stop waits on the server.
+      check(s.container.read(chatMainAnswerActiveProvider)).isFalse();
+      await s.container.read(_sendOrdinaryMessage)('sent meanwhile');
+      check(s.container.read(chatMainAnswerActiveProvider)).isTrue();
+
+      hold.complete();
+      await s.reaches(() => s.active?.phase == ChatDraftQueuePhase.idle);
+      // Nothing was sent over the newer answer; the draft waits, editable,
+      // without a Retry.
+      check((await s.sentUserRows()).map((row) => row.content))
+          .deepEquals(['sent meanwhile']);
+      check(s.active!.drafts.map((d) => d.id)).deepEquals([queued.id]);
+      check(s.active!.frozenDraftIds).isEmpty();
+      check(s.active!.admissionFailed).isFalse();
+
+      s.finishResponse();
+      await s.reaches(() => s.active == null);
+      check((await s.sentUserRows()).map((row) => row.content))
+          .deepEquals(['sent meanwhile', 'queued']);
+      check(await s.completions()).length.equals(2);
+      check(waits).equals(2);
+    });
+
+    for (final (name, wait) in <(String, ChatDraftQueueAdmissionWait)>[
+      ('fails', () => Future<void>.error(StateError('host'))),
+      ('throws instead of waiting', () => throw StateError('host')),
+    ]) {
+      test('a host wait that $name admits nothing and keeps the drafts',
+          () async {
+        final s = await _Session.start(admissionWait: wait);
+        final queued = s.queue.enqueue('queued')!;
+
+        s.finishResponse();
+        await s.reaches(() => s.active?.admissionFailed == true);
+
+        check(await s.sentUserRows()).isEmpty();
+        check(s.active!.drafts.map((d) => d.id)).deepEquals([queued.id]);
+        check(s.active!.phase).equals(ChatDraftQueuePhase.idle);
+      });
+    }
+
+    test('a Stop pressed while the host holds the batch is settled before '
+        'the batch goes', () async {
+      final hold = Completer<void>();
+      var waits = 0;
+      final s = await _Session.start(
+        admissionWait: () => ++waits == 1 ? hold.future : null,
+      );
+      addTearDown(() {
+        if (!hold.isCompleted) hold.complete();
+      });
+      s.queue.enqueue('queued');
+      s.finishResponse();
+      await s.reaches(() => s.active?.phase == ChatDraftQueuePhase.admitting);
+
+      // Meanwhile a message is sent, and its answer stopped; the server has
+      // not taken the Stop yet.
+      await s.container.read(_sendOrdinaryMessage)('sent meanwhile');
+      final stop = s.api.stopGate = Completer<void>();
+      addTearDown(() {
+        if (!stop.isCompleted) stop.complete();
+      });
+      s.container.read(stopGenerationProvider)();
+      hold.complete();
+      await pumpEventQueue();
+
+      // The batch waits on the Stop: still frozen, nothing more sent.
+      check(s.active!.phase).equals(ChatDraftQueuePhase.admitting);
+      check((await s.sentUserRows()).map((row) => row.content))
+          .deepEquals(['sent meanwhile']);
+
+      stop.complete();
+      await s.reaches(() => s.active == null);
+      check((await s.sentUserRows()).map((row) => row.content))
+          .deepEquals(['sent meanwhile', 'queued']);
     });
 
     test('a send refused before it commits keeps every draft and shows nothing',

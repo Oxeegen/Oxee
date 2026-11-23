@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:conduit_core/features/chat/services/url_context.dart';
 import 'package:conduit_core/models/conversation.dart';
 import 'package:conduit_core/models/folder.dart';
 import 'package:conduit_core/models/model.dart';
@@ -634,32 +635,36 @@ class _FolderPageState extends ConsumerState<FolderPage> {
     }
   }
 
+  /// Sends [text] as a new chat in this folder, with [sentFiles], the
+  /// composer's files taken for it, or else the tray's uploaded files now.
   Future<chat.ChatSendPlaceholderHandle?> _handleComposerSend(
     String text, {
     void Function(chat.ChatSendPlaceholderHandle)? onPrepared,
+    MediaAttachmentOwnershipSnapshot? sentFiles,
   }) async {
+    final media = ref.read(mediaUploadControllerProvider);
+    final files = sentFiles ?? media.captureSentAttachments();
     if (_isSendingComposerMessage ||
         ref.read(conversationSelectionProvider).isLoading) {
+      unawaited(media.releaseSentAttachments(files));
       return null;
     }
 
     setState(() => _isSendingComposerMessage = true);
     final container = ProviderScope.containerOf(context, listen: false);
+    final owner = chat.captureChatSendOwner(container);
     chat.ChatSendPlaceholderHandle? pendingSend;
 
     try {
       final hasModel = await _ensureSelectedModel(container);
-      if (!hasModel) {
+      if (!hasModel || !chat.chatSendOwnerIsCurrent(container, owner)) {
         return null;
       }
 
-      final attachedFiles = container.read(attachedFilesProvider);
       final mediaUploadController = container.read(
         mediaUploadControllerProvider,
       );
-      final sentAttachmentOwnership = mediaUploadController
-          .captureAttachmentOwnership();
-      final uploadedFileIds = attachedFiles
+      final uploadedFileIds = files.attachments
           .where(
             (file) =>
                 file.status == FileUploadStatus.completed &&
@@ -685,6 +690,7 @@ class _FolderPageState extends ConsumerState<FolderPage> {
         text,
         uploadedFileIds.isNotEmpty ? uploadedFileIds : null,
         toolIds: toolIds.isNotEmpty ? toolIds : null,
+        attachmentStates: files.attachments,
         pendingFolderIdOverride: widget.folderId,
         onAssistantPlaceholderCreated: (handle) {
           pendingSend = handle;
@@ -694,16 +700,17 @@ class _FolderPageState extends ConsumerState<FolderPage> {
 
       // durableSend has now transferred all message/outbox ownership.
       unawaited(
-        mediaUploadController
-            .retireAttachmentOwnership(sentAttachmentOwnership)
-            .catchError((Object error, StackTrace stackTrace) {
-              DebugLogger.error(
-                'sent-attachment-cleanup-failed',
-                scope: 'navigation/folder',
-                error: error,
-                stackTrace: stackTrace,
-              );
-            }),
+        mediaUploadController.retireAttachmentOwnership(files).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          DebugLogger.error(
+            'sent-attachment-cleanup-failed',
+            scope: 'navigation/folder',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }),
       );
       return pendingSend;
     } catch (e, stackTrace) {
@@ -720,6 +727,7 @@ class _FolderPageState extends ConsumerState<FolderPage> {
       chat.recoverFailedChatSend(container, e, pendingSend);
       return null;
     } finally {
+      unawaited(media.releaseSentAttachments(files));
       if (mounted) {
         setState(() => _isSendingComposerMessage = false);
       }
@@ -732,10 +740,13 @@ class _FolderPageState extends ConsumerState<FolderPage> {
   Future<chat.ChatSendPlaceholderHandle?> _handleCompareSend(
     String text,
     List<Model> models,
+    MediaAttachmentOwnershipSnapshot files,
     void Function(chat.ChatSendPlaceholderHandle) onPrepared,
   ) async {
+    final media = ref.read(mediaUploadControllerProvider);
     if (_isSendingComposerMessage ||
         ref.read(conversationSelectionProvider).isLoading) {
+      unawaited(media.releaseSentAttachments(files));
       return null;
     }
 
@@ -743,13 +754,10 @@ class _FolderPageState extends ConsumerState<FolderPage> {
     final container = ProviderScope.containerOf(context, listen: false);
 
     try {
-      final attachedFiles = container.read(attachedFilesProvider);
       final mediaUploadController = container.read(
         mediaUploadControllerProvider,
       );
-      final sentAttachmentOwnership = mediaUploadController
-          .captureAttachmentOwnership();
-      final uploadedFileIds = attachedFiles
+      final uploadedFileIds = files.attachments
           .where(
             (file) =>
                 file.status == FileUploadStatus.completed &&
@@ -775,6 +783,7 @@ class _FolderPageState extends ConsumerState<FolderPage> {
         models: models,
         onAssistantPlaceholderCreated: onPrepared,
         toolIds: toolIds.isNotEmpty ? toolIds : null,
+        attachmentStates: files.attachments,
         onCommitted: () {
           // The shell keeps this page mounted in a branch no longer shown,
           // and a page pushed over it keeps it mounted behind.
@@ -792,16 +801,17 @@ class _FolderPageState extends ConsumerState<FolderPage> {
       );
 
       unawaited(
-        mediaUploadController
-            .retireAttachmentOwnership(sentAttachmentOwnership)
-            .catchError((Object error, StackTrace stackTrace) {
-              DebugLogger.error(
-                'sent-attachment-cleanup-failed',
-                scope: 'navigation/folder',
-                error: error,
-                stackTrace: stackTrace,
-              );
-            }),
+        mediaUploadController.retireAttachmentOwnership(files).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          DebugLogger.error(
+            'sent-attachment-cleanup-failed',
+            scope: 'navigation/folder',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }),
       );
       return handles.first;
     } on chat.ComparisonAdmissionException catch (error) {
@@ -825,6 +835,7 @@ class _FolderPageState extends ConsumerState<FolderPage> {
       );
       return null;
     } finally {
+      unawaited(media.releaseSentAttachments(files));
       if (mounted) {
         setState(() => _isSendingComposerMessage = false);
       }
@@ -1076,13 +1087,6 @@ class _FolderPageState extends ConsumerState<FolderPage> {
     } catch (_) {}
   }
 
-  bool _isYoutubeUrl(String url) {
-    return url.startsWith('https://www.youtube.com') ||
-        url.startsWith('https://youtu.be') ||
-        url.startsWith('https://youtube.com') ||
-        url.startsWith('https://m.youtube.com');
-  }
-
   Future<void> _promptAttachWebpage() async {
     final api = ref.read(apiServiceProvider);
     if (api == null) {
@@ -1166,48 +1170,21 @@ class _FolderPageState extends ConsumerState<FolderPage> {
                           });
                           try {
                             final trimmedUrl = url.trim();
-                            final isYoutube = _isYoutubeUrl(trimmedUrl);
-                            final result = isYoutube
-                                ? await api.processYoutube(url: trimmedUrl)
-                                : await api.processWebpage(url: trimmedUrl);
-                            final file = (result?['file'] as Map?)
-                                ?.cast<String, dynamic>();
-                            final fileData = (file?['data'] as Map?)
-                                ?.cast<String, dynamic>();
-                            final content =
-                                fileData?['content']?.toString() ?? '';
-                            if (content.isEmpty) {
+                            final page = await readUrlContext(
+                              api,
+                              trimmedUrl,
+                            );
+                            if (page.content.isEmpty) {
                               setError(
-                                isYoutube
+                                page.youtube
                                     ? l10n.youtubeTranscriptFetchFailed
                                     : l10n.webpageNoReadableContent,
                               );
                               return;
                             }
-                            final meta = (file?['meta'] as Map?)
-                                ?.cast<String, dynamic>();
-                            final name =
-                                meta?['name']?.toString() ?? parsed.host;
-                            final collectionName = result?['collection_name']
-                                ?.toString();
-                            final notifier = ref.read(
-                              contextAttachmentsProvider.notifier,
-                            );
-                            if (isYoutube) {
-                              notifier.addYoutube(
-                                displayName: name,
-                                content: content,
-                                url: trimmedUrl,
-                                collectionName: collectionName,
-                              );
-                            } else {
-                              notifier.addWeb(
-                                displayName: name,
-                                content: content,
-                                url: trimmedUrl,
-                                collectionName: collectionName,
-                              );
-                            }
+                            ref
+                                .read(contextAttachmentsProvider.notifier)
+                                .addUrlContext(page);
 
                             if (!mounted || !dialogContext.mounted) {
                               return;
@@ -1283,6 +1260,13 @@ class _FolderPageState extends ConsumerState<FolderPage> {
                     label: l10n.defaultLabel,
                     sfSymbol: 'folder',
                   ),
+                  // An icon chosen on the web stays the folder's choice.
+                  if (customFolderIconAlias(currentIconAlias)
+                      case final custom?)
+                    NativeSheetOptionConfig(
+                      id: custom,
+                      label: customFolderIconLabel(custom),
+                    ),
                   for (final option in folderIconOptions)
                     NativeSheetOptionConfig(
                       id: option.alias,
@@ -1584,8 +1568,11 @@ class _FolderPageState extends ConsumerState<FolderPage> {
                     'folder-page-composer-${widget.folderId}-$_composerResetNonce',
                   ),
                   onSendMessage: _handleComposerSend,
-                  onSendDraft: (text, onPrepared) =>
-                      _handleComposerSend(text, onPrepared: onPrepared),
+                  onSendDraft: (text, files, onPrepared) => _handleComposerSend(
+                    text,
+                    onPrepared: onPrepared,
+                    sentFiles: files,
+                  ),
                   onCompareSend: _handleCompareSend,
                   enabled:
                       !ref.watch(conversationSelectionProvider).isLoading &&
@@ -2241,6 +2228,14 @@ class _FolderEditSheetState extends ConsumerState<_FolderEditSheet> {
                 selected: _selectedIconAlias == null,
                 onSelected: _isSaving ? null : (_) => _selectIcon(null),
               ),
+              // An icon chosen on the web stays the folder's choice.
+              if (customFolderIconAlias(_folder.meta?['icon']?.toString())
+                  case final custom?)
+                AdaptiveChip.choice(
+                  label: Text(customFolderIconLabel(custom)),
+                  selected: _selectedIconAlias == custom,
+                  onSelected: _isSaving ? null : (_) => _selectIcon(custom),
+                ),
               for (final option in folderIconOptions)
                 AdaptiveChip.choice(
                   label: Row(

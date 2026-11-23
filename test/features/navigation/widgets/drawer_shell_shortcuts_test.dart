@@ -29,6 +29,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'sidebar_page_test_support.dart';
 
+import 'package:conduit/features/navigation/widgets/sidebar_user_pill.dart'
+    show sidebarNativeProfilePresenterProvider;
+import 'package:conduit/features/settings/settings_opener.dart';
+
 void main() {
   tearDown(PlatformUiCapabilities.resetDebugOverrides);
 
@@ -41,7 +45,7 @@ void main() {
     await tester.pumpWidget(
       const ProviderScope(
         child: MaterialApp(
-          home: MacDesktopShortcuts(child: Focus(child: Text('Content'))),
+          home: AppKeyboardShortcuts(child: Focus(child: Text('Content'))),
         ),
       ),
     );
@@ -64,9 +68,69 @@ void main() {
         const SingleActivator(LogicalKeyboardKey.digit4, meta: true),
         const SingleActivator(LogicalKeyboardKey.digit5, meta: true),
         const SingleActivator(LogicalKeyboardKey.comma, meta: true),
-        const SingleActivator(LogicalKeyboardKey.escape),
       ]),
     );
+    expect(
+      bindings.keys.where(
+        (activator) =>
+            activator.triggers?.contains(LogicalKeyboardKey.escape) ?? false,
+      ),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('Command-comma opens Settings the way the app opens it', (
+    tester,
+  ) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    addTearDown(PlatformUiCapabilities.resetDebugOverrides);
+    final container = ProviderContainer(
+      overrides: [
+        sidebarNativeProfilePresenterProvider.overrideWithValue(
+          (_) async => true,
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    var sheets = 0;
+    Future<void> openSheet() async => sheets++;
+    container.read(settingsOpenerProvider).register(openSheet);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(
+          home: AppKeyboardShortcuts(child: Focus(child: Text('Content'))),
+        ),
+      ),
+    );
+
+    final bindings = tester
+        .widget<CallbackShortcuts>(find.byType(CallbackShortcuts))
+        .bindings;
+    bindings[const SingleActivator(LogicalKeyboardKey.comma, meta: true)]!();
+    await tester.pump();
+
+    expect(sheets, 1);
+  });
+
+  test('Settings opens in the native sheet wherever it can be presented', () {
+    expect(
+      settingsShortcutDestination(nativeSheetAvailable: true),
+      SettingsDestination.nativeSheet,
+    );
+    expect(
+      settingsShortcutDestination(nativeSheetAvailable: false),
+      SettingsDestination.flutterPages,
+    );
+    final opener = SettingsOpener();
+    Future<void> first() async {}
+    Future<void> second() async {}
+    opener
+      ..register(first)
+      ..register(second)
+      ..unregister(first);
+    // An opener taken back after another took over leaves the newer one.
+    expect(opener.open, same(second));
   });
 
   testWidgets('Command-N accepts an initial press but ignores repeats', (
@@ -78,7 +142,7 @@ void main() {
     await tester.pumpWidget(
       const ProviderScope(
         child: MaterialApp(
-          home: MacDesktopShortcuts(child: Focus(child: Text('Content'))),
+          home: AppKeyboardShortcuts(child: Focus(child: Text('Content'))),
         ),
       ),
     );
@@ -123,7 +187,7 @@ void main() {
     await tester.pumpWidget(
       const ProviderScope(
         child: MaterialApp(
-          home: MacDesktopShortcuts(
+          home: AppKeyboardShortcuts(
             child: Consumer(builder: _searchShortcutTestChild),
           ),
         ),
@@ -162,7 +226,7 @@ void main() {
             for (final path in [Routes.chat, Routes.notes])
               GoRoute(
                 path: path,
-                builder: (context, state) => const MacDesktopShortcuts(
+                builder: (context, state) => const AppKeyboardShortcuts(
                   child: Focus(autofocus: true, child: Text('Content')),
                 ),
               ),
@@ -770,17 +834,427 @@ void main() {
     });
   }
 
-  testWidgets('non-Mac iOS does not install desktop shortcuts', (tester) async {
+  testWidgets('iPad and iPhone get the shortcuts as the Mac app does', (
+    tester,
+  ) async {
     PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
     PlatformUiCapabilities.debugIOSAppOnMacOverride = false;
 
     await tester.pumpWidget(
       const ProviderScope(
-        child: MaterialApp(home: MacDesktopShortcuts(child: Text('Content'))),
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Consumer(builder: _searchShortcutTestChild),
+          ),
+        ),
+      ),
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.text('Content')),
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+
+    expect(container.read(sidebarHeaderSearchExpandedProvider), true);
+  });
+
+  testWidgets('Command-K still works after Escape leaves a field', (
+    tester,
+  ) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    final field = FocusNode();
+    addTearDown(field.dispose);
+
+    // The route's focus scope sits above the shortcuts, as the shell's own
+    // page does in the app.
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Material(
+              child: Consumer(
+                builder: (context, ref, _) => Column(
+                  children: [
+                    TextField(focusNode: field),
+                    Focus(
+                      focusNode: ref.watch(sidebarSearchFieldFocusNodeProvider),
+                      child: const SizedBox.shrink(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(TextField)),
+    );
+    await tester.showKeyboard(find.byType(TextField));
+    expect(field.hasFocus, isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(field.hasFocus, isFalse);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+    await tester.pump();
+    expect(container.read(sidebarHeaderSearchExpandedProvider), isTrue);
+  });
+
+  for (final kind in ['dialog', 'sheet']) {
+    testWidgets('Escape closes a dismissible $kind inside the shell first', (
+      tester,
+    ) async {
+      PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            home: AppKeyboardShortcuts(
+              // The shell's routes live in a navigator under the shortcuts.
+              child: Navigator(
+                onGenerateRoute: (_) => MaterialPageRoute<void>(
+                  builder: (_) => const Scaffold(
+                    body: Consumer(builder: _searchShortcutTestChild),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      final context = tester.element(find.text('Content'));
+      final container = ProviderScope.containerOf(context);
+      container
+          .read(sidebarHeaderSearchExpandedProvider.notifier)
+          .setExpanded(true);
+      await tester.pump();
+      if (kind == 'dialog') {
+        unawaited(
+          showDialog<void>(
+            context: context,
+            useRootNavigator: false,
+            builder: (_) => const AlertDialog(content: Text('Synthetic')),
+          ),
+        );
+      } else {
+        unawaited(
+          showModalBottomSheet<void>(
+            context: context,
+            builder: (_) => const Text('Synthetic'),
+          ),
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.text('Synthetic'), findsNothing);
+      // Search behind it is left as it was.
+      expect(container.read(sidebarHeaderSearchExpandedProvider), isTrue);
+
+      // With nothing in front, Escape is the shell's again.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(container.read(sidebarHeaderSearchExpandedProvider), isFalse);
+    });
+  }
+
+  testWidgets('Escape closes search while message text has focus', (
+    tester,
+  ) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    final reply = FocusNode();
+    addTearDown(reply.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Navigator(
+              onGenerateRoute: (_) => MaterialPageRoute<void>(
+                builder: (_) => Scaffold(
+                  body: Column(
+                    children: [
+                      const Consumer(builder: _searchShortcutTestChild),
+                      // As a settled assistant reply is wrapped: its
+                      // DismissIntent action only passes the key on.
+                      SelectionArea(
+                        focusNode: reply,
+                        child: const Text('Synthetic reply'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.text('Content')),
+    );
+    container
+        .read(sidebarHeaderSearchExpandedProvider.notifier)
+        .setExpanded(true);
+    reply.requestFocus();
+    await tester.pump();
+    expect(reply.hasFocus, isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(container.read(sidebarHeaderSearchExpandedProvider), isFalse);
+
+    // With search closed, the next Escape leaves the text.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(reply.hasFocus, isFalse);
+  });
+
+  testWidgets('Escape hides a selection menu before it closes search', (
+    tester,
+  ) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    final reply = FocusNode();
+    addTearDown(reply.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Navigator(
+              onGenerateRoute: (_) => MaterialPageRoute<void>(
+                builder: (_) => Scaffold(
+                  body: Column(
+                    children: [
+                      const Consumer(builder: _searchShortcutTestChild),
+                      // As a settled reply's selection shows its menu.
+                      SelectionArea(
+                        focusNode: reply,
+                        contextMenuBuilder: (context, region) =>
+                            AdaptiveTextSelectionMenu(
+                              selectionRect: Rect.fromCenter(
+                                center: region.contextMenuAnchors.primaryAnchor,
+                                width: 1,
+                                height: 1,
+                              ),
+                              anchors: region.contextMenuAnchors,
+                              buttonItems: region.contextMenuButtonItems,
+                              onDismiss: () => region.hideToolbar(false),
+                            ),
+                        child: const Text('Synthetic reply'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.text('Content')),
+    );
+    container
+        .read(sidebarHeaderSearchExpandedProvider.notifier)
+        .setExpanded(true);
+    reply.requestFocus();
+    await tester.pump();
+    tester
+        .state<SelectableRegionState>(find.byType(SelectableRegion))
+        .selectAll(SelectionChangedCause.toolbar);
+    await tester.pumpAndSettle();
+    final menu = find.byType(AdaptiveTextSelectionMenu);
+    expect(menu, findsOneWidget);
+    expect(AdaptiveTextSelectionMenu.isShowing, isTrue);
+
+    // The first Escape hides the menu and leaves search open.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(menu, findsNothing);
+    expect(AdaptiveTextSelectionMenu.isShowing, isFalse);
+    expect(container.read(sidebarHeaderSearchExpandedProvider), isTrue);
+
+    // With no menu showing, the next one closes search.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(container.read(sidebarHeaderSearchExpandedProvider), isFalse);
+  });
+
+  testWidgets('Escape closes an open menu before search', (tester) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    final menu = MenuController();
+    final anchor = FocusNode();
+    addTearDown(anchor.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Navigator(
+              onGenerateRoute: (_) => MaterialPageRoute<void>(
+                builder: (_) => Scaffold(
+                  body: Column(
+                    children: [
+                      const Consumer(builder: _searchShortcutTestChild),
+                      MenuAnchor(
+                        controller: menu,
+                        menuChildren: [
+                          MenuItemButton(
+                            onPressed: () {},
+                            child: const Text('Synthetic action'),
+                          ),
+                        ],
+                        child: TextButton(
+                          focusNode: anchor,
+                          onPressed: () {},
+                          child: const Text('More'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.text('Content')),
+    );
+    container
+        .read(sidebarHeaderSearchExpandedProvider.notifier)
+        .setExpanded(true);
+    anchor.requestFocus();
+    menu.open();
+    await tester.pumpAndSettle();
+    expect(find.text('Synthetic action'), findsOneWidget);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(menu.isOpen, isFalse);
+    expect(container.read(sidebarHeaderSearchExpandedProvider), isTrue);
+  });
+
+  testWidgets('a dialog that Escape cannot dismiss keeps the layers behind '
+      'it', (tester) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Navigator(
+              onGenerateRoute: (_) => MaterialPageRoute<void>(
+                builder: (_) => const Scaffold(
+                  body: Consumer(builder: _searchShortcutTestChild),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final context = tester.element(find.text('Content'));
+    final container = ProviderScope.containerOf(context);
+    container
+        .read(sidebarHeaderSearchExpandedProvider.notifier)
+        .setExpanded(true);
+    await tester.pump();
+    unawaited(
+      showDialog<void>(
+        context: context,
+        useRootNavigator: false,
+        barrierDismissible: false,
+        builder: (_) => const AlertDialog(content: Text('Synthetic')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Synthetic'), findsOneWidget);
+    expect(container.read(sidebarHeaderSearchExpandedProvider), isTrue);
+  });
+
+  testWidgets('Android does not install the shortcuts', (tester) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.android;
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(home: AppKeyboardShortcuts(child: Text('Content'))),
       ),
     );
 
     expect(find.byType(CallbackShortcuts), findsNothing);
+  });
+
+  testWidgets('a field keeps its editing keys, and Escape while an input '
+      'method composes', (tester) async {
+    PlatformUiCapabilities.debugPlatformOverride = TargetPlatform.iOS;
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          home: AppKeyboardShortcuts(
+            child: Material(
+              child: TextField(controller: controller, focusNode: focusNode),
+            ),
+          ),
+        ),
+      ),
+    );
+    final bindings = tester
+        .widget<CallbackShortcuts>(find.byType(CallbackShortcuts))
+        .bindings;
+    // Nothing the shell binds is a text editing key: Command with a letter
+    // that edits text (select all, copy, cut, paste, undo), or a key
+    // without Command other than Escape.
+    for (final activator in bindings.keys) {
+      final triggers = activator.triggers ?? const <LogicalKeyboardKey>[];
+      expect(triggers, isNot(contains(LogicalKeyboardKey.keyA)));
+      expect(triggers, isNot(contains(LogicalKeyboardKey.keyC)));
+      expect(triggers, isNot(contains(LogicalKeyboardKey.keyV)));
+      expect(triggers, isNot(contains(LogicalKeyboardKey.keyX)));
+      expect(triggers, isNot(contains(LogicalKeyboardKey.keyZ)));
+      if (activator is SingleActivator) expect(activator.meta, isTrue);
+    }
+
+    await tester.showKeyboard(find.byType(TextField));
+    // Kana still being composed by an input method.
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'かな',
+        selection: TextSelection.collapsed(offset: 2),
+        composing: TextRange(start: 0, end: 2),
+      ),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(focusNode.hasFocus, isTrue);
+
+    // Once the text is committed, Escape leaves the field.
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'かな',
+        selection: TextSelection.collapsed(offset: 2),
+      ),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(focusNode.hasFocus, isFalse);
   });
 }
 

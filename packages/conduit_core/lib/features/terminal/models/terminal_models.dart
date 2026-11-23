@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:conduit_core/features/tether/tether_offers.dart';
 import 'package:conduit_core/utils/utf16_sanitizer.dart';
 
 enum TerminalServerKind { direct, system }
@@ -22,6 +23,8 @@ class TerminalServerInfo {
     this.selectedEnabled = false,
     this.chatContextAvailable = true,
     this.requiresSavedChatContext = false,
+    this.requiresModelContext = false,
+    this.modelId,
   });
 
   final TerminalServerKind kind;
@@ -35,9 +38,44 @@ class TerminalServerInfo {
   final bool chatContextAvailable;
   final bool requiresSavedChatContext;
 
+  /// An Open WebUI 0.13.4 template that makes a machine per model (`scope:
+  /// 'model'`): usable only for a model, which every call to it names.
+  final bool requiresModelContext;
+
+  /// The model a [requiresModelContext] terminal is used for ([forModel]).
+  final String? modelId;
+
   bool get isDirect => kind == TerminalServerKind.direct;
 
   bool get isSystem => kind == TerminalServerKind.system;
+
+  /// One of the user's own devices, which the server reaches through Tether.
+  bool get isTetherDevice => isSystem && isTetherTerminalId(systemServerId);
+
+  /// This terminal used for [model], the chat's model: only one made per
+  /// model keeps it.
+  TerminalServerInfo forModel(String? model) {
+    if (!requiresModelContext) return this;
+    final id = model?.trim();
+    return TerminalServerInfo(
+      kind: kind,
+      selectionId: selectionId,
+      baseUrl: baseUrl,
+      systemServerId: systemServerId,
+      apiKey: apiKey,
+      name: name,
+      raw: raw,
+      selectedEnabled: selectedEnabled,
+      chatContextAvailable: chatContextAvailable,
+      requiresSavedChatContext: requiresSavedChatContext,
+      requiresModelContext: true,
+      modelId: id == null || id.isEmpty ? null : id,
+    );
+  }
+
+  /// A terminal made per model with no model to use: Open WebUI refuses it
+  /// (409 "This terminal requires a model").
+  bool get needsModel => requiresModelContext && modelId == null;
 
   bool isAvailableForChatScope(String sessionScopeId) {
     if (!chatContextAvailable) return false;
@@ -77,13 +115,31 @@ class TerminalServerInfo {
   }
 }
 
+/// What Open WebUI's chat ids start with when no saved chat stands behind
+/// them (`utils/chat_id.py`).
+const _unsavedChatIdPrefixes = ['local:', 'temporary:', 'channel:'];
+
 bool isSavedTerminalChatScopeId(String value) {
   final id = value.trim();
   return id.isNotEmpty &&
       id != 'sidebar-terminal' &&
-      !id.startsWith('local:') &&
-      !id.startsWith('temporary:') &&
-      !id.startsWith('channel:');
+      !_unsavedChatIdPrefixes.any(id.startsWith);
+}
+
+/// [value] as Open WebUI's terminal proxy reads it in `X-Session-Id`.
+///
+/// Open WebUI 0.13.4 takes any id without one of [_unsavedChatIdPrefixes]
+/// for a saved chat, and refuses one it cannot find, as it would the
+/// `sidebar-terminal` scope of a terminal used outside any chat. Such a scope
+/// goes as a `local:` id, which no release reads as a chat.
+String terminalProxySessionId(String value) {
+  final id = value.trim();
+  if (id.isEmpty ||
+      isSavedTerminalChatScopeId(id) ||
+      _unsavedChatIdPrefixes.any(id.startsWith)) {
+    return id;
+  }
+  return 'local:$id';
 }
 
 class TerminalFileEntry {

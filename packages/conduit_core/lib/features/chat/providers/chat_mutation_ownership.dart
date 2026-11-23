@@ -86,6 +86,57 @@ ChatMutationOwnerToken captureChatMutationOwner(
   );
 }
 
+/// The account, its sign-in session and the chat a send was asked for in,
+/// named before the send waits on anything ([chatSendOwnerIsCurrent]): the
+/// Open WebUI session, and the LibreChat account (while LibreChat owns the
+/// Chats tab) and Hermes connection, which change apart from it.
+typedef ChatSendOwner = ({
+  Object? api,
+  Object? authSessionEpoch,
+  String? libreChatAccountId,
+  String? hermesConnectionId,
+  ChatMutationOwnerToken chat,
+});
+
+ChatSendOwner captureChatSendOwner(dynamic ref) => (
+  api: _readApiServiceOrNull(ref),
+  authSessionEpoch: _readOpenWebUiAuthSessionEpoch(ref),
+  libreChatAccountId: _readPrimaryLibreChatAccountId(ref),
+  hermesConnectionId: _readHermesConnectionId(ref),
+  chat: captureChatMutationOwner(
+    ref,
+    ref.read(activeConversationProvider) as Conversation?,
+  ),
+);
+
+/// Whether the account, session and chat [owner] named still hold. Once
+/// another has taken over, the send goes nowhere and takes none of its files.
+bool chatSendOwnerIsCurrent(dynamic ref, ChatSendOwner owner) =>
+    identical(_readApiServiceOrNull(ref), owner.api) &&
+    identical(_readOpenWebUiAuthSessionEpoch(ref), owner.authSessionEpoch) &&
+    _readPrimaryLibreChatAccountId(ref) == owner.libreChatAccountId &&
+    _readHermesConnectionId(ref) == owner.hermesConnectionId &&
+    chatMutationTokenStillActive(ref, owner.chat);
+
+String? _readPrimaryLibreChatAccountId(dynamic ref) {
+  try {
+    if (ref.read(primaryAccountKindProvider) != PrimaryAccountKind.libreChat) {
+      return null;
+    }
+    return (ref.read(activeLibreChatAccountProvider) as LibreChatAccount?)?.id;
+  } catch (_) {
+    return null;
+  }
+}
+
+String? _readHermesConnectionId(dynamic ref) {
+  try {
+    return ref.read(hermesActiveConnectionIdProvider) as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
 void _requireChatMutationOpenWebUiAuthSession(
   dynamic ref,
   ChatMutationOwnerToken token,
@@ -162,6 +213,7 @@ final class OpenWebUiCompletionOwner {
     required this.api,
     required this.contextWasCoherent,
     required this.authSessionEpoch,
+    this.authSnapshot,
   });
 
   String chatId;
@@ -169,6 +221,10 @@ final class OpenWebUiCompletionOwner {
   final Object? api;
   final bool contextWasCoherent;
   final Object? authSessionEpoch;
+
+  /// [api]'s session as the owner was captured: a request sent with it is
+  /// refused once another session has replaced it.
+  final ApiAuthSnapshot? authSnapshot;
 }
 
 OpenWebUiCompletionOwner captureOpenWebUiCompletionOwner(
@@ -185,6 +241,9 @@ OpenWebUiCompletionOwner captureOpenWebUiCompletionOwner(
     database: capturedDatabase,
     api: capturedApi,
     authSessionEpoch: _readOpenWebUiAuthSessionEpoch(ref),
+    authSnapshot: capturedApi is ApiService
+        ? capturedApi.captureAuthSnapshot()
+        : null,
     contextWasCoherent: _openWebUiContextTupleIsCoherent(
       ref,
       database: capturedDatabase,

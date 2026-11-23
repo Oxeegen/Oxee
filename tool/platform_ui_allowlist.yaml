@@ -116,54 +116,6 @@ exceptions:
     owner: authentication
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_task_detail_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_task_detail_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_task_detail_page.dart
-    symbol: "TextButton"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_task_editor_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_task_editor_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_task_format.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_tasks_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/automations/views/scheduled_tasks_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: automations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
   - path: lib/features/calendar/views/calendar_calendars_sheet.dart
     package: "package:cupertino_ui/cupertino_ui.dart"
     count: 1
@@ -652,7 +604,7 @@ exceptions:
     removal: platform-ui-migration
   - path: lib/features/direct_connections/views/direct_connection_editor_page.dart
     symbol: "CupertinoActivityIndicator"
-    count: 2
+    count: 1
     owner: direct-connections
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
@@ -734,12 +686,6 @@ exceptions:
     owner: direct-connections
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
-  - path: lib/features/direct_connections/views/on_device_web_search_section.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: direct-connections
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
   - path: lib/features/direct_connections/widgets/direct_mcp_message_interactions.dart
     package: "package:material_ui/material_ui.dart"
     count: 1
@@ -764,80 +710,8 @@ exceptions:
     owner: hermes
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_jobs_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_jobs_page.dart
-    symbol: "TextButton"
-    count: 2
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "AlertDialog"
-    count: 2
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "AppBar"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "CircularProgressIndicator"
-    count: 4
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "FilledButton"
-    count: 2
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "FloatingActionButton"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "SimpleDialog"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "SimpleDialogOption"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_mcp_page.dart
-    symbol: "TextButton"
-    count: 2
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
   - path: lib/features/hermes/views/hermes_settings_page.dart
     package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/hermes/views/hermes_settings_page.dart
-    symbol: "CupertinoActivityIndicator"
     count: 1
     owner: hermes
     reason: "Existing use awaiting migration to the platform UI seam"
@@ -918,42 +792,6 @@ exceptions:
     package: "package:material_ui/material_ui.dart"
     count: 1
     owner: hermes
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/integrations/views/personal_connection_editor_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: integrations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/integrations/views/personal_connection_editor_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: integrations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/integrations/views/personal_connection_editor_page.dart
-    symbol: "DropdownButtonFormField"
-    count: 1
-    owner: integrations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/integrations/views/personal_connection_editor_page.dart
-    symbol: "DropdownMenuItem"
-    count: 1
-    owner: integrations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/integrations/views/personal_connections_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: integrations
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/integrations/views/personal_connections_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: integrations
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
   - path: lib/features/navigation/controllers/sidebar_tab_behavior.dart
@@ -1196,162 +1034,6 @@ exceptions:
     owner: notes
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
-  - path: lib/features/notifications/views/notification_settings_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: notifications
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/notifications/widgets/notification_target_editor.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: notifications
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/notifications/widgets/notification_target_editor.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: notifications
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/notifications/widgets/notification_targets_section.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: notifications
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/notifications/widgets/notification_targets_section.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: notifications
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/about_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/account_settings_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/account_settings_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/app_customization_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/app_customization_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/app_customization_page.dart
-    symbol: "LinearProgressIndicator"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/audio_settings_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/audio_settings_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/audio_settings_page.dart
-    symbol: "LinearProgressIndicator"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/chat_data_controls_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/chat_data_controls_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/personalization_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/personalization_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/profile_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/views/profile_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/customization_tile.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/customization_tile.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/default_model_sheet.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/default_model_sheet.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/expandable_card.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/expandable_card.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
   - path: lib/features/profile/widgets/profile_text_styles.dart
     package: "package:material_ui/material_ui.dart"
     count: 1
@@ -1359,12 +1041,6 @@ exceptions:
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
   - path: lib/features/profile/widgets/settings_page_scaffold.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: settings
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/profile/widgets/socket_health_card.dart
     package: "package:material_ui/material_ui.dart"
     count: 1
     owner: settings
@@ -1496,150 +1172,6 @@ exceptions:
     owner: terminal
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
-  - path: lib/features/workspace/views/knowledge/workspace_knowledge_editor.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/knowledge/workspace_knowledge_file_browser.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/knowledge/workspace_knowledge_file_browser.dart
-    symbol: "LinearProgressIndicator"
-    count: 2
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_advanced_section.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_avatar.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_basics_section.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_editor.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_editor_body.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_editor_field.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_export.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_prompt_section.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_relationship_sheet.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_relationship_sheet.dart
-    symbol: "CheckboxListTile"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/models/workspace_model_relationships_section.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/prompts/workspace_prompt_editor.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/prompts/workspace_prompt_editor_sections.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/prompts/workspace_prompt_history.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/skills/workspace_skill_editor.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/tools/workspace_tool_editor.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/tools/workspace_tool_editor_sections.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/workspace_collection_views.dart
-    symbol: "LinearProgressIndicator"
-    count: 2
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/workspace_page.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/workspace_page.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/views/workspace_page.dart
-    symbol: "AppBar"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
   - path: lib/features/workspace/widgets/resource_sharing_sheet.dart
     package: "package:flutter/material.dart"
     count: 1
@@ -1676,49 +1208,7 @@ exceptions:
     owner: workspace
     reason: "Existing use awaiting migration to the platform UI seam"
     removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_editor_mutation_coordinator.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_editor_scaffold.dart
-    package: "package:cupertino_ui/cupertino_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_editor_scaffold.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
   - path: lib/features/workspace/widgets/workspace_import_sheet.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_read_only_badge.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_resource_editor_host.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_resource_presentation.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_status_pill.dart
     package: "package:material_ui/material_ui.dart"
     count: 1
     owner: workspace
@@ -1738,18 +1228,6 @@ exceptions:
     removal: platform-ui-migration
   - path: lib/features/workspace/widgets/workspace_tiles.dart
     symbol: "CupertinoButton"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_tool_url_import_sheet.dart
-    package: "package:material_ui/material_ui.dart"
-    count: 1
-    owner: workspace
-    reason: "Existing use awaiting migration to the platform UI seam"
-    removal: platform-ui-migration
-  - path: lib/features/workspace/widgets/workspace_tool_valves_sheet.dart
-    package: "package:material_ui/material_ui.dart"
     count: 1
     owner: workspace
     reason: "Existing use awaiting migration to the platform UI seam"

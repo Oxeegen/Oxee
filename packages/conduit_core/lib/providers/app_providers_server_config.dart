@@ -120,6 +120,20 @@ final openWebUiAccountsProvider = FutureProvider<List<OpenWebUiAccountEntry>>((
   ];
 });
 
+/// The browser sign-in settings of the server [config]'s account is on, or
+/// joins when saved (see [OptimizedStorageService.browserSignInConfigFor]).
+/// Re-read with [serverConfigsProvider]: invalidate that after
+/// [OptimizedStorageService.setServerBrowserSignIn].
+final browserSignInConfigProvider =
+    FutureProvider.family<BrowserSignInConfig?, ServerConfig>((
+      ref,
+      config,
+    ) async {
+      await ref.watch(serverConfigsProvider.future);
+      final storage = ref.watch(optimizedStorageServiceProvider);
+      return storage.browserSignInConfigFor(config);
+    });
+
 final serverConnectionStateProvider = Provider<bool>((ref) {
   final activeServer = ref.watch(activeServerProvider);
   return activeServer.maybeWhen(
@@ -297,7 +311,23 @@ class BackendConfigNotifier extends _$BackendConfigNotifier {
     ref.watch(apiServiceProvider);
     final cached = await _storage.getLocalBackendConfig();
     if (ref.mounted) {
-      unawaited(_refreshBackendConfig());
+      // The cached config answers now; the refresh behind it may fail (a
+      // server switch whose stored configs cannot be read, a storage write)
+      // with nobody waiting on it, so it is logged rather than left to
+      // escape. `refresh()` callers still get their error.
+      unawaited(
+        _refreshBackendConfig().catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          DebugLogger.error(
+            'refresh-failed',
+            scope: 'settings/backend-config',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }),
+      );
     }
     return cached;
   }
@@ -383,12 +413,22 @@ Future<_OwnedBackendConfig?> _loadBackendConfig(Ref ref) async {
       if (forcedMode != null) {
         final settings = ref.read(appSettingsProvider);
         if (settings.socketTransportMode != forcedMode) {
-          Future.microtask(() {
-            if (!openWebUiCacheOwnershipIsCurrent(ref, ownership)) return;
-            ref
-                .read(appSettingsProvider.notifier)
-                .setSocketTransportMode(forcedMode);
-          });
+          unawaited(
+            Future<void>.microtask(() async {
+              if (!openWebUiCacheOwnershipIsCurrent(ref, ownership)) return;
+              await ref
+                  .read(appSettingsProvider.notifier)
+                  .setSocketTransportMode(forcedMode);
+            }).catchError((Object error, StackTrace stackTrace) {
+              // A preferences write refused while signing out, say.
+              DebugLogger.error(
+                'transport-mode-save-failed',
+                scope: 'settings/backend-config',
+                error: error,
+                stackTrace: stackTrace,
+              );
+            }),
+          );
         }
       }
     }

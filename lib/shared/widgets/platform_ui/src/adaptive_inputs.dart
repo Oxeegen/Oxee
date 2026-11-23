@@ -25,6 +25,9 @@ class AdaptiveTextField extends StatelessWidget {
     this.obscureText = false,
     this.autocorrect = true,
     this.enableSuggestions = true,
+    this.smartDashesType,
+    this.smartQuotesType,
+    this.autofillHints = const <String>[],
     this.autofocus = false,
     this.enabled = true,
     this.readOnly = false,
@@ -55,6 +58,16 @@ class AdaptiveTextField extends StatelessWidget {
   final bool obscureText;
   final bool autocorrect;
   final bool enableSuggestions;
+
+  /// Whether dashes and quotes typed are made typographic; the platform's
+  /// default when null. Code turns both off.
+  final SmartDashesType? smartDashesType;
+  final SmartQuotesType? smartQuotesType;
+
+  /// What AutoFill may fill or offer to save in the field. Empty (the
+  /// default) lets the platform judge from the field; null keeps it out of
+  /// AutoFill altogether.
+  final Iterable<String>? autofillHints;
   final bool autofocus;
   final bool enabled;
   final bool readOnly;
@@ -98,6 +111,9 @@ class AdaptiveTextField extends StatelessWidget {
         obscureText: obscureText,
         autocorrect: autocorrect,
         enableSuggestions: enableSuggestions,
+        smartDashesType: smartDashesType,
+        smartQuotesType: smartQuotesType,
+        autofillHints: autofillHints,
         autofocus: autofocus,
         enabled: enabled,
         readOnly: readOnly,
@@ -126,6 +142,9 @@ class AdaptiveTextField extends StatelessWidget {
       obscureText: obscureText,
       autocorrect: autocorrect,
       enableSuggestions: enableSuggestions,
+      smartDashesType: smartDashesType,
+      smartQuotesType: smartQuotesType,
+      autofillHints: autofillHints,
       autofocus: autofocus,
       enabled: enabled,
       readOnly: readOnly,

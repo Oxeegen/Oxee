@@ -5,6 +5,8 @@
 // Platform UI seam (tool/platform_ui_lint.dart): no material_ui or
 // cupertino_ui imports here; widgets come from flutter/widgets.dart.
 
+import 'package:conduit_core/features/push/services/push_relay_client.dart'
+    show kConduitPushRelayUrl;
 import 'package:conduit_core/features/librechat/providers/librechat_providers.dart'
     show libreChatBackendEnabledProvider;
 import 'package:conduit_core/providers/app_providers.dart';
@@ -31,11 +33,24 @@ import '../shared/widgets/themed_dialogs.dart';
 // ignore: prefer_const_declarations
 final bool oxeeOffersOtherBackends = false;
 
+/// Whether Settings is Oxee's: the Region row, and no donations, release
+/// notes, Direct card or push without a relay (the `oxeeNative*` and
+/// [oxeePushSections] adjustments below). Off by default, so upstream's tests
+/// of the same pages see upstream's rows; the app turns it on through
+/// [oxeeProviderOverrides].
+final oxeeSettingsProvider = Provider<bool>((ref) => false);
+
+/// Reads a provider: `ref.read` or `ref.watch` of a widget, a provider's
+/// `ref.read`, or a container's `read`.
+typedef OxeeReader = T Function<T>(ProviderListenable<T> provider);
+
 /// Values Oxee sets for the whole app (main.dart's provider container).
 /// LibreChat is off: upstream then neither offers it (account sheet,
 /// backend chooser) nor shows its cards (Accounts, native Accounts page).
+/// Settings is Oxee's ([oxeeSettingsProvider]).
 final List<Override> oxeeProviderOverrides = [
   libreChatBackendEnabledProvider.overrideWithValue(false),
+  oxeeSettingsProvider.overrideWithValue(true),
 ];
 
 /// An Oxeegen Intelligence deployment. Keep in step with brand/brand.json;
@@ -269,8 +284,9 @@ NativeSheetItemConfig buildOxeeRegionNativeSheetItem(
 }
 
 // ---------------------------------------------------------------------------
-// iOS native Settings: upstream builds the sections, Oxee adjusts the result,
-// so upstream's builders stay unedited.
+// Settings (the iOS native sheet, and since upstream 4.3.2 the Flutter pages
+// drawn from the same definitions): upstream builds the sections, Oxee
+// adjusts the result, so upstream's builders stay unedited.
 // ---------------------------------------------------------------------------
 
 bool _isDonationItem(NativeSheetItemConfig item) =>
@@ -294,11 +310,13 @@ NativeSheetSectionConfig? _withoutDonations(NativeSheetSectionConfig section) {
 
 /// The Settings root: no donation rows (since upstream 4.3.1 they share
 /// About's group, whose support footer goes with them), and the Region row
-/// under the account card.
+/// under the account card. [region] builds that row, only when it is shown.
 List<NativeSheetSectionConfig> oxeeNativeRootSections(
+  OxeeReader read,
   List<NativeSheetSectionConfig> sections, {
-  required NativeSheetItemConfig region,
+  required NativeSheetItemConfig Function() region,
 }) {
+  if (!read(oxeeSettingsProvider)) return sections;
   final kept = [
     for (final section in sections)
       if (_withoutDonations(section) case final trimmed?) trimmed,
@@ -310,7 +328,7 @@ List<NativeSheetSectionConfig> oxeeNativeRootSections(
       title: card.title,
       footer: card.footer,
       reorderActionId: card.reorderActionId,
-      items: [...card.items.take(1), region, ...card.items.skip(1)],
+      items: [...card.items.take(1), region(), ...card.items.skip(1)],
     ),
     ...kept.skip(1),
   ];
@@ -319,11 +337,26 @@ List<NativeSheetSectionConfig> oxeeNativeRootSections(
 /// The About page: no release-notes row (the bundled notes describe
 /// upstream's releases, not Oxee's).
 List<NativeSheetItemConfig> oxeeNativeAboutItems(
+  OxeeReader read,
   List<NativeSheetItemConfig> items,
-) => [
-  for (final item in items)
-    if (item.id != NativeSheetRoutes.releaseNotesManual) item,
-];
+) => !read(oxeeSettingsProvider)
+    ? items
+    : [
+        for (final item in items)
+          if (item.id != NativeSheetRoutes.releaseNotesManual) item,
+      ];
+
+/// Push notifications reach a phone through a relay to Apple and Google,
+/// whose address a build is given (`CONDUIT_PUSH_RELAY_URL`). Oxeegen runs
+/// none yet, so Settings leaves push out rather than show it as "Not
+/// available in this build"; a build given a relay shows it again. (The iOS
+/// app does not claim push either: see `IDENTITY` in brand/tools/rebrand.py.)
+List<NativeSheetSectionConfig> oxeePushSections(
+  OxeeReader read,
+  List<NativeSheetSectionConfig> sections,
+) => read(oxeeSettingsProvider) && kConduitPushRelayUrl.isEmpty
+    ? const []
+    : sections;
 
 bool _isOtherBackendSection(NativeSheetSectionConfig section) => section.items
     .any((item) => item.id == NativeSheetRoutes.directConnections);
@@ -331,8 +364,12 @@ bool _isOtherBackendSection(NativeSheetSectionConfig section) => section.items
 /// The Accounts page: Oxeegen accounts and Oxee Hermes; no Direct card.
 /// (Upstream leaves LibreChat's card out itself while LibreChat is off and
 /// has no saved account, as [oxeeProviderOverrides] makes it.)
-NativeSheetDetailConfig oxeeNativeAccountsDetail(NativeSheetDetailConfig d) =>
-    NativeSheetDetailConfig(
+NativeSheetDetailConfig oxeeNativeAccountsDetail(
+  OxeeReader read,
+  NativeSheetDetailConfig d,
+) => !read(oxeeSettingsProvider)
+    ? d
+    : NativeSheetDetailConfig(
       id: d.id,
       title: d.title,
       subtitle: d.subtitle,
@@ -346,4 +383,11 @@ NativeSheetDetailConfig oxeeNativeAccountsDetail(NativeSheetDetailConfig d) =>
       maxHeightFraction: d.maxHeightFraction,
       trailingActionId: d.trailingActionId,
       trailingActionSfSymbol: d.trailingActionSfSymbol,
+      trailingActionDetailId: d.trailingActionDetailId,
+      discardPrompt: d.discardPrompt,
+      busy: d.busy,
+      announcement: d.announcement,
+      edited: d.edited,
+      search: d.search,
+      calendar: d.calendar,
     );

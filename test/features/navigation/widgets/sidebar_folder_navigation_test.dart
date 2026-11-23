@@ -122,6 +122,50 @@ void main() {
     );
   });
 
+  testWidgets('a folder icon chosen on the web shows its emoji', (
+    tester,
+  ) async {
+    final controllers = SidebarTestSidebarHarnessControllers();
+    await tester.pumpWidget(
+      sidebarTestBuildHarness(
+        controllers: controllers,
+        folders: [
+          // Open WebUI saves any emoji as its shortcode; `fire` is not one
+          // of the app's own choices.
+          const Folder(
+            id: 'web-icon',
+            name: 'Campfire stories',
+            meta: {'icon': 'fire'},
+          ),
+          const Folder(
+            id: 'unknown-icon',
+            name: 'Unknown icon',
+            meta: {'icon': 'not_an_emoji'},
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final webIcon = find.byKey(const ValueKey<String>('folder-icon-web-icon'));
+    expect(
+      find.descendant(of: webIcon, matching: find.text('\u{1F525}\u{FE0F}')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: webIcon, matching: find.byType(Icon)),
+      findsNothing,
+    );
+    // A name Open WebUI does not know keeps the folder symbol.
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('folder-icon-unknown-icon')),
+        matching: find.byType(Icon),
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('folder rows no longer show inline new chat buttons', (
     tester,
   ) async {
@@ -396,6 +440,29 @@ void main() {
     expect(
       sectionTitleLeft,
       kSidebarSectionHeaderInset + IconSize.listItem + Spacing.xxs,
+    );
+    // New Folder's symbol stands over the folders' own disclosure buttons,
+    // on the section title's line.
+    final newFolderSymbol = tester.getCenter(
+      find.descendant(
+        of: find.byTooltip(AppLocalizationsEn().newFolder),
+        matching: find.byType(Icon),
+      ),
+    );
+    expect(
+      newFolderSymbol.dx,
+      tester
+          .getCenter(
+            find.byKey(const ValueKey<String>('folder-expand-parent-folder')),
+          )
+          .dx,
+    );
+    expect(
+      newFolderSymbol.dy,
+      moreOrLessEquals(
+        tester.getCenter(find.text(AppLocalizationsEn().folders)).dy,
+        epsilon: 0.5,
+      ),
     );
 
     NavigationService.router.go('/folder/parent-folder');

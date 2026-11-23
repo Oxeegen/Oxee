@@ -729,8 +729,13 @@ void main() {
         publish: any(named: 'publish'),
         canCommit: any(named: 'canCommit'),
         onRollbackUncertain: any(named: 'onRollbackUncertain'),
+        joins: any(named: 'joins'),
+        onWriting: any(named: 'onWriting'),
       ),
     ).thenAnswer((invocation) async {
+      // Written, then published, then put back: storage says so as its first
+      // write begins.
+      (invocation.namedArguments[#onWriting] as void Function()?)?.call();
       final publish =
           invocation.namedArguments[#publish] as FutureOr<void> Function();
       await publish();
@@ -1038,6 +1043,7 @@ void main() {
       () async {
     final storage = _Storage();
     final isolation = _RecordingIsolation();
+    final signedOut = <String?>[];
     when(() => storage.getAuthTokenStrict()).thenAnswer((_) async => _tokenA);
     when(() => storage.getLocalUserWithAvatar())
         .thenAnswer((_) async => _userA);
@@ -1073,6 +1079,7 @@ void main() {
           ),
         ),
         openWebUiAccountStorageIsolationProvider.overrideWith(() => isolation),
+        hostSignedOutProvider.overrideWithValue(signedOut.add),
       ],
     );
     addTearDown(container.dispose);
@@ -1085,6 +1092,8 @@ void main() {
     check(isolation.purgedKeepingRecord).deepEquals(['account-a']);
     check(isolation.purged).isEmpty();
     verifyNever(() => storage.removeAccount(any()));
+    // Its posted notifications go too, as with any sign-out.
+    check(signedOut).deepEquals(['account-a']);
   });
 
   test('the plain logout deletes the chats of the account stored as active '
@@ -1353,14 +1362,26 @@ void main() {
 /// The auth state once its first restore has finished. The provider's
 /// future resolves on the first published value, which is the restore's own
 /// loading state.
+/// The auth state once it is no longer loading: awaited as it is
+/// published, never polled.
 Future<AuthState> _settledAuth(ProviderContainer container) async {
   await container.read(authStateManagerProvider.future);
-  for (var i = 0; i < 100; i++) {
-    final auth = container.read(authStateManagerProvider).requireValue;
-    if (!auth.isLoading) return auth;
-    await Future<void>.delayed(const Duration(milliseconds: 5));
+  final settled = Completer<AuthState>();
+  final subscription = container.listen<AsyncValue<AuthState>>(
+    authStateManagerProvider,
+    (_, next) {
+      final auth = next.value;
+      if (auth != null && !auth.isLoading && !settled.isCompleted) {
+        settled.complete(auth);
+      }
+    },
+    fireImmediately: true,
+  );
+  try {
+    return await settled.future;
+  } finally {
+    subscription.close();
   }
-  return container.read(authStateManagerProvider).requireValue;
 }
 
 final class _Storage extends Mock implements OptimizedStorageService {}

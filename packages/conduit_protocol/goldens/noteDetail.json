@@ -1,0 +1,35 @@
+{
+  "summary": {
+    "id": "n1",
+    "title": "Groceries",
+    "updatedAtMs": 1,
+    "pinned": false,
+    "preview": "",
+    "conflictCopy": false,
+    "section": "older",
+    "canEdit": true,
+    "accessUnverified": false,
+    "canShare": false
+  },
+  "ops": [
+    {
+      "insert": "milk "
+    },
+    {
+      "insert": "and eggs",
+      "attributes": {
+        "bold": true
+      }
+    }
+  ],
+  "files": [
+    {
+      "id": "f1",
+      "name": "list.pdf",
+      "contentType": "application/pdf"
+    }
+  ],
+  "pages": [],
+  "pageId": "main",
+  "markdown": ""
+}

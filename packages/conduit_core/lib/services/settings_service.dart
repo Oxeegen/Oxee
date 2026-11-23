@@ -99,6 +99,12 @@ class SettingsService {
       PreferenceKeys.notificationChatEnabled;
   static const String _notificationChannelEnabledKey =
       PreferenceKeys.notificationChannelEnabled;
+  static const String _notificationScheduledEnabledKey =
+      PreferenceKeys.notificationScheduledEnabled;
+  static const String _notificationChannelMentionsOnlyKey =
+      PreferenceKeys.notificationChannelMentionsOnly;
+  static const String _notificationCalendarEnabledKey =
+      PreferenceKeys.notificationCalendarEnabled;
 
   // Settings that name a server's data are stored per Open WebUI account;
   // see account_scoped_preferences.dart. Every read and write below resolves
@@ -159,8 +165,20 @@ class SettingsService {
     );
   }
 
-  static Future<void> setNotificationsEnabled(bool value) {
-    return _putPreference(_notificationsEnabledKey, value);
+  /// Sets the active Open WebUI account's notifications switch, or the
+  /// device-level one without an account. With an account, the device-level
+  /// switch, which Hermes and Direct notifications follow, is set as well, so
+  /// it is always the value the user chose last; the server's copy of an
+  /// account's switch, mirrored in by itself, leaves it alone.
+  static Future<void> setNotificationsEnabled(bool value) async {
+    // Both started at once: each lands in the preference cache before
+    // anything awaited here yields, so a reader woken by the change sees
+    // both.
+    await Future.wait([
+      _putPreference(_notificationsEnabledKey, value),
+      if (currentPreferenceAccountId() != null)
+        PreferencesStore.put(_notificationsEnabledKey, value),
+    ]);
   }
 
   static Future<bool> getNotificationSound() {
@@ -217,6 +235,32 @@ class SettingsService {
 
   static Future<void> setNotificationChannelEnabled(bool value) {
     return _putPreference(_notificationChannelEnabledKey, value);
+  }
+
+  /// Whether Hermes scheduled-task results notify. Device-wide.
+  static Future<bool> getNotificationScheduledEnabled() {
+    return Future.value(
+      _getPreference<bool>(_notificationScheduledEnabledKey) ?? true,
+    );
+  }
+
+  static Future<void> setNotificationScheduledEnabled(bool value) {
+    return _putPreference(_notificationScheduledEnabledKey, value);
+  }
+
+  static Future<void> setNotificationChannelMentionsOnly(bool value) {
+    return _putPreference(_notificationChannelMentionsOnlyKey, value);
+  }
+
+  /// Whether calendar events are reminded of. Device-wide.
+  static Future<bool> getNotificationCalendarEnabled() {
+    return Future.value(
+      _getPreference<bool>(_notificationCalendarEnabledKey) ?? true,
+    );
+  }
+
+  static Future<void> setNotificationCalendarEnabled(bool value) {
+    return _putPreference(_notificationCalendarEnabledKey, value);
   }
 
   /// Get high contrast preference
@@ -307,7 +351,9 @@ class SettingsService {
       PreferenceKeys.voiceCallMode: settings.voiceCallMode.name,
       _socketTransportModeKey: settings.socketTransportMode,
       _quickPillsKey: settings.quickPills.toList(),
-      _sendOnEnterKey: settings.sendOnEnter,
+      // Send with Enter has its own setter: left unset, it follows the
+      // host's default, so a bulk save never stores one the user did not
+      // choose.
       PreferenceKeys.ttsSpeed: settings.ttsSpeed,
       PreferenceKeys.ttsPitch: settings.ttsPitch,
       PreferenceKeys.ttsVolume: settings.ttsVolume,
@@ -321,13 +367,18 @@ class SettingsService {
       PreferenceKeys.temporaryChatByDefault: settings.temporaryChatByDefault,
       PreferenceKeys.advancedFeaturesEnabled: settings.advancedFeaturesEnabled,
       _pinnedModelsKey: settings.pinnedModels.toList(),
-      _notificationsEnabledKey: settings.notificationsEnabled,
+      // The master notification switch has its own setter: left unset, it
+      // follows the host's default, as Send with Enter does.
       _notificationSoundKey: settings.notificationSound,
       _notificationSoundAlwaysKey: settings.notificationSoundAlways,
       _notificationInAppBannerKey: settings.notificationInAppBanner,
       _notificationSystemKey: settings.notificationSystem,
       _notificationChatEnabledKey: settings.notificationChatEnabled,
       _notificationChannelEnabledKey: settings.notificationChannelEnabled,
+      _notificationScheduledEnabledKey: settings.notificationScheduledEnabled,
+      _notificationCalendarEnabledKey: settings.notificationCalendarEnabled,
+      // Mentions only has its own setter, so a stale bulk snapshot (another
+      // setting's save waiting its turn) cannot undo it.
     };
 
     // Resolve every account-scoped key now, before the first write yields: a
@@ -732,7 +783,9 @@ class SettingsService {
     await _putPreference(_androidAssistantTriggerKey, trigger.storageValue);
   }
 
-  static AppSettings _loadSettingsSync() {
+  static AppSettings _loadSettingsSync([
+    AppSettingsHostDefaults hostDefaults = const AppSettingsHostDefaults(),
+  ]) {
     T? get<T>(String key) =>
         PreferencesStore.get<T>(scopedPreferenceReadKey(key));
     List<String>? getStringList(String key) =>
@@ -751,6 +804,10 @@ class SettingsService {
       computerEnabled: get<bool>(PreferenceKeys.computerEnabled) ?? true,
       showComposerNotesButton:
           get<bool>(PreferenceKeys.showComposerNotesButton) ?? true,
+      showModelNameInComposer:
+          get<bool>(PreferenceKeys.showModelNameInComposer) ?? false,
+      hermesShowScheduledSessions:
+          get<bool>(PreferenceKeys.hermesShowScheduledSessions) ?? true,
       darkMode: get<bool>(_darkModeKey) ?? true,
       slidingSidebarEnabled:
           get<bool>(PreferenceKeys.slidingSidebarEnabled) ?? false,
@@ -783,7 +840,7 @@ class SettingsService {
       inlineMessageActions: getStringList(PreferenceKeys.inlineMessageActions)
           ?.toSet()
           .toList(),
-      sendOnEnter: get<bool>(_sendOnEnterKey) ?? false,
+      sendOnEnter: get<bool>(_sendOnEnterKey) ?? hostDefaults.sendOnEnter,
       ttsVoice: get<String>(PreferenceKeys.ttsVoice),
       ttsVoiceName: get<String>(PreferenceKeys.ttsVoiceName),
       ttsSpeed:
@@ -828,7 +885,8 @@ class SettingsService {
         getStringList(_pinnedModelsKey) ?? const <String>[],
       ),
       notificationsEnabled:
-          get<bool>(_notificationsEnabledKey) ?? false,
+          get<bool>(_notificationsEnabledKey) ??
+          hostDefaults.notificationsEnabled,
       notificationSound:
           get<bool>(_notificationSoundKey) ?? true,
       notificationSoundAlways:
@@ -841,6 +899,12 @@ class SettingsService {
           get<bool>(_notificationChatEnabledKey) ?? true,
       notificationChannelEnabled:
           get<bool>(_notificationChannelEnabledKey) ?? true,
+      notificationScheduledEnabled:
+          get<bool>(_notificationScheduledEnabledKey) ?? true,
+      notificationChannelMentionsOnly:
+          get<bool>(_notificationChannelMentionsOnlyKey) ?? false,
+      notificationCalendarEnabled:
+          get<bool>(_notificationCalendarEnabledKey) ?? true,
       webSearchEngine: WebSearchEngineChoice.parse(
         get<String>(PreferenceKeys.webSearchEngine),
       ),
@@ -871,16 +935,39 @@ class _DefaultValue {
   const _DefaultValue();
 }
 
+/// Every message action a response can offer, by its stable id, in the order
+/// Settings › Chats › Message Actions lists them.
+const messageActionIds = <String>[
+  'copy',
+  'tts',
+  'regenerate',
+  'retry-without-effort',
+  'merge',
+  'usage',
+  'fork',
+  'share',
+  'delete',
+];
+
 /// Actions shown before customization; null settings retain the adaptive layout.
 const defaultInlineMessageActions = ['copy', 'tts', 'regenerate'];
 
 /// Data class for app settings
 /// The speech speeds offered, as multiples of the voice's own pace.
-const List<double> ttsSpeedPresets = [0.75, 1.0, 1.25, 1.5, 2.0];
+const List<double> ttsSpeedPresets = [
+  0.25,
+  0.5,
+  0.75,
+  1.0,
+  1.25,
+  1.5,
+  1.75,
+  2.0,
+];
 
-/// The offered speed nearest [speed].
+/// The offered speed nearest [speed], the faster one when two are as near.
 double nearestTtsSpeed(double speed) => ttsSpeedPresets.reduce(
-  (best, next) => (next - speed).abs() < (best - speed).abs() ? next : best,
+  (best, next) => (next - speed).abs() <= (best - speed).abs() ? next : best,
 );
 
 /// The speed for the device engine [rate] an older install saved, where 0.5
@@ -898,6 +985,14 @@ class AppSettings {
   final bool highContrast;
   final bool computerEnabled;
   final bool showComposerNotesButton;
+
+  /// Whether an empty message box names the selected model ("Ask" and its
+  /// name) rather than saying "Ask Conduit". Off by default.
+  final bool showModelNameInComposer;
+
+  /// Whether the Hermes chat list shows the sessions scheduled jobs (cron)
+  /// start, one per run. On by default.
+  final bool hermesShowScheduledSessions;
   final bool darkMode;
   final bool slidingSidebarEnabled;
   final String? defaultModel;
@@ -940,6 +1035,12 @@ class AppSettings {
   final bool notificationSystem;
   final bool notificationChatEnabled;
   final bool notificationChannelEnabled;
+  final bool notificationScheduledEnabled;
+
+  /// With [notificationChannelEnabled], only messages that mention the user
+  /// or arrive in a direct message alert.
+  final bool notificationChannelMentionsOnly;
+  final bool notificationCalendarEnabled;
   // On-device web search (Direct models without provider-hosted search).
   final WebSearchEngineChoice webSearchEngine;
   final SafeSearch webSearchSafeSearch;
@@ -959,6 +1060,8 @@ class AppSettings {
     this.highContrast = false,
     this.computerEnabled = true,
     this.showComposerNotesButton = true,
+    this.showModelNameInComposer = false,
+    this.hermesShowScheduledSessions = true,
     this.darkMode = true,
     this.slidingSidebarEnabled = false,
     this.defaultModel,
@@ -996,6 +1099,9 @@ class AppSettings {
     this.notificationSystem = true,
     this.notificationChatEnabled = true,
     this.notificationChannelEnabled = true,
+    this.notificationScheduledEnabled = true,
+    this.notificationChannelMentionsOnly = false,
+    this.notificationCalendarEnabled = true,
     this.webSearchEngine = WebSearchEngineChoice.auto,
     this.webSearchSafeSearch = SafeSearch.moderate,
     this.webSearchRegion,
@@ -1011,6 +1117,8 @@ class AppSettings {
     bool? highContrast,
     bool? computerEnabled,
     bool? showComposerNotesButton,
+    bool? showModelNameInComposer,
+    bool? hermesShowScheduledSessions,
     bool? darkMode,
     bool? slidingSidebarEnabled,
     Object? defaultModel = const _DefaultValue(),
@@ -1048,6 +1156,9 @@ class AppSettings {
     bool? notificationSystem,
     bool? notificationChatEnabled,
     bool? notificationChannelEnabled,
+    bool? notificationScheduledEnabled,
+    bool? notificationChannelMentionsOnly,
+    bool? notificationCalendarEnabled,
     WebSearchEngineChoice? webSearchEngine,
     SafeSearch? webSearchSafeSearch,
     Object? webSearchRegion = const _DefaultValue(),
@@ -1064,6 +1175,10 @@ class AppSettings {
       computerEnabled: computerEnabled ?? this.computerEnabled,
       showComposerNotesButton:
           showComposerNotesButton ?? this.showComposerNotesButton,
+      showModelNameInComposer:
+          showModelNameInComposer ?? this.showModelNameInComposer,
+      hermesShowScheduledSessions:
+          hermesShowScheduledSessions ?? this.hermesShowScheduledSessions,
       darkMode: darkMode ?? this.darkMode,
       slidingSidebarEnabled:
           slidingSidebarEnabled ?? this.slidingSidebarEnabled,
@@ -1127,6 +1242,13 @@ class AppSettings {
           notificationChatEnabled ?? this.notificationChatEnabled,
       notificationChannelEnabled:
           notificationChannelEnabled ?? this.notificationChannelEnabled,
+      notificationScheduledEnabled:
+          notificationScheduledEnabled ?? this.notificationScheduledEnabled,
+      notificationChannelMentionsOnly:
+          notificationChannelMentionsOnly ??
+          this.notificationChannelMentionsOnly,
+      notificationCalendarEnabled:
+          notificationCalendarEnabled ?? this.notificationCalendarEnabled,
       webSearchEngine: webSearchEngine ?? this.webSearchEngine,
       webSearchSafeSearch: webSearchSafeSearch ?? this.webSearchSafeSearch,
       webSearchRegion: webSearchRegion is _DefaultValue
@@ -1150,6 +1272,8 @@ class AppSettings {
         other.highContrast == highContrast &&
         other.computerEnabled == computerEnabled &&
         other.showComposerNotesButton == showComposerNotesButton &&
+        other.showModelNameInComposer == showModelNameInComposer &&
+        other.hermesShowScheduledSessions == hermesShowScheduledSessions &&
         other.darkMode == darkMode &&
         other.slidingSidebarEnabled == slidingSidebarEnabled &&
         other.defaultModel == defaultModel &&
@@ -1185,6 +1309,10 @@ class AppSettings {
         other.notificationSystem == notificationSystem &&
         other.notificationChatEnabled == notificationChatEnabled &&
         other.notificationChannelEnabled == notificationChannelEnabled &&
+        other.notificationScheduledEnabled == notificationScheduledEnabled &&
+        other.notificationChannelMentionsOnly ==
+            notificationChannelMentionsOnly &&
+        other.notificationCalendarEnabled == notificationCalendarEnabled &&
         other.webSearchEngine == webSearchEngine &&
         other.webSearchSafeSearch == webSearchSafeSearch &&
         other.webSearchRegion == webSearchRegion &&
@@ -1205,6 +1333,8 @@ class AppSettings {
       highContrast,
       computerEnabled,
       showComposerNotesButton,
+      showModelNameInComposer,
+      hermesShowScheduledSessions,
       darkMode,
       slidingSidebarEnabled,
       defaultModel,
@@ -1238,6 +1368,9 @@ class AppSettings {
       notificationSystem,
       notificationChatEnabled,
       notificationChannelEnabled,
+      notificationScheduledEnabled,
+      notificationChannelMentionsOnly,
+      notificationCalendarEnabled,
       webSearchEngine,
       webSearchSafeSearch,
       webSearchRegion,
@@ -1263,6 +1396,42 @@ bool _listEquals(List<String> a, List<String> b) {
   return true;
 }
 
+/// What a host uses for a setting the user has never set, in place of
+/// [AppSettings]' own default. A stored value always wins, so turning a
+/// setting off on a host whose default is on sticks.
+///
+/// Mobile keeps every default as it is. The desktop daemon overrides
+/// [appSettingsHostDefaultsProvider]: a Mac always has a hardware keyboard,
+/// so Enter sends there unless the user turns it off, and a Mac app asks for
+/// notification permission the first time one would show, so notifications
+/// start on there.
+final class AppSettingsHostDefaults {
+  const AppSettingsHostDefaults({
+    this.sendOnEnter = false,
+    this.notificationsEnabled = false,
+  });
+
+  /// `sendOnEnter` while the user has never set it.
+  final bool sendOnEnter;
+
+  /// `notificationsEnabled` while neither the user nor the server has set it.
+  final bool notificationsEnabled;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AppSettingsHostDefaults &&
+      other.sendOnEnter == sendOnEnter &&
+      other.notificationsEnabled == notificationsEnabled;
+
+  @override
+  int get hashCode => Object.hash(sendOnEnter, notificationsEnabled);
+}
+
+/// The host's [AppSettingsHostDefaults]: none unless the host overrides it.
+final appSettingsHostDefaultsProvider = Provider<AppSettingsHostDefaults>(
+  (ref) => const AppSettingsHostDefaults(),
+);
+
 /// Provider for app settings
 @Riverpod(keepAlive: true)
 class AppSettingsNotifier extends _$AppSettingsNotifier {
@@ -1273,19 +1442,23 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     // Model and chat defaults belong to the active Open WebUI account, so a
     // settled switch reloads them. Device-wide settings read the same values.
     ref.watch(settledActiveAccountIdProvider);
+    final hostDefaults = ref.watch(appSettingsHostDefaultsProvider);
     if (PreferencesStore.isReady) {
-      return SettingsService._loadSettingsSync();
+      return SettingsService._loadSettingsSync(hostDefaults);
     }
 
-    _pendingLoad ??= _hydrateFromPrefs();
-    return const AppSettings();
+    _pendingLoad ??= _hydrateFromPrefs(hostDefaults);
+    return AppSettings(
+      sendOnEnter: hostDefaults.sendOnEnter,
+      notificationsEnabled: hostDefaults.notificationsEnabled,
+    );
   }
 
-  Future<void> _hydrateFromPrefs() async {
+  Future<void> _hydrateFromPrefs(AppSettingsHostDefaults hostDefaults) async {
     try {
       await PreferencesStore.ensureInitialized();
       if (!ref.mounted) return;
-      state = SettingsService._loadSettingsSync();
+      state = SettingsService._loadSettingsSync(hostDefaults);
     } catch (error, stackTrace) {
       developer.log(
         'Failed to hydrate settings',
@@ -1367,6 +1540,25 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
     await SettingsService.setNotificationChannelEnabled(value);
   }
 
+  Future<void> setNotificationScheduledEnabled(bool value) async {
+    state = state.copyWith(notificationScheduledEnabled: value);
+    await SettingsService.setNotificationScheduledEnabled(value);
+  }
+
+  Future<void> setNotificationChannelMentionsOnly(bool value) async {
+    // Before the store has loaded, the write would be lost and the loaded
+    // value would replace the choice.
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(notificationChannelMentionsOnly: value);
+    await SettingsService.setNotificationChannelMentionsOnly(value);
+  }
+
+  Future<void> setNotificationCalendarEnabled(bool value) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(notificationCalendarEnabled: value);
+    await SettingsService.setNotificationCalendarEnabled(value);
+  }
+
   /// Applies the three server-synced notification prefs fetched from Open WebUI
   /// without echoing them back to the server. Used at bootstrap so the server
   /// stays authoritative for cross-device parity. Only writes when a value
@@ -1435,6 +1627,27 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
       PreferenceKeys.showComposerNotesButton,
       value,
     );
+  }
+
+  Future<void> setShowModelNameInComposer(bool value) async {
+    if (!await _awaitHydration()) return;
+    state = state.copyWith(showModelNameInComposer: value);
+    await SettingsService._putPreference(
+      PreferenceKeys.showModelNameInComposer,
+      value,
+    );
+  }
+
+  /// Saved first, then shown: the Hermes list follows the value at once, so
+  /// a write that fails (refused while signing out, or not kept on disk)
+  /// throws and leaves it as it is.
+  Future<void> setHermesShowScheduledSessions(bool value) async {
+    if (!await _awaitHydration()) return;
+    await PreferencesStore.putChecked(
+      scopedPreferenceWriteKey(PreferenceKeys.hermesShowScheduledSessions),
+      value,
+    );
+    state = state.copyWith(hermesShowScheduledSessions: value);
   }
 
   Future<void> setHighContrast(bool value) async {
@@ -1733,13 +1946,43 @@ class AppSettingsNotifier extends _$AppSettingsNotifier {
 
   Future<void> resetToDefaults() async {
     await SettingsService._putOrRemove(PreferenceKeys.citationBackground, null);
-    const defaultSettings = AppSettings();
+    // The host's defaults, as for settings never set.
+    final hostDefaults = ref.read(appSettingsHostDefaultsProvider);
+    final defaultSettings = AppSettings(
+      sendOnEnter: hostDefaults.sendOnEnter,
+      notificationsEnabled: hostDefaults.notificationsEnabled,
+    );
     await SettingsService._putOrRemove(PreferenceKeys.computerEnabled, null);
     await SettingsService._putOrRemove(
       PreferenceKeys.showComposerNotesButton,
       null,
     );
+    await SettingsService._putOrRemove(
+      PreferenceKeys.showModelNameInComposer,
+      null,
+    );
+    await SettingsService._putOrRemove(
+      PreferenceKeys.hermesShowScheduledSessions,
+      null,
+    );
     await SettingsService.saveSettings(defaultSettings);
+    // Left unset again, so they follow the host's default.
+    await SettingsService._putOrRemove(PreferenceKeys.sendOnEnterKey, null);
+    // The switch is stored for the account in use as well as for the
+    // device ([SettingsService.setNotificationsEnabled]): both go.
+    await SettingsService._putPreference(
+      PreferenceKeys.notificationsEnabled,
+      null,
+    );
+    await SettingsService._putOrRemove(
+      PreferenceKeys.notificationsEnabled,
+      null,
+    );
+    // Written only by its own setter, so the bulk save leaves it.
+    await SettingsService._putOrRemove(
+      PreferenceKeys.notificationChannelMentionsOnly,
+      null,
+    );
     await SettingsService.setSlidingSidebarEnabled(
       defaultSettings.slidingSidebarEnabled,
     );

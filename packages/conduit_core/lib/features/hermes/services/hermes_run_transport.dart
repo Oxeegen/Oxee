@@ -183,6 +183,10 @@ Future<bool> dispatchHermesTurn({
   void Function(String code)? onSessionRefused,
   void Function(HermesModelSwitchDeclined declined)? onModelSwitchDeclined,
   void Function()? onQueued,
+
+  /// Hermes took the turn: its prompt is the session's from now on, even if
+  /// the turn is stopped.
+  void Function()? onTurnAccepted,
   required void Function(String content) appendContent,
   void Function(String content)? replaceContent,
   required void Function(ChatStatusUpdate update) appendStatus,
@@ -251,6 +255,17 @@ Future<bool> dispatchHermesTurn({
     finishStreaming();
     completeStreamingUi();
     return false;
+  }
+  // A turn that ends before its prompt reaches Hermes leaves it unsent.
+  if (responseStream.promptAccepted?.call() ?? true) {
+    try {
+      onTurnAccepted?.call();
+    } catch (_) {
+      DebugLogger.error(
+        'turn-accepted-callback-failed',
+        scope: 'hermes/transport',
+      );
+    }
   }
 
   if (responseCancelToken.isCancelled) {
@@ -2416,6 +2431,13 @@ HermesErrorSurface? hermesErrorSurfaceOf(ChatMessage message) {
 /// The card for an API server refusal Conduit can classify, or null when
 /// the plain explanation is all there is to say.
 HermesErrorSurface? hermesApiErrorSurface(Object error) {
+  if (error is HermesGatewaySignInRequired) {
+    return const HermesErrorSurface(
+      layer: HermesErrorLayer.gateway,
+      code: kHermesGatewaySignInRequiredCode,
+      retryable: false,
+    );
+  }
   if (error is! HermesApiException) return null;
   switch (error.code) {
     case HermesApiErrorCode.notFound:
@@ -2455,6 +2477,7 @@ String _friendlyError(Object e) {
   if (e is HermesModelSwitchHeld) return e.message;
   if (e is HermesModelSwitchDeclined) return e.message;
   if (e is HermesDesktopGatewayStartingException) return e.message;
+  if (e is HermesGatewaySignInRequired) return e.message;
   if (e is FormatException) return 'Hermes returned an invalid response.';
   if (e is HermesApiException) {
     final refusal = hermesApiRefusalMessage(e);

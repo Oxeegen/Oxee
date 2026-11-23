@@ -11,6 +11,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:conduit_core/auth/oidc/oidc_pkce.dart';
 import 'package:conduit_core/utils/debug_logger.dart';
 
 import 'package:conduit_core/network/external_link.dart';
@@ -41,6 +42,8 @@ import 'package:conduit_core/features/hermes/services/hermes_history_edit.dart';
 import 'package:conduit_core/features/hermes/services/hermes_message_mapper.dart';
 import 'package:conduit_core/features/hermes/services/hermes_json_guard.dart';
 import 'package:conduit_core/features/hermes/services/hermes_pending_decision_store.dart';
+import 'package:conduit_core/features/hermes/models/hermes_session.dart'
+    show kHermesScheduledSessionSource;
 
 part 'hermes_desktop_administration.dart';
 part 'hermes_desktop_audio.dart';
@@ -51,6 +54,7 @@ part 'hermes_desktop_canonical.dart';
 part 'hermes_desktop_context.dart';
 part 'hermes_desktop_event_projection.dart';
 part 'hermes_desktop_live_runtime.dart';
+part 'hermes_desktop_raw_rest.dart';
 part 'hermes_desktop_rooms.dart';
 part 'hermes_desktop_todos.dart';
 part 'hermes_desktop_turn_runtime.dart';
@@ -59,6 +63,25 @@ part 'hermes_desktop_working_directories.dart';
 typedef HermesDesktopCredentialsWriter = Future<void> Function(
   HermesDesktopCredentials credentials,
 );
+
+/// The gateway tokens stored for a client's connection, read as it is about
+/// to renew. Another client may have rotated them since it read its own.
+typedef HermesDesktopTokensReader = Future<HermesDesktopTokenSet?> Function();
+
+/// Runs [action] while no other client of the same gateway connection runs
+/// one: a renewal reads the stored tokens, spends their refresh token and
+/// saves the new ones, and a sign-in reads and replaces them, each as one
+/// step.
+typedef HermesDesktopTokenGuard =
+    Future<T> Function<T>(Future<T> Function() action);
+
+/// A [HermesDesktopCredentialsWriter] refused a token rotation because
+/// another client of the same gateway tokens stored its own first. The
+/// stored tokens are the newer ones; nobody signed out.
+final class HermesTokenRotationSuperseded extends StateError {
+  HermesTokenRotationSuperseded()
+    : super('Another client stored a newer Hermes token rotation.');
+}
 
 ({String? model, String? provider}) hermesDesktopSessionModelSelection(
   String? model,
@@ -193,11 +216,17 @@ List<Map<String, dynamic>> preferLastUsableHermesTranscript(
   List<Map<String, dynamic>> candidate,
 ) => candidate.length < previous.length ? previous : candidate;
 
+/// Whether a request refused with [previous] may go again with [refreshed]:
+/// other tokens, not expired. A renewal Hermes could not answer leaves the
+/// held ones, or expired ones taken up from another client.
 @visibleForTesting
 bool hermesNativeRefreshAllowsRetry(
   HermesDesktopTokenSet? previous,
   HermesDesktopTokenSet? refreshed,
-) => refreshed != null && !identical(previous, refreshed);
+) =>
+    refreshed != null &&
+    !identical(previous, refreshed) &&
+    !refreshed.expiresWithin(Duration.zero);
 
 @visibleForTesting
 bool hermesSlashNeedsCommandDispatch(HermesDesktopRpcException error) =>
@@ -235,8 +264,11 @@ final class HermesDesktopApiService
     Dio? dio,
     HermesDesktopRpcClient? rpc,
     OpenExternalUrlPort? openExternalUrl,
+    BrowserAuthPort? browserAuth,
     HermesDashboardBridgeFactory? dashboardBridgeFactory,
     this.onCredentialsChanged,
+    HermesDesktopTokensReader? readStoredTokens,
+    HermesDesktopTokenGuard? guardTokens,
     HermesModelSwitchPrompt? confirmModelSwitch,
     @visibleForTesting
     this.gatewayStartRetryDelays = const [
@@ -252,6 +284,9 @@ final class HermesDesktopApiService
     @visibleForTesting
     this.pendingCompactionDeadline = const Duration(minutes: 15),
   }) : _openExternalUrl = openExternalUrl ?? const NullOpenExternalUrlPort(),
+       _browserAuth = browserAuth ?? const NullBrowserAuthPort(),
+       _readStoredTokens = readStoredTokens,
+       _guardTokens = guardTokens,
        _dashboardBridgeFactory = dashboardBridgeFactory,
        _confirmModelSwitch = confirmModelSwitch,
        _nativeTokens = config.desktopCredentials?.nativeTokens,
@@ -282,6 +317,20 @@ final class HermesDesktopApiService
   /// sidecar has no browser and refuses, and the flow reports that it could
   /// not start rather than waiting for a callback nothing will send.
   final OpenExternalUrlPort _openExternalUrl;
+
+  /// Runs native sign-in in the system browser's sheet, which returns to
+  /// the app by itself; without one, [_openExternalUrl] opens the page.
+  final BrowserAuthPort _browserAuth;
+
+  /// Read before a renewal: other clients of the same gateway tokens (push,
+  /// a settings probe) rotate them too, and a refresh token one of them
+  /// spent ends the whole session at a provider that detects its reuse.
+  final HermesDesktopTokensReader? _readStoredTokens;
+
+  /// Shared by the clients of the same gateway connection: without it, two
+  /// renewing at once (the live client and push, as the app resumes) would
+  /// both send the refresh token storage holds.
+  final HermesDesktopTokenGuard? _guardTokens;
 
   /// How long to wait before each new attempt to reach a gateway that said
   /// it is not ready (starting, restarting or draining).
@@ -388,13 +437,40 @@ final class HermesDesktopApiService
   Map<String, dynamic>? _status;
   Future<void>? _connecting;
   Future<HermesDesktopTokenSet?>? _refreshing;
+
+  /// Refresh tokens this client sent in a renewal Hermes answered, since
+  /// storage last moved on. They are spent: storage still holds one when
+  /// saving the rotation that replaced it failed, and sending it again would
+  /// end the session.
+  final Set<String> _spentRefreshTokens = {};
   Future<void>? _foregroundReconciliation;
+
+  /// The token renewal the last return to the foreground started.
+  @visibleForTesting
+  Future<void>? resumeRenewal;
   StreamSubscription<HermesDesktopEvent>? _stateSubscription;
   bool _authoritativeRunning = true;
   bool _supportsMcpRpcLifecycle = true;
   bool _reconciliationStale = false;
   StreamSubscription<AppLifecyclePhase>? _lifecycleSubscription;
   int _desktopContract = 0;
+
+  /// The socket whose gateway [_desktopContract] describes.
+  int? _desktopContractSocket;
+
+  /// The socket on which [_learnDesktopUploadContract] got its answer.
+  int? _uploadContractProbedSocket;
+
+  /// The `file.attach` question still waiting for its answer, and the
+  /// socket it was asked on.
+  ({int socket, Future<void> answer})? _uploadContractQuestion;
+
+  /// Whether anything has asked if the gateway takes uploads; from then on
+  /// each new socket's gateway is asked too.
+  bool _uploadContractAsked = false;
+
+  /// The contract [desktopContracts] last gave its listeners.
+  int _publishedDesktopContract = 0;
 
   /// Starts reconciling the desktop transport across foreground changes.
   ///
@@ -480,10 +556,12 @@ final class HermesDesktopApiService
       onDone: controller.close,
     );
     controller
-      ..add(_desktopContract)
+      ..add(_publishedDesktopContract)
       ..onCancel = subscription.cancel;
   });
-  int get desktopContract => _desktopContract;
+
+  /// The contract of the gateway on the current socket; 0 until it is known.
+  int get desktopContract => _currentDesktopContract;
   bool get supportsAuthoritativeRunning => _authoritativeRunning;
   bool get supportsMcpCredentialUpdate => _supportsMcpRpcLifecycle;
   HermesDesktopRpcClient get rpc => _rpc;
@@ -516,7 +594,10 @@ final class HermesDesktopApiService
   Future<Map<String, dynamic>> statusProbe({bool refresh = false}) =>
       _authStatusProbe(refresh: refresh);
   Future<List<String>> listProfiles() => _authListProfiles();
-  Future<HermesDesktopTokenSet> signInNative({String? provider}) =>
+
+  /// Signs in to the gateway in the browser and saves the tokens. Null when
+  /// the user closed the browser.
+  Future<HermesDesktopTokenSet?> signInNative({String? provider}) =>
       _authSignInNative(provider: provider);
 
   @override
@@ -533,7 +614,9 @@ final class HermesDesktopApiService
     cancelToken: cancelToken,
   );
   @override
-  Future<List<Map<String, dynamic>>> listSessions() => _runtimeListSessions();
+  Future<List<Map<String, dynamic>>> listSessions({
+    bool excludeScheduledRuns = false,
+  }) => _runtimeListSessions(excludeScheduledRuns: excludeScheduledRuns);
   @override
   Future<List<Map<String, dynamic>>> getSessionMessages(
     String id, {
@@ -747,6 +830,15 @@ final class HermesDesktopApiService
     deliver: deliver,
     catchUp: catchUp,
   );
+
+  /// [method] [path] against the dashboard with its authentication, answering
+  /// any status rather than throwing on one.
+  Future<HermesDashboardResponse> dashboardRequest(
+    String method,
+    String path, {
+    Object? body,
+    Map<String, dynamic>? query,
+  }) => _rawRequest(method, path, body: body, query: query);
 
   /// Stops the job's running run (`POST /api/cron/jobs/{id}/cancel`).
   /// Throws [HermesJobStopUnsupportedException] on Hermes before 0.22.6.
@@ -965,4 +1057,20 @@ final class HermesDesktopApiService
   void _emitDesktopContract(int value) {
     if (!_closed) _desktopContractChanges.add(value);
   }
+}
+
+/// Writes a pending decision down without waiting for it. The store refuses
+/// writes while the app signs out, and a write can fail outright; started
+/// from an event handler, nothing would catch either. Only the error's type
+/// is logged: a decision's prompt may hold what the user typed.
+void _persistPendingQuietly(Future<void> write) {
+  unawaited(
+    write.catchError((Object error) {
+      DebugLogger.warning(
+        'pending-decision-write-failed',
+        scope: 'hermes/desktop',
+        data: {'error': error.runtimeType.toString()},
+      );
+    }),
+  );
 }

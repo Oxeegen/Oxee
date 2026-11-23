@@ -1,0 +1,21 @@
+{
+  "channelId": "c1",
+  "messages": [
+    {
+      "id": "m2",
+      "channelId": "c1",
+      "content": "",
+      "parentId": "m1",
+      "pinned": false,
+      "replyCount": 0,
+      "createdAtMs": 1,
+      "reactions": [],
+      "mine": false,
+      "senderKey": "",
+      "senderKind": "user",
+      "display": "",
+      "files": []
+    }
+  ],
+  "hasOlder": true
+}

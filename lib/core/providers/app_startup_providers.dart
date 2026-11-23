@@ -63,6 +63,7 @@ import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit_core/features/chat/providers/context_attachments_provider.dart';
 import 'package:conduit_core/features/chat/providers/knowledge_cache_provider.dart';
 import 'package:conduit_core/features/chat/providers/remap_route_sync_provider.dart';
+import 'package:conduit_core/features/push/providers/push_providers.dart';
 import 'package:conduit_core/features/channels/providers/channel_providers.dart';
 
 import '../../features/channels/providers/channel_socket_handler.dart';
@@ -70,8 +71,12 @@ import '../../features/channels/providers/channel_socket_handler.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/hermes/models/hermes_model.dart';
 
+import '../../features/notifications/providers/direct_notification_bridge.dart';
+import '../../features/notifications/providers/hermes_notification_bridge.dart';
 import '../../features/notifications/providers/notification_socket_listener.dart';
-import '../../features/notifications/services/local_notification_service.dart';
+import '../../features/notifications/services/calendar_reminder_scheduler.dart';
+import '../../features/notifications/providers/notification_tap_listener.dart';
+import '../../features/notifications/providers/push_notification_listener.dart';
 import '../../shared/theme/theme_providers.dart';
 
 part 'app_startup_providers.g.dart';
@@ -306,22 +311,10 @@ void _resetUserScopedProviders(Ref ref) {
     ref.invalidate(defaultModelProvider);
     ref.invalidate(backendConfigProvider);
     ref.invalidate(socketServiceManagerProvider);
-    // Clear posted notifications and drop the listener's dedup memory so a
-    // notification can't deep-link into the previous session/server.
-    unawaited(
-      ref.read(localNotificationServiceProvider).cancelAll().catchError((
-        Object e,
-        StackTrace st,
-      ) {
-        DebugLogger.error(
-          'failed to clear notifications on sign-out',
-          scope: 'notifications/system',
-          error: e,
-          stackTrace: st,
-        );
-      }),
-    );
-    ref.invalidate(notificationRouterProvider);
+    // Rebind the socket listener to the next session. Posted notifications
+    // and the router's dedup memory stay: both are keyed by account, and a
+    // tap opens in the account that posted it. Signing out clears that
+    // account's own (see hostSignedOutProvider).
     ref.invalidate(notificationSocketListenerProvider);
     // Selections that name the previous account's folders, prompts, notes or
     // chats.
@@ -1071,6 +1064,13 @@ class AppStartupFlow extends _$AppStartupFlow {
       homeWidgetCoordinatorProvider,
       label: 'home-widget',
     );
+    // Push setup runs once accounts and connections are known, and stays
+    // idle while push is off.
+    _scheduleDeferredKeepAlive(
+      const Duration(milliseconds: 72),
+      pushCoordinatorProvider,
+      label: 'push-coordinator',
+    );
     _scheduleAfterDelay(
       const Duration(milliseconds: 80),
       () => ref.read(shareReceiverInitializerProvider),
@@ -1229,10 +1229,21 @@ class AppStartupFlow extends _$AppStartupFlow {
     _keepDirectCompletionRelayAlive();
     // Activate the notification listener (global chat/channel handlers feeding
     // the NotificationRouter). The router gates on the master toggle, so this is
-    // safe to run unconditionally. Then drain any cold-launch notification tap.
+    // safe to run unconditionally. Then drain a cold-launch notification tap,
+    // which may point into this account.
     ref.read(notificationSocketListenerProvider);
     unawaited(
-      ref.read(notificationSocketListenerProvider.notifier).handleLaunchTap(),
+      ref
+          .read(notificationTapListenerProvider.notifier)
+          .handleLaunchTap(openWebUiReady: true),
+    );
+    // Schedule this account's calendar reminders; the scheduler keeps them in
+    // line from here on (settings, account switches, calendar edits).
+    unawaited(ref.read(calendarReminderSchedulerProvider).sync());
+    unawaited(
+      ref
+          .read(pushNotificationListenerProvider.notifier)
+          .handleLaunchTap(openWebUiReady: true),
     );
     _scheduleDefaultModelPreload(
       keepDefaultModelAutoSelectionAlive: keepDefaultModelAutoSelectionAlive,
@@ -1292,6 +1303,11 @@ class AppStartupFlow extends _$AppStartupFlow {
         _stopDirectCompletionRelay();
         _clearQueuedAuthenticatedStartupWork();
         _resetConversationWarmup(ref);
+        // The active account's session is not coming: a launch tap for
+        // another saved account opens there now.
+        if (next == AuthNavigationState.needsLogin) {
+          _handleLaunchTapsWithoutSession();
+        }
       }
     });
 
@@ -1337,6 +1353,18 @@ class AppStartupFlow extends _$AppStartupFlow {
   void _activate({Duration apiWaitTimeout = const Duration(seconds: 1)}) {
     ref.onDispose(_disposeStartupResources);
     _keepAlive(imageAttachmentCacheLifecycleProvider);
+    // Notification taps open in any account or connection, with or without an
+    // Open WebUI session. A cold-launch tap for Hermes or Direct opens now; one
+    // for Open WebUI waits for its session (see post-auth startup).
+    _keepAlive(notificationTapListenerProvider);
+    // Direct replies run on this device; nothing else notifies about them.
+    // Hermes turns this app ran notify too, deduplicated against push.
+    _keepAlive(directNotificationBridgeProvider);
+    _keepAlive(hermesNotificationBridgeProvider);
+    // Pushes decrypted while the app is open, and push taps, follow the same
+    // rules; so does a push that cold-launched the app.
+    _keepAlive(pushNotificationListenerProvider);
+    _handleLaunchTapsWithoutSession();
     _scheduleStartupTasks();
 
     // If the session is already authenticated before startup flow attaches,
@@ -1346,6 +1374,30 @@ class AppStartupFlow extends _$AppStartupFlow {
     }
 
     _installStartupListeners(apiWaitTimeout: apiWaitTimeout);
+  }
+
+  /// Opens a cold-launch notification or push tap that needs no Open WebUI
+  /// session (Hermes, Direct, or another account while the active one is
+  /// signed out). Each opens once; one waiting for the session stays.
+  void _handleLaunchTapsWithoutSession() {
+    unawaited(
+      ref
+          .read(notificationTapListenerProvider.notifier)
+          .handleLaunchTap(openWebUiReady: false)
+          .catchError((Object error, StackTrace stackTrace) {
+            DebugLogger.error(
+              'launch-notification-tap-failed',
+              scope: 'notifications/center',
+              error: error,
+              stackTrace: stackTrace,
+            );
+          }),
+    );
+    unawaited(
+      ref
+          .read(pushNotificationListenerProvider.notifier)
+          .handleLaunchTap(openWebUiReady: false),
+    );
   }
 
   void _ensureSocketAttached() {
@@ -1436,11 +1488,25 @@ class _ForegroundRefreshObserver extends WidgetsBindingObserver {
       // Schedule to avoid side-effects during build frames
       Future.microtask(() {
         try {
+          // A session from a browser sign-in close to expiry is renewed now,
+          // in the background, before a request finds it expired.
+          unawaited(
+            _ref
+                .read(authStateManagerProvider.notifier)
+                .renewBrowserSessionIfExpiring(),
+          );
+        } catch (_) {}
+        try {
           refreshConversationsCache(_ref);
           _ref.invalidate(channelMessagesProvider);
           _ref.invalidate(threadMessagesProvider);
           _resetConversationWarmup(_ref);
           unawaited(_refreshActiveConversationOnResume(_ref));
+          // Events added or changed elsewhere (the web UI) while the app was
+          // away get their reminders now.
+          if (_ref.read(calendarReminderSchedulerProvider.exists)) {
+            unawaited(_ref.read(calendarReminderSchedulerProvider).sync());
+          }
         } catch (_) {}
         // Resume already kicked off a forced conversations refresh above; only
         // finish the warmup work that should run alongside it.

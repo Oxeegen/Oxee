@@ -67,6 +67,7 @@ class _HermesDesktopConnectionSectionState
   HermesDesktopConnectionCoordinator get _desktopConnection =>
       HermesDesktopConnectionCoordinator(
         openExternalUrl: ref.read(openExternalUrlProvider),
+        browserAuth: ref.read(browserAuthPortProvider),
         dashboardBridgeFactory: ref.read(
           hostHermesDashboardBridgeFactoryProvider,
         ),
@@ -148,24 +149,27 @@ class _HermesDesktopConnectionSectionState
     final draft = _controller.buildDraft(saved);
     // A load this draft cut short has no say any more (its epoch moved on),
     // so the button it spun is freed here.
-    if (HermesConfig.connectionOrigin(draft.config.baseUrl) == null) {
-      if (!mounted) return;
-      setState(() {
-        _profilesLoading = false;
-        _profilesError = 'Enter the Hermes server URL first.';
-      });
-      return;
-    }
-    // Listing profiles sends the draft's credentials, which go unencrypted
-    // only once Test, Save or sign-in has asked.
-    if (!draft.config.mayUsePlainHttp) {
-      if (!mounted) return;
-      setState(() {
-        _profiles = const [];
-        _profilesLoading = false;
-        _profilesError = 'Test the connection, then refresh the profile list.';
-      });
-      return;
+    switch (hermesProfileListBlocker(draft.config)) {
+      case HermesProfileListIssue.noUrl:
+        if (!mounted) return;
+        setState(() {
+          _profilesLoading = false;
+          _profilesError = 'Enter the Oxee Hermes server URL first.';
+        });
+        return;
+      // Listing profiles sends the draft's credentials, which go unencrypted
+      // only once Test, Save or sign-in has asked.
+      case HermesProfileListIssue.testFirst:
+        if (!mounted) return;
+        setState(() {
+          _profiles = const [];
+          _profilesLoading = false;
+          _profilesError =
+              'Test the connection, then refresh the profile list.';
+        });
+        return;
+      case _:
+        break;
     }
     final identity = _authDraftIdentity(draft.config);
     final editsActive = widget.editsActiveConnection();
@@ -215,16 +219,17 @@ class _HermesDesktopConnectionSectionState
       if (epoch != _profileEpoch || _authDraftIdentity(current) != identity) {
         return;
       }
-      if (profiles.isNotEmpty &&
-          !profiles.contains(_controller.desktopProfile)) {
-        _controller.setDesktopProfile(
-          profiles.contains('default') ? 'default' : profiles.first,
-        );
+      final shown = hermesProfileAfterRefresh(
+        profiles,
+        _controller.desktopProfile,
+      );
+      if (shown != _controller.desktopProfile) {
+        _controller.setDesktopProfile(shown);
       }
       setState(() {
         _profiles = profiles;
         _profilesError = profiles.isEmpty
-            ? 'No Hermes profiles were returned.'
+            ? 'No Oxee Hermes profiles were returned.'
             : null;
       });
     } catch (_) {
@@ -276,12 +281,12 @@ class _HermesDesktopConnectionSectionState
         .nativeCredentialsWriter();
     try {
       final live = ref.read(hermesApiServiceProvider);
-      await _desktopConnection.signInNative(
+      final signedIn = await _desktopConnection.signInNative(
         saved.copyWith(enabled: true),
         onCredentialsChanged: writeCredentials,
         service: live is HermesDesktopApiService ? live : null,
       );
-      if (mounted) {
+      if (signedIn && mounted) {
         await _loadProfiles();
         await widget.testConnection();
       }
@@ -292,7 +297,7 @@ class _HermesDesktopConnectionSectionState
         data: {'errorType': error.runtimeType.toString()},
       );
       _controller.reportFailure(
-        'Hermes sign-in failed or was cancelled. Check that native PKCE is enabled and try again.',
+        'Oxee Hermes sign-in failed or was cancelled. Check that native PKCE is enabled and try again.',
       );
     }
   }
@@ -300,13 +305,11 @@ class _HermesDesktopConnectionSectionState
   Future<void> _signInDashboard() async {
     if (!await widget.prepareSignIn() || !mounted) return;
     final config = ref.read(hermesConfigProvider);
-    final signedIn = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) =>
-            HermesDashboardAuthPage(config: config.copyWith(enabled: true)),
-      ),
+    final signedIn = await HermesDashboardAuthPage.open(
+      context,
+      config.copyWith(enabled: true),
     );
-    if (mounted && signedIn == true) {
+    if (mounted && signedIn) {
       ref.invalidate(hermesDesktopModelsProvider);
       await _loadProfiles();
       await widget.testConnection();
@@ -376,7 +379,10 @@ class _HermesDesktopConnectionSectionState
                   ?widget.signInFooter,
                 ].join('\n\n')
               : _controller.desktopAuthKind == HermesDesktopAuthKind.nativePkce
-              ? widget.signInFooter
+              ? [
+                  l10n.hermesNativeSignInHelp,
+                  ?widget.signInFooter,
+                ].join('\n\n')
               : null,
           flat: !PlatformInfo.isIOS,
           child: Column(

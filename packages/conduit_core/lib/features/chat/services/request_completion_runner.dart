@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:conduit_core/database/app_database.dart';
+import 'package:conduit_core/models/chat_message.dart';
 import 'package:conduit_core/database/daos/outbox_dao.dart';
 import 'package:conduit_core/database/mappers/conversation_assembler.dart';
 import 'package:conduit_core/models/chat_comparison.dart';
@@ -11,10 +12,12 @@ import 'package:conduit_core/sync/sync_api_client.dart'
 
 import 'package:conduit_core/providers/app_providers.dart';
 
+import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/conversation_parsing.dart';
 
 import 'package:conduit_core/services/worker_manager.dart';
 
+import 'package:conduit_core/sync/chat_locks.dart';
 import 'package:conduit_core/sync/outbox_drainer.dart';
 
 import 'package:conduit_core/utils/debug_logger.dart';
@@ -111,6 +114,7 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
       api: ownedConversationSession.api,
       authSessionEpoch: ownedConversationSession.authSessionEpoch,
       contextWasCoherent: true,
+      authSnapshot: ownedConversationSession.api?.captureAuthSnapshot(),
     );
 
     void requireCurrentConversationOwner() {
@@ -122,17 +126,82 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
 
     requireCurrentConversationOwner();
 
+    if (decoded.held) {
+      // The request went out and the server held its question; settling it
+      // did not finish. A Stop since reaches nothing on the server.
+      await settleHeldOpenWebUiCompletion(
+        _liveOwnerOf(owner) ?? _ref,
+        api: owner.api,
+        owner: owner,
+        questionId: decoded.heldQuestionId,
+        assistantMessageIds: <String>{
+          assistantMessageId,
+          ...?decoded.comparison?.slots.map((slot) => slot.assistantMessageId),
+        },
+        earlierHoldIds: decoded.heldEarlierIds,
+      );
+      return;
+    }
+
+    if (decoded.stopped) {
+      await settleStoppedOpenWebUiCompletion(
+        _ref,
+        api: owner.api,
+        owner: owner,
+        assistantMessageIds: <String>{
+          assistantMessageId,
+          ...?decoded.comparison?.slots.map((slot) => slot.assistantMessageId),
+        },
+      );
+      return;
+    }
+
+    // Whether a Stop reached this op since it was claimed, settling its
+    // [answers] as stopped if so. Called right before the request goes. A run
+    // resumed after a restart has no send registered in memory, so a Stop
+    // before this is only on the op. The answers' send is registered, then
+    // the op is read under the chat lock, behind any Stop's write already
+    // asked for. A Stop while it is read is only in memory, its write queued
+    // behind the read: both are asked.
+    Future<bool> settledIfStopped(Iterable<String> answers) async {
+      final api = owner.api;
+      if (api is ApiService) {
+        for (final id in answers) {
+          api.beginSend(id, adopt: true);
+        }
+      }
+      final marked = await _ref
+          .read(chatLocksProvider)
+          .runExclusive(
+            chatId,
+            () => db.outboxDao.completionStopped(chatId, assistantMessageId),
+          );
+      requireCurrentConversationOwner();
+      if (!marked && !(api is ApiService && answers.any(api.sendStopped))) {
+        return false;
+      }
+      await settleStoppedOpenWebUiCompletion(
+        _ref,
+        api: api,
+        owner: owner,
+        assistantMessageIds: answers,
+      );
+      return true;
+    }
+
     // Streaming-conflict guard (R5): if a LIVE interactive stream owns this
     // exact chat, unsent work defers so it can never clobber that stream. The
     // answers of one comparison own their turn together, so a stream that is
     // any of them is not a conflict.
     void deferIfTargetIsBusy({Set<String>? ownedAssistantIds}) {
       requireCurrentConversationOwner();
-      if (activeOpenWebUiChatIdForMutation(_ref, owner) == null ||
-          !_ref.read(isChatStreamingProvider)) {
+      // The chat's live owner: the root's own open chat, or a chat session
+      // scope that has it open. Neither streaming is no conflict.
+      final live = _liveOwnerOf(owner);
+      if (live == null || !live.read(isChatStreamingProvider)) {
         return;
       }
-      final activeMessages = _ref.read(chatMessagesProvider);
+      final activeMessages = live.read(chatMessagesProvider);
       final ownIds = ownedAssistantIds ?? <String>{assistantMessageId};
       final activeStreamingAssistantIds = <String>{};
       for (var i = activeMessages.length - 1; i >= 0; i -= 1) {
@@ -171,6 +240,7 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
         owner: owner,
         requireCurrentConversationOwner: requireCurrentConversationOwner,
         deferIfTargetIsBusy: deferIfTargetIsBusy,
+        settledIfStopped: settledIfStopped,
       );
       return;
     }
@@ -185,7 +255,9 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
     );
     requireCurrentConversationOwner();
     if (placeholder == null) {
-      DebugLogger.log(
+      // An admitted turn dropped unsent: its answer would show as running
+      // with nothing behind it. Kept in a warning, which the logs keep.
+      DebugLogger.warning(
         'completion-placeholder-absent',
         scope: 'chat/completion',
         data: {'chatId': chatId, 'assistantMessageId': assistantMessageId},
@@ -200,7 +272,8 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
       );
       return;
     }
-    final completionWasSubmitted = _placeholderMarkedSubmitted(placeholder);
+    final completionWasSubmitted =
+        decoded.submitted || _placeholderMarkedSubmitted(placeholder);
     // Once the POST crossed the server boundary this op is pull-only recovery;
     // another live stream must not prevent collecting the accepted response.
     if (!completionWasSubmitted) {
@@ -249,18 +322,19 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
     // Both database reads above are async. Re-read the global owner and stream
     // state now; the user may have navigated while either query was queued.
     deferIfTargetIsBusy();
-    final targetIsActive =
-        activeOpenWebUiChatIdForMutation(_ref, owner) != null;
+    final live = _liveOwnerOf(owner);
 
-    if (targetIsActive &&
-        _ref
+    if (live != null &&
+        live
             .read(chatMessagesProvider)
             .any((message) => message.id == assistantMessageId)) {
       // Live drive — the placeholder is loaded + marked streaming inside
       // runQueuedCompletion; the stream final + D-07 echo land on the SAME
-      // assistantMessageId row (R8 one-row-per-turn).
+      // assistantMessageId row (R8 one-row-per-turn). [live] is the root, or
+      // the chat session scope that has this chat open.
+      if (await settledIfStopped([assistantMessageId])) return;
       await runQueuedCompletion(
-        _ref,
+        live,
         chatId: chatId,
         assistantMessageId: assistantMessageId,
         model: decoded.model,
@@ -294,6 +368,7 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
           ),
     );
     requireCurrentConversationOwner();
+    if (await settledIfStopped([assistantMessageId])) return;
     await runHeadlessCompletion(
       _ref,
       chatId: chatId,
@@ -312,6 +387,20 @@ class ChatRequestCompletionRunner implements RequestCompletionRunner {
       completionOwner: owner,
       chatSettings: decoded.chatSettings,
     );
+  }
+
+  /// Where this chat is open, to stream into: the root's own open chat, else
+  /// the chat session scope that has it open, else nowhere, which
+  /// leaves the completion to run headless.
+  dynamic _liveOwnerOf(OpenWebUiCompletionOwner owner) {
+    if (activeOpenWebUiChatIdForMutation(_ref, owner) != null) return _ref;
+    for (final scope in _ref.read(chatSessionRegistryProvider).scopes) {
+      if (scope.isDisposed) continue;
+      if (activeOpenWebUiChatIdForMutation(scope.container, owner) != null) {
+        return scope.container;
+      }
+    }
+    return null;
   }
 }
 
@@ -332,6 +421,7 @@ extension on ChatRequestCompletionRunner {
     required void Function() requireCurrentConversationOwner,
     required void Function({Set<String>? ownedAssistantIds})
     deferIfTargetIsBusy,
+    required Future<bool> Function(Iterable<String> answers) settledIfStopped,
   }) async {
     final slotIds = [for (final slot in group.slots) slot.assistantMessageId];
     final ownIds = slotIds.toSet();
@@ -358,7 +448,7 @@ extension on ChatRequestCompletionRunner {
       if (row != null) rows[id] = row;
     }
     if (rows.isEmpty) {
-      DebugLogger.log(
+      DebugLogger.warning(
         'completion-placeholder-absent',
         scope: 'chat/completion',
         data: {'chatId': chatId, 'assistantMessageId': slotIds.first},
@@ -377,10 +467,13 @@ extension on ChatRequestCompletionRunner {
       );
       return;
     }
-    final accepted = rows.values.any(
-      (row) =>
-          _placeholderMarkedSubmitted(row) || _placeholderMarkedComplete(row),
-    );
+    final accepted =
+        decoded.submitted ||
+        rows.values.any(
+          (row) =>
+              _placeholderMarkedSubmitted(row) ||
+              _placeholderMarkedComplete(row),
+        );
     // Once the POST crossed the server boundary this op is pull-only recovery;
     // another live stream must not prevent collecting the accepted answers.
     if (!accepted) deferIfTargetIsBusy(ownedAssistantIds: ownIds);
@@ -415,19 +508,22 @@ extension on ChatRequestCompletionRunner {
     }
 
     deferIfTargetIsBusy(ownedAssistantIds: ownIds);
-    final activeMessages = _ref.read(chatMessagesProvider);
+    final liveOwner = _liveOwnerOf(owner);
+    final List<ChatMessage> activeMessages = liveOwner == null
+        ? const <ChatMessage>[]
+        : liveOwner.read(chatMessagesProvider);
     final live =
-        activeOpenWebUiChatIdForMutation(_ref, owner) != null &&
+        liveOwner != null &&
         slotIds.every(
           (id) => activeMessages.any((message) => message.id == id),
         );
     if (live) {
       await runComparisonCompletion(
-        _ref,
+        liveOwner,
         chatId: chatId,
         group: group,
         messages: activeMessages,
-        conversation: _ref.read(activeConversationProvider),
+        conversation: liveOwner.read(activeConversationProvider),
         live: true,
         toolIds: decoded.toolIds,
         filterIds: decoded.filterIds,
@@ -441,6 +537,7 @@ extension on ChatRequestCompletionRunner {
         chatSettings: decoded.chatSettings,
         recoveryAttempts: _recoveryAttempts,
         recoveryDelay: _recoveryDelay,
+        settledIfStopped: () => settledIfStopped(slotIds),
       );
       return;
     }
@@ -478,6 +575,7 @@ extension on ChatRequestCompletionRunner {
       chatSettings: decoded.chatSettings,
       recoveryAttempts: _recoveryAttempts,
       recoveryDelay: _recoveryDelay,
+      settledIfStopped: () => settledIfStopped(slotIds),
     );
   }
 }

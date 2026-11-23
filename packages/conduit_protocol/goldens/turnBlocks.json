@@ -1,0 +1,25 @@
+{
+  "chatId": "chat-7c1f0b2a",
+  "messageId": "msg-assistant-1",
+  "blocks": [
+    {
+      "kind": "reasoning",
+      "summary": "Thinking…",
+      "title": "thinking",
+      "done": false,
+      "pending": true,
+      "body": "Checking the DAO."
+    },
+    {
+      "kind": "text",
+      "markdown": "The outbox"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1",
+      "content": "Read the DAO",
+      "status": "pending"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -7,28 +8,46 @@ import '../../../shared/theme/theme_extensions.dart';
 import '../../../shared/widgets/adaptive_dropdown_field.dart';
 import '../../../shared/widgets/conduit_components.dart';
 import '../../../shared/widgets/themed_dialogs.dart';
+import '../../../shared/widgets/utility_components.dart';
 
 import 'package:conduit_core/features/hermes/models/hermes_job.dart';
 import 'package:conduit_core/features/hermes/models/hermes_job_delivery.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 import 'package:conduit_core/features/hermes/utils/hermes_schedule_validation.dart';
+import 'package:conduit_core/features/push/services/hermes_push_backend.dart'
+    show
+        hermesDeliverIncludesConduit,
+        hermesDeliverWithConduit,
+        kConduitHermesPluginName;
 
 import 'hermes_job_delivery_field.dart';
 
 /// What the job editor returns. [deliver] and [catchUp] are null when the
 /// editor did not offer them or, when editing, the user left them as they
-/// were, so an edit never rewrites a value it did not touch.
+/// were, so an edit never rewrites a value it did not touch. [notify] is the
+/// "Notify me" switch, or null when the editor did not offer it.
 typedef HermesJobEditorResult = ({
   String name,
   String prompt,
   String schedule,
   String? deliver,
   HermesJobCatchUp? catchUp,
+  bool? notify,
 });
 
 /// Shows the create/edit dialog for a scheduled Hermes job, or null if
 /// cancelled. [scheduling] adds the missed-run policy and the "Deliver to"
 /// checklist, which only the Desktop Gateway's dashboard accepts.
+///
+/// With [initialNotify], the dialog also offers "Notify me", which sends a
+/// push when the job delivers; leave it null where push can't reach the
+/// connection. With [notifyUnavailableHint] the switch shows off and cannot
+/// be changed, with the hint saying why, and the result's `notify` is null.
+/// Push is that switch alone: the checklist leaves out the Conduit target,
+/// and keeps it as the job had it.
+///
+/// [deliveryEditable] is false for a job whose delivery targets this app
+/// can't read: the checklist is left out, so a save can't replace them.
 Future<HermesJobEditorResult?> showHermesJobEditor(
   BuildContext context, {
   String? initialName,
@@ -37,6 +56,9 @@ Future<HermesJobEditorResult?> showHermesJobEditor(
   String? initialDeliver,
   HermesJobCatchUp initialCatchUp = HermesJobCatchUp.hermesDefault,
   bool scheduling = false,
+  bool deliveryEditable = true,
+  bool? initialNotify,
+  String? notifyUnavailableHint,
 }) {
   return ThemedDialogs.showCustom<HermesJobEditorResult>(
     context: context,
@@ -47,6 +69,9 @@ Future<HermesJobEditorResult?> showHermesJobEditor(
       initialDeliver: initialDeliver,
       initialCatchUp: initialCatchUp,
       scheduling: scheduling,
+      deliveryEditable: deliveryEditable,
+      initialNotify: initialNotify,
+      notifyUnavailableHint: notifyUnavailableHint,
     ),
   );
 }
@@ -66,6 +91,9 @@ class _HermesJobEditorDialog extends StatefulWidget {
     this.initialDeliver,
     this.initialCatchUp = HermesJobCatchUp.hermesDefault,
     this.scheduling = false,
+    this.deliveryEditable = true,
+    this.initialNotify,
+    this.notifyUnavailableHint,
   });
 
   final String? initialName;
@@ -74,6 +102,9 @@ class _HermesJobEditorDialog extends StatefulWidget {
   final String? initialDeliver;
   final HermesJobCatchUp initialCatchUp;
   final bool scheduling;
+  final bool deliveryEditable;
+  final bool? initialNotify;
+  final String? notifyUnavailableHint;
 
   @override
   State<_HermesJobEditorDialog> createState() => _HermesJobEditorDialogState();
@@ -84,8 +115,18 @@ class _HermesJobEditorDialogState extends State<_HermesJobEditorDialog> {
   late final TextEditingController _prompt;
   late final TextEditingController _schedule;
   late String _deliver;
+
+  /// The checklist as it opened, to tell whether the user changed it.
+  late final String _openedDeliver;
   late HermesJobCatchUp _catchUp;
   bool _showErrors = false;
+  bool? _notify;
+
+  /// Whether the job delivers to Conduit already. The checklist leaves that
+  /// target out, so a save keeps it as it was; "Notify me" changes it.
+  late final bool _deliversToConduit = hermesDeliverIncludesConduit(
+    widget.initialDeliver,
+  );
 
   bool get _isEditing => widget.initialPrompt != null;
 
@@ -97,7 +138,11 @@ class _HermesJobEditorDialogState extends State<_HermesJobEditorDialog> {
     _schedule = TextEditingController(
       text: widget.initialSchedule ?? '0 9 * * *',
     );
-    _deliver = parseHermesDeliveryTargets(widget.initialDeliver).join(',');
+    _notify = widget.initialNotify;
+    _deliver = _openedDeliver = hermesDeliverWithConduit(
+      parseHermesDeliveryTargets(widget.initialDeliver).join(','),
+      notify: false,
+    );
     _catchUp = widget.initialCatchUp;
   }
 
@@ -121,15 +166,22 @@ class _HermesJobEditorDialogState extends State<_HermesJobEditorDialog> {
     }
     final scheduling = widget.scheduling;
     final deliverChanged =
-        !_isEditing ||
-        !hermesDeliveryTargetsMatch(_deliver, widget.initialDeliver);
+        !_isEditing || !hermesDeliveryTargetsMatch(_deliver, _openedDeliver);
+    final deliver = hermesDeliverWithConduit(
+      _deliver,
+      notify: _deliversToConduit,
+    );
     final catchUpChanged = !_isEditing || _catchUp != widget.initialCatchUp;
     Navigator.of(context).pop((
       name: name,
       prompt: prompt,
       schedule: schedule,
-      deliver: scheduling && deliverChanged ? _deliver : null,
+      deliver: scheduling && widget.deliveryEditable && deliverChanged
+          ? deliver
+          : null,
       catchUp: scheduling && catchUpChanged ? _catchUp : null,
+      // Shown but not changeable: nothing to change.
+      notify: widget.notifyUnavailableHint == null ? _notify : null,
     ));
   }
 
@@ -235,17 +287,57 @@ class _HermesJobEditorDialogState extends State<_HermesJobEditorDialog> {
                 ),
                 nativeTitle: l10n.hermesJobCatchUpLabel,
               ),
-              const SizedBox(height: Spacing.md),
-              Consumer(
-                builder: (context, ref, _) {
-                  final options = ref.watch(hermesJobDeliveryOptionsProvider);
-                  return HermesJobDeliveryField(
-                    value: _deliver,
-                    options: options.asData?.value,
-                    loading: options.isLoading,
-                    onChanged: (value) => setState(() => _deliver = value),
-                  );
-                },
+              if (widget.deliveryEditable) ...[
+                const SizedBox(height: Spacing.md),
+                Consumer(
+                  builder: (context, ref, _) {
+                    final options = ref.watch(hermesJobDeliveryOptionsProvider);
+                    final listed = options.asData?.value;
+                    return HermesJobDeliveryField(
+                      value: _deliver,
+                      options: listed == null
+                          ? null
+                          : HermesDeliveryOptions([
+                              for (final option in listed.options)
+                                if (option.target != kConduitHermesPluginName)
+                                  option,
+                            ]),
+                      loading: options.isLoading,
+                      // Room for `,conduit`, which saving or "Notify Me" adds.
+                      reservedCharacters:
+                          _deliversToConduit || widget.initialNotify != null
+                          ? kConduitHermesPluginName.length + 1
+                          : 0,
+                      onChanged: (value) => setState(() => _deliver = value),
+                    );
+                  },
+                ),
+              ],
+            ],
+            if (widget.notifyUnavailableHint case final hint?) ...[
+              const SizedBox(height: Spacing.sm),
+              UtilityRow(
+                key: const Key('hermes-job-notify'),
+                enabled: false,
+                title: l10n.hermesJobNotifyTitle,
+                subtitle: hint,
+                padding: EdgeInsets.zero,
+                toggled: false,
+                trailing: const AdaptiveSwitch(value: false, onChanged: null),
+              ),
+            ] else if (_notify case final notify?) ...[
+              const SizedBox(height: Spacing.sm),
+              UtilityRow(
+                key: const Key('hermes-job-notify'),
+                title: l10n.hermesJobNotifyTitle,
+                subtitle: l10n.hermesJobNotifyDescription,
+                padding: EdgeInsets.zero,
+                toggled: notify,
+                trailing: AdaptiveSwitch(
+                  value: notify,
+                  onChanged: (value) => setState(() => _notify = value),
+                ),
+                onTap: () => setState(() => _notify = !notify),
               ),
             ],
           ],

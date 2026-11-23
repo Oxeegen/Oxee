@@ -21,9 +21,11 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:conduit_core/features/chat/providers/chat_model_choice.dart';
+import 'package:conduit_core/features/chat/composer/composer_availability.dart';
 import 'package:conduit_core/features/chat/composer/composer_commands.dart';
 import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit_core/features/chat/services/chat_draft_queue.dart';
+import 'package:conduit_core/features/chat/services/quick_pill_catalog.dart';
 import 'package:conduit_core/features/chat/providers/personal_valves_providers.dart';
 import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart';
 import 'package:conduit_core/features/terminal/providers/terminal_providers.dart';
@@ -80,6 +82,7 @@ import 'package:conduit_core/models/toggle_filter.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 
 import '../../../shared/services/navigation_service.dart';
+import '../../../core/services/media_upload_controller.dart';
 import '../../../core/services/native_sheet_bridge.dart';
 import '../services/native_stt_service.dart';
 
@@ -412,8 +415,11 @@ class ModernChatInput extends ConsumerStatefulWidget {
   final Function(String) onSendMessage;
 
   /// Acknowledges admission before the composer retires its local draft.
+  /// [files] are the tray's files the send took when it was asked for: the
+  /// message carries exactly these, and the host retires exactly these.
   final Future<ChatSendPlaceholderHandle?> Function(
     String text,
+    MediaAttachmentOwnershipSnapshot files,
     void Function(ChatSendPlaceholderHandle) onPrepared,
   )?
   onSendDraft;
@@ -422,9 +428,11 @@ class ModernChatInput extends ConsumerStatefulWidget {
   /// Null where the host cannot run one. Completes with the committed turn, or
   /// null if it was not durably admitted; the composer keeps its draft unless
   /// it was, and clears it only while it still shows the chat the turn is in.
+  /// [files] are as for [onSendDraft].
   final Future<ChatSendPlaceholderHandle?> Function(
     String text,
     List<Model> models,
+    MediaAttachmentOwnershipSnapshot files,
     void Function(ChatSendPlaceholderHandle) onPrepared,
   )?
   onCompareSend;
@@ -618,6 +626,10 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   static const Duration _contextSuggestionDelay = Duration(milliseconds: 250);
   static const int _maxContextSuggestionsPerType = 4;
+
+  /// The knowledge picker's row for the whole base, among its files' ids.
+  static const String _wholeKnowledgeBaseOptionId =
+      'conduit.knowledge.whole-base';
 
   // The expanded composer keeps a soft, pill-like corner.
   static const double _composerRadius = AppBorderRadius.xl;
@@ -996,6 +1008,14 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
         }
       });
     }
+    // An empty field is laid out for its placeholder, and the chat's is
+    // its model's name: another model's may wrap where the last one fit, or
+    // fit where it wrapped. The field's measured width has not changed, so
+    // nothing else re-derives the line state.
+    if (widget.placeholder != oldWidget.placeholder &&
+        _controller.text.isEmpty) {
+      _recomputeComposerLineState();
+    }
   }
 
   /// Whether the typed message would be queued behind the running response
@@ -1004,20 +1024,18 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
   bool get _queuesInsteadOfSending => ref.read(chatDraftQueueOfferProvider);
 
   /// Whether this composer sends to a Hermes Desktop Gateway.
-  bool get _isDesktopHermesComposer {
-    final model = ref.read(selectedModelProvider);
-    return model != null &&
-        isHermesModel(model) &&
-        ref.read(hermesConfigProvider).mode ==
-            HermesBackendMode.desktopGateway;
-  }
+  bool get _isDesktopHermesComposer =>
+      isHermesDesktopComposer(ref.read, ref.read(selectedModelProvider));
 
   /// Queues what is typed, with the composer's files, and clears the composer.
   /// A draft the queue refuses (the response just ended) leaves it untouched.
   /// Queueing is a send, so it is felt once, as one, whichever way it came.
   void _queueDraft() {
-    final text = _controller.text.trim();
-    if (text.isEmpty || !widget.enabled) return;
+    if (!widget.enabled ||
+        (_controller.text.trim().isEmpty &&
+            ref.read(attachedFilesProvider).isEmpty)) {
+      return;
+    }
     final wireText = _outgoingText();
     final queue = ref.read(chatDraftQueueProvider.notifier);
     if (queue.enqueue(wireText) == null) return;
@@ -1058,10 +1076,19 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
       unawaited(_stopVoice());
       return;
     }
-    final text = _controller.text.trim();
-    if (text.isEmpty || !widget.enabled) return;
+    if (!widget.enabled) return;
+    // A queued draft may hold files still uploading, so Enter takes what
+    // Queue takes.
     if (_queuesInsteadOfSending) {
       _queueDraft();
+      return;
+    }
+    final text = _controller.text.trim();
+    final files = ref.read(attachedFilesProvider);
+    // As Send does, wait for every file: the send would leave out one still
+    // uploading.
+    if (!files.every((file) => file.status == FileUploadStatus.completed) ||
+        !draftHasSendableContent(text, files)) {
       return;
     }
     // While a reply runs the send button is Stop, and no other way to send
@@ -1083,13 +1110,21 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     // admit a comparison sends the message the ordinary way.
     final saved = ref.read(folderDraftComparisonModelsProvider);
     if (saved != null && widget.onCompareSend != null) {
-      unawaited(_sendComparison(saved, _captureComposerOwner()));
+      unawaited(
+        _sendComparison(saved, _captureComposerOwner(), _captureSentFiles()),
+      );
       return;
     }
 
     final sendDraft = widget.onSendDraft;
     if (sendDraft != null) {
-      unawaited(_sendOwnedDraft(_captureComposerOwner(), sendDraft));
+      unawaited(
+        _sendOwnedDraft(
+          _captureComposerOwner(),
+          _captureSentFiles(),
+          sendDraft,
+        ),
+      );
       return;
     }
 
@@ -1544,8 +1579,15 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     if (!mounted || _isDeactivated) return;
     final owner = _captureComposerOwner();
     final models = await showComparisonSetupSheet(context, ref);
-    await _sendComparison(models, owner);
+    if (models == null || !mounted || _isDeactivated) return;
+    await _sendComparison(models, owner, _captureSentFiles());
   }
+
+  /// The tray's uploaded files, taken for one send as it is asked for: the
+  /// send may wait before its host reads the tray, and a file attached
+  /// meanwhile is not one it checked.
+  MediaAttachmentOwnershipSnapshot _captureSentFiles() =>
+      ref.read(mediaUploadControllerProvider).captureSentAttachments();
 
   /// The account and the chat this composer is showing, named before anything
   /// awaits. A new chat has no conversation yet.
@@ -1556,34 +1598,50 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
   );
 
   /// Sends the composer's message to [models] as one comparison turn and clears
-  /// the composer once that turn is committed. [models] is null when the user
-  /// chose none. The setup command and a project draft that starts with saved
-  /// models both send through here.
+  /// the composer once that turn is committed. The setup command and a project
+  /// draft that starts with saved models both send through here.
   Future<void> _sendComparison(
-    List<Model>? models,
+    List<Model> models,
     _ComposerOwner owner,
+    MediaAttachmentOwnershipSnapshot files,
   ) async {
-    if (models == null) return;
     final send = widget.onCompareSend;
-    if (send == null) return;
+    if (send == null) {
+      unawaited(
+        ref.read(mediaUploadControllerProvider).releaseSentAttachments(files),
+      );
+      return;
+    }
     await _sendOwnedDraft(
       owner,
-      (text, onPrepared) => send(text, models, onPrepared),
+      files,
+      (text, files, onPrepared) => send(text, models, files, onPrepared),
     );
   }
 
   Future<void> _sendOwnedDraft(
     _ComposerOwner owner,
+    MediaAttachmentOwnershipSnapshot files,
     Future<ChatSendPlaceholderHandle?> Function(
       String,
+      MediaAttachmentOwnershipSnapshot,
       void Function(ChatSendPlaceholderHandle),
     )
     send,
   ) async {
-    if (_sendingDraft) return;
+    final media = ref.read(mediaUploadControllerProvider);
+    if (_sendingDraft) {
+      unawaited(media.releaseSentAttachments(files));
+      return;
+    }
     _sendingDraft = true;
+    // Once the host has the files, it is the host that lets them go.
+    var handedOver = false;
     try {
-      await _admitOwnedDraft(owner, send);
+      await _admitOwnedDraft(owner, files, (text, files, onPrepared) {
+        handedOver = true;
+        return send(text, files, onPrepared);
+      });
     } catch (_) {
       if (mounted) {
         AdaptiveSnackBar.show(
@@ -1593,6 +1651,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
         );
       }
     } finally {
+      if (!handedOver) unawaited(media.releaseSentAttachments(files));
       _sendingDraft = false;
       _draftSendOwner = null;
     }
@@ -1600,8 +1659,10 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
 
   Future<void> _admitOwnedDraft(
     _ComposerOwner owner,
+    MediaAttachmentOwnershipSnapshot files,
     Future<ChatSendPlaceholderHandle?> Function(
       String,
+      MediaAttachmentOwnershipSnapshot,
       void Function(ChatSendPlaceholderHandle),
     )
     send,
@@ -1617,7 +1678,10 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
       return;
     }
     final wireText = _outgoingText();
-    if (wireText.isEmpty || !widget.enabled) return;
+    if (!draftHasSendableContent(wireText, files.attachments) ||
+        !widget.enabled) {
+      return;
+    }
     // Edits made after this point belong to a newer draft.
     final draftGeneration = _editGeneration;
     // The draft is the user's until the turn is durably admitted: a refusal
@@ -1636,6 +1700,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     }
     final committed = await send(
       wireText,
+      files,
       (handle) => _draftSendOwner = handle,
     );
     if (committed != null) {
@@ -1974,14 +2039,8 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     return model != null && isLibreChatModel(model);
   }
 
-  bool get _openWebUiSkillsAvailable {
-    if (!ref.read(openWebUiAccountAvailableProvider)) return false;
-    final model = ref.read(selectedModelProvider);
-    return model == null ||
-        (!isHermesModel(model) &&
-            !isLibreChatModel(model) &&
-            !isLocallyMintedDirectModel(model));
-  }
+  bool get _openWebUiSkillsAvailable =>
+      composerSkillsAvailable(ref.read, ref.read(selectedModelProvider));
 
   /// Whether `@` offers models to switch to. A LibreChat turn takes no
   /// mention, and a LibreChat chat goes on only with LibreChat's models.
@@ -2008,8 +2067,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
       selectionStart: selection.start,
       selectionEnd: selection.end,
       allowSkills: _openWebUiSkillsAvailable,
-      allowContext:
-          model == null || (!isHermesModel(model) && !isLibreChatModel(model)),
+      allowContext: composerContextAvailable(model),
       triggers: {
         ComposerCommandTrigger.prompt,
         ComposerCommandTrigger.context,
@@ -2698,6 +2756,16 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     return _skillSuggestions.asData?.value.isNotEmpty ?? false;
   }
 
+  void _attachWholeKnowledgeBase(KnowledgeBase base) {
+    ref
+        .read(contextAttachmentsProvider.notifier)
+        .addKnowledgeBase(
+          id: base.id,
+          name: base.name,
+          description: base.description,
+        );
+  }
+
   Future<void> _openKnowledgePicker({String? initialBaseId}) async {
     _hidePromptOverlay();
 
@@ -2753,17 +2821,21 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
         final selectedBaseModel = bases.firstWhere(
           (base) => base.id == selectedBase,
         );
+        // The whole base is offered however many files it lists, none
+        // included.
         final files =
             ref.read(knowledgeCacheProvider).files[selectedBase] ??
             const <KnowledgeBaseFile>[];
-        if (files.isEmpty) {
-          return;
-        }
         final selectedFileId = await NativeSheetBridge.instance
             .presentOptionsSelector(
               title: selectedBaseModel.name,
               subtitle: l10n.files,
               options: [
+                NativeSheetOptionConfig(
+                  id: _wholeKnowledgeBaseOptionId,
+                  label: l10n.knowledgeBaseEntire,
+                  sfSymbol: 'books.vertical',
+                ),
                 for (final file in files)
                   NativeSheetOptionConfig(
                     id: file.id,
@@ -2775,6 +2847,10 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
               rethrowErrors: true,
             );
         if (selectedFileId == null || !mounted) {
+          return;
+        }
+        if (selectedFileId == _wholeKnowledgeBaseOptionId) {
+          _attachWholeKnowledgeBase(selectedBaseModel);
           return;
         }
         for (final file in files) {
@@ -2819,6 +2895,9 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
                       cacheState.isLoading ||
                       (selectedBaseId != null &&
                           !filesMap.containsKey(selectedBaseId));
+                  final KnowledgeBase? wholeBase = bases
+                      .where((base) => base.id == selectedBaseId)
+                      .firstOrNull;
 
                   Future<void> loadFiles(KnowledgeBase base) async {
                     setModalState(() {
@@ -2871,8 +2950,39 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
                                       child: AdaptiveProgressIndicator(),
                                     )
                                   : ListView.builder(
-                                      itemCount: files.length,
+                                      itemCount:
+                                          files.length +
+                                          (wholeBase == null ? 0 : 1),
                                       itemBuilder: (context, index) {
+                                        if (wholeBase != null) {
+                                          if (index == 0) {
+                                            return AdaptiveListTile(
+                                              leading: Icon(
+                                                Platform.isIOS
+                                                    ? CupertinoIcons.folder
+                                                    : Icons.folder_outlined,
+                                              ),
+                                              title: Text(
+                                                AppLocalizations.of(context)!
+                                                    .knowledgeBaseEntire,
+                                              ),
+                                              subtitle: Text(
+                                                wholeBase.name,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              onTap: () {
+                                                _attachWholeKnowledgeBase(
+                                                  wholeBase,
+                                                );
+                                                if (modalContext.mounted) {
+                                                  Navigator.of(modalContext)
+                                                      .pop();
+                                                }
+                                              },
+                                            );
+                                          }
+                                          index -= 1;
+                                        }
                                         final file = files[index];
                                         final KnowledgeBase? selectedBase =
                                             bases.isEmpty
@@ -3207,6 +3317,9 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
 
   ComposerOverflowAttachmentAvailability get _overflowAttachmentAvailability {
     final model = ref.read(selectedModelProvider);
+    // The kinds are conduit_core's (composer_availability.dart); this
+    // composer offers those it has a picker for.
+    final kinds = composerAttachmentKinds(ref.read, model);
     if (model != null && isLibreChatModel(model)) {
       return ComposerOverflowAttachmentAvailability(
         file: widget.onFileAttachment != null,
@@ -3216,49 +3329,25 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
         web: false,
       );
     }
-    final hermesMode = model != null && isHermesModel(model);
-    if (hermesMode) {
-      final inputImages =
-          ref.read(hermesCapabilitiesProvider).asData?.value.inputImages ==
-          true;
+    if (model != null && isHermesModel(model)) {
       return ComposerOverflowAttachmentAvailability(
-        // Hermes documents are ingested locally and sent as text, so this is
-        // deliberately independent of the remote image-input capability.
         file: widget.onFileAttachment != null,
         serverFile: false,
-        photo: inputImages && widget.onImageAttachment != null,
-        camera: inputImages && widget.onCameraCapture != null,
+        photo: kinds.image && widget.onImageAttachment != null,
+        camera: kinds.image && widget.onCameraCapture != null,
         web: false,
       );
     }
-
-    final directMode = model != null && hasReservedDirectIdentity(model);
-    final imageInputAvailable =
-        model != null &&
-        ref.read(visionCapableModelsProvider).contains(model.id);
-    final fileInputAvailable =
-        model != null &&
-        ref.read(fileUploadCapableModelsProvider).contains(model.id);
-    final mcpContentAvailable =
-        directMode &&
-        ref
-            .read(directMcpServersProvider)
-            .maybeWhen(
-              data: (servers) => servers.any((server) => server.enabled),
-              orElse: () => false,
-            );
     return ComposerOverflowAttachmentAvailability(
-      file: fileInputAvailable && widget.onFileAttachment != null,
-      serverFile:
-          !directMode &&
-          fileInputAvailable &&
-          widget.onServerFileAttachment != null,
-      photo: imageInputAvailable && widget.onImageAttachment != null,
-      camera: imageInputAvailable && widget.onCameraCapture != null,
-      web: !directMode && widget.onWebAttachment != null,
-      mcpContent: mcpContentAvailable,
+      file: kinds.file && widget.onFileAttachment != null,
+      serverFile: kinds.serverFile && widget.onServerFileAttachment != null,
+      photo: kinds.image && widget.onImageAttachment != null,
+      camera: kinds.image && widget.onCameraCapture != null,
+      web: kinds.web && widget.onWebAttachment != null,
+      mcpContent: kinds.mcpContent,
     );
   }
+
 
   List<IosKeyboardAttachmentActionConfig> _nativeKeyboardAttachmentActions({
     required AppLocalizations l10n,
@@ -3706,6 +3795,10 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
             files.every((f) => f.status == FileUploadStatus.completed),
       ),
     );
+    // Files alone make a message: Send stands in for the voice call.
+    final hasDraft =
+        _hasText ||
+        ref.watch(attachedFilesProvider.select((files) => files.isNotEmpty));
 
     final webSearchEnabled = ref.watch(webSearchEnabledProvider);
     final webSearchAvailable = ref.watch(webSearchAvailableProvider);
@@ -3792,8 +3885,6 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
         _scheduleNativeKeyboardAttachmentSync();
       });
     }
-    final bool showWebPill = selectedQuickPills.contains('web');
-    final bool showImagePillPref = selectedQuickPills.contains('image');
     final voiceAvailableAsync = ref.watch(voiceInputAvailableProvider);
     final bool voiceAvailable = voiceAvailableAsync.maybeWhen(
       data: (v) => v,
@@ -3944,64 +4035,64 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     final Color placeholderFocused = placeholderColor;
     final List<Widget> quickPills = <Widget>[];
 
-    for (final id in selectedQuickPills) {
-      if (isHermesComposer || isDirectComposer || isLibreChatComposer) {
-        break;
-      }
-      final filterId = ComposerOverflowActionIds.filterIdFrom(id);
-      if (id == 'web' && showWebPill && webSearchAvailable) {
-        final String label = AppLocalizations.of(context)!.web;
-        final IconData icon = Platform.isIOS
-            ? CupertinoIcons.search
-            : Icons.search;
-        void handleTap() {
-          final notifier = ref.read(webSearchEnabledProvider.notifier);
-          notifier.set(!webSearchEnabled);
-        }
-
-        quickPills.add(
-          _buildPillButton(
-            icon: icon,
-            label: label,
-            isActive: webSearchEnabled,
-            dense: true,
-            onTap: widget.enabled && !_isRecording ? handleTap : null,
-          ),
-        );
-      } else if (id == 'image' && showImagePillPref && imageGenAvailable) {
-        final String label = AppLocalizations.of(context)!.imageGen;
-        final IconData icon = Platform.isIOS
-            ? CupertinoIcons.photo
-            : Icons.image;
-        void handleTap() {
-          setComposerOverflowSelection(
-            ref,
-            actionId: ComposerOverflowActionIds.imageGeneration,
-            selected: !imageGenEnabled,
+    // The chosen pills this composer can turn on, by core's rules (the
+    // desktop's composer draws the same list).
+    final composerPills =
+        isHermesComposer || isDirectComposer || isLibreChatComposer
+        ? const <QuickPillCandidate>[]
+        : composerQuickPills(
+            selectedQuickPills,
+            webSearchAvailable: webSearchAvailable,
+            imageGenerationAvailable: imageGenAvailable,
+            tools: availableTools,
+            filters: availableFilters,
           );
-        }
-
-        quickPills.add(
-          _buildPillButton(
-            icon: icon,
-            label: label,
-            isActive: imageGenEnabled,
-            dense: true,
-            onTap: widget.enabled && !_isRecording ? handleTap : null,
-          ),
-        );
-      } else if (filterId != null) {
-        // Handle filter quick pills
-        ToggleFilter? filter;
-        for (final f in availableFilters) {
-          if (f.id == filterId) {
-            filter = f;
-            break;
+    for (final pill in composerPills) {
+      switch (pill.kind) {
+        case QuickPillKind.web:
+          final String label = AppLocalizations.of(context)!.web;
+          final IconData icon = Platform.isIOS
+              ? CupertinoIcons.search
+              : Icons.search;
+          void handleTap() {
+            final notifier = ref.read(webSearchEnabledProvider.notifier);
+            notifier.set(!webSearchEnabled);
           }
-        }
-        if (filter != null) {
+
+          quickPills.add(
+            _buildPillButton(
+              icon: icon,
+              label: label,
+              isActive: webSearchEnabled,
+              dense: true,
+              onTap: widget.enabled && !_isRecording ? handleTap : null,
+            ),
+          );
+        case QuickPillKind.image:
+          final String label = AppLocalizations.of(context)!.imageGen;
+          final IconData icon = Platform.isIOS
+              ? CupertinoIcons.photo
+              : Icons.image;
+          void handleTap() {
+            setComposerOverflowSelection(
+              ref,
+              actionId: ComposerOverflowActionIds.imageGeneration,
+              selected: !imageGenEnabled,
+            );
+          }
+
+          quickPills.add(
+            _buildPillButton(
+              icon: icon,
+              label: label,
+              isActive: imageGenEnabled,
+              dense: true,
+              onTap: widget.enabled && !_isRecording ? handleTap : null,
+            ),
+          );
+        case QuickPillKind.filter:
+          final filterId = pill.targetId;
           final bool isSelected = selectedFilterIds.contains(filterId);
-          final String label = filter.name;
           final IconData icon = Platform.isIOS
               ? CupertinoIcons.sparkles
               : Icons.auto_awesome;
@@ -4013,26 +4104,16 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
           quickPills.add(
             _buildPillButton(
               icon: icon,
-              label: label,
+              label: pill.name,
               isActive: isSelected,
               dense: true,
               onTap: widget.enabled && !_isRecording ? handleTap : null,
-              iconUrl: filter.icon,
+              iconUrl: pill.iconUrl,
             ),
           );
-        }
-      } else {
-        // Handle tool quick pills
-        Tool? tool;
-        for (final t in availableTools) {
-          if (t.id == id) {
-            tool = t;
-            break;
-          }
-        }
-        if (tool != null) {
+        case QuickPillKind.tool:
+          final id = pill.targetId;
           final bool isSelected = selectedToolIds.contains(id);
-          final String label = tool.name;
           final IconData icon = Platform.isIOS
               ? CupertinoIcons.wrench
               : Icons.build;
@@ -4050,13 +4131,12 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
           quickPills.add(
             _buildPillButton(
               icon: icon,
-              label: label,
+              label: pill.name,
               isActive: isSelected,
               dense: true,
               onTap: widget.enabled && !_isRecording ? handleTap : null,
             ),
           );
-        }
       }
     }
 
@@ -4111,7 +4191,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
     // already generating but the draft has not cleared yet; that text is not
     // a new message to queue, so Queue must not flash in for those frames.
     final bool showQueueAction =
-        _hasText &&
+        hasDraft &&
         isGenerating &&
         !_sendingDraft &&
         ref.watch(chatDraftQueueOfferProvider);
@@ -4276,7 +4356,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
               ],
               if (!showInlineMicAction) const SizedBox(width: Spacing.xs),
               _buildPrimaryButton(
-                _hasText,
+                hasDraft,
                 isGenerating,
                 stopGeneration,
                 voiceAvailable,
@@ -4377,7 +4457,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
                 ],
                 if (!compactControls.showMic) const SizedBox(width: Spacing.xs),
                 _buildPrimaryButton(
-                  _hasText,
+                  hasDraft,
                   isGenerating,
                   stopGeneration,
                   voiceAvailable,
@@ -5189,7 +5269,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
   }
 
   Widget _buildPrimaryButton(
-    bool hasText,
+    bool hasDraft,
     bool isGenerating,
     void Function() stopGeneration,
     bool voiceAvailable,
@@ -5216,7 +5296,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
 
     // Don't allow sending until all uploads are complete.
     final enabled =
-        !isGenerating && hasText && widget.enabled && allUploadsComplete;
+        !isGenerating && hasDraft && widget.enabled && allUploadsComplete;
 
     // Generating -> STOP variant, for a reply this account may stop. Another
     // person's reply leaves the draft to Queue, and Send waits for it.
@@ -5253,7 +5333,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
       return SizedBox.square(dimension: buttonSize);
     }
 
-    if (hasText) {
+    if (hasDraft) {
       final onPressed = enabled ? _sendMessage : null;
       final glyphLit = enabled;
       final sendChild = hasUploadsInProgress
@@ -5901,6 +5981,7 @@ class _ModernChatInputState extends ConsumerState<ModernChatInput>
       useSafeArea: true,
       builder: (modalContext) => ExpandedTextEditorSheet(
         controller: modalController,
+        hint: widget.placeholder,
         onClose: () {
           FocusScope.of(modalContext).unfocus();
           Navigator.of(modalContext).pop(false);

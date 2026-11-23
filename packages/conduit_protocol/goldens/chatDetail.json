@@ -1,0 +1,69 @@
+{
+  "summary": {
+    "id": "chat-7c1f0b2a",
+    "title": "Rewriting the sync engine",
+    "updatedAtMs": 1758412800000,
+    "pinned": false,
+    "archived": false,
+    "tags": [],
+    "shared": false,
+    "readOnly": true,
+    "unread": false,
+    "menu": {
+      "share": false,
+      "duplicate": false,
+      "move": false,
+      "markUnread": false,
+      "generateTitle": false,
+      "export": false
+    }
+  },
+  "messages": [
+    {
+      "id": "msg-1",
+      "role": "user",
+      "content": "How does the outbox order writes?",
+      "timestampMs": 1758412700000,
+      "streaming": false,
+      "versions": [],
+      "sources": [],
+      "files": [],
+      "blocks": [],
+      "retryWithoutEffort": false,
+      "comparison": [],
+      "mergeableIds": [],
+      "siblingIds": [],
+      "held": false
+    }
+  ],
+  "readOnly": true,
+  "abilities": {
+    "fork": false,
+    "export": false,
+    "merge": false,
+    "branch": false,
+    "deleteMessages": false,
+    "markUnread": false,
+    "generateTitle": false,
+    "share": false,
+    "saveTemporary": false,
+    "compare": false,
+    "branchFromHere": false,
+    "undoLastTurn": false,
+    "hermesWork": false,
+    "hermesContext": false
+  },
+  "temporary": false,
+  "tasks": [
+    {
+      "id": "1",
+      "content": "Read the DAO",
+      "status": "completed"
+    },
+    {
+      "id": "2",
+      "content": "Draw the order",
+      "status": "in_progress"
+    }
+  ]
+}

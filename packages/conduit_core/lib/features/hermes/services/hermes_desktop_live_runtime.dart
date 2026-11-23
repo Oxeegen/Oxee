@@ -99,10 +99,8 @@ extension _HermesDesktopLiveRuntime on HermesDesktopApiService {
           event.type == 'sudo.request' ||
           event.type == 'secret.request' ||
           event.type == 'mcp.setup.request') {
-        unawaited(
-          _persistPendingDecisionEvent(
-            event,
-          ).then(refreshRestoredCards, onError: (Object _) {}),
+        _persistPendingQuietly(
+          _persistPendingDecisionEvent(event).then(refreshRestoredCards),
         );
       }
       if (event.type == 'connection.update') {
@@ -123,10 +121,8 @@ extension _HermesDesktopLiveRuntime on HermesDesktopApiService {
           event.type == 'sudo.expire' ||
           event.type == 'secret.expire' ||
           event.type == 'mcp.setup.expire') {
-        unawaited(
-          _resolvePendingDecisionEvent(
-            event,
-          ).then(refreshRestoredCards, onError: (Object _) {}),
+        _persistPendingQuietly(
+          _resolvePendingDecisionEvent(event).then(refreshRestoredCards),
         );
       }
       if (startedBuffering &&
@@ -138,6 +134,7 @@ extension _HermesDesktopLiveRuntime on HermesDesktopApiService {
       }
     });
     _emitTurnState(HermesDesktopTurnState.idle);
+    _relearnDesktopUploadContract();
   }
 
   /// Removes the saved decision [event] closes; resolves to whether one
@@ -168,6 +165,7 @@ extension _HermesDesktopLiveRuntime on HermesDesktopApiService {
         // closing a valid transport merely because the app backgrounded.
         _reconciliationStale = true;
       case AppLifecyclePhase.resumed:
+        resumeRenewal = _authRefreshOnResume();
         _foregroundReconciliation ??= _reconcileForeground().whenComplete(
           () => _foregroundReconciliation = null,
         );
@@ -469,13 +467,23 @@ extension _HermesDesktopLiveRuntime on HermesDesktopApiService {
     return stored;
   }
 
-  Future<List<Map<String, dynamic>>> _runtimeListSessions() async {
+  Future<List<Map<String, dynamic>>> _runtimeListSessions({
+    bool excludeScheduledRuns = false,
+  }) async {
     try {
       return _objects(
         await _requestJson(
           'GET',
           '/api/sessions',
-          query: {'limit': 100, 'offset': 0, 'order': 'recent'},
+          query: {
+            'limit': 100,
+            'offset': 0,
+            'order': 'recent',
+            // As Hermes Desktop lists recents: runs left out by the server,
+            // so they cannot fill the page. Older dashboards ignore it.
+            if (excludeScheduledRuns)
+              'exclude_sources': kHermesScheduledSessionSource,
+          },
           readErrorDetail: true,
         ),
         'sessions',

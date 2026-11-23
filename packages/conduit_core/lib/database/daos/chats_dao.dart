@@ -6,6 +6,8 @@ import 'package:drift/drift.dart';
 import 'package:meta/meta.dart';
 
 import 'package:conduit_core/models/chat_comparison.dart';
+import 'package:conduit_core/features/tether/tether_relay_failure.dart'
+    show withStoredTetherRecord;
 import 'package:conduit_core/models/openwebui_chat_settings.dart';
 import 'package:conduit_core/utils/debug_logger.dart';
 
@@ -21,7 +23,7 @@ part 'chats_dao.g.dart';
 
 const _chatListColumns =
     'id, title, created_at, updated_at, pinned, archived, folder_id, '
-    'last_read_at';
+    'last_read_at, held_unread';
 
 const _archivedChatCountSql = '''
 SELECT COUNT(id) AS archived_count
@@ -105,7 +107,7 @@ class ChatListEntry {
   final bool archived;
   final String? folderId;
 
-  /// Epoch seconds.
+  /// Epoch seconds: the read shown ([shownLastReadAt]).
   final int? lastReadAt;
 }
 
@@ -162,6 +164,10 @@ class ServerChatBulkScope {
   bool get hasWorkTheServerLacks => unsyncedEdits > 0 || queuedResponses > 0;
 }
 
+/// What [ChatsDao.settleHeldTurn] did: whether the question was answered
+/// meanwhile, and the empty answers it removed.
+typedef HeldTurnSettle = ({bool answeredMeanwhile, Set<String> removed});
+
 /// Chat row accessor (CDT-RFC-001 §6, §7.4, §10).
 @DriftAccessor(tables: [Chats, Messages])
 class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
@@ -177,7 +183,8 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
     return encoded == null ? null : jsonDecode(encoded) as List<dynamic>;
   }
 
-  /// Called under the chat lock after a successful pull merge.
+  /// Called under the chat lock after a pull merge that stored the server's
+  /// copy, and with it these events or a newer task list.
   void clearPendingServerTasks(String chatId) =>
       _pendingTaskEvents.remove(chatId);
 
@@ -207,6 +214,77 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
 
   void _noteModelListWrite(String chatId) {
     _modelListVersions[chatId] = modelListVersion(chatId) + 1;
+  }
+
+  final _pushVersions = <String, int>{};
+
+  /// Counts the pushes of chat [chatId] that have landed on the server here.
+  /// A fetch takes it before it reads the chat, so a copy read before a push
+  /// landed is known for one: Open WebUI's `updated_at` is whole seconds, and
+  /// a copy read just before a push in the same second carries the very
+  /// stamp the push left as the merge base.
+  int pushVersion(String chatId) => _pushVersions[chatId] ?? 0;
+
+  /// A push of chat [chatId] has landed: the server holds the rows it sent.
+  void notePushLanded(String chatId) {
+    _pushVersions[chatId] = pushVersion(chatId) + 1;
+    noteEnvelopeChanged(chatId);
+  }
+
+  int _envelopeClock = 0;
+  final _envelopeChangedAt = <String, int>{};
+
+  /// Advances whenever this device changes a chat's envelope
+  /// ([updateEnvelope], [updateEnvelopeWithOutbox], [noteEnvelopeChanged]) or
+  /// a push of it lands ([notePushLanded]). A reader of the server's pins and
+  /// archives takes it before its first request, and writes nothing over a
+  /// chat [envelopeChangedSince] then: what it read may predate that change.
+  int get localEnvelopeClock => _envelopeClock;
+
+  /// This device changed chat [chatId]'s pin or archive on the server without
+  /// writing its row, as conduitd does.
+  void noteEnvelopeChanged(String chatId) {
+    _envelopeChangedAt[chatId] = ++_envelopeClock;
+  }
+
+  bool envelopeChangedSince(String chatId, int since) =>
+      (_envelopeChangedAt[chatId] ?? 0) > since;
+
+  final _landedMessageDeletes = <String, Set<String>>{};
+
+  /// The newest messages of chat [chatId] whose delete has landed on the
+  /// server here ([noteMessageDeletesLanded]). No op names them any more, but
+  /// a copy read before the delete landed may still hold them.
+  Set<String> landedMessageDeletes(String chatId) => {
+    ...?_landedMessageDeletes[chatId],
+  };
+
+  /// The deletes of [messageIds] from chat [chatId] have landed on the
+  /// server, as a push of it does ([notePushLanded]).
+  void noteMessageDeletesLanded(String chatId, Iterable<String> messageIds) {
+    final landed = _landedMessageDeletes.putIfAbsent(chatId, () => <String>{});
+    for (final id in messageIds) {
+      landed
+        ..remove(id)
+        ..add(id);
+    }
+    while (landed.length > 64) {
+      landed.remove(landed.first);
+    }
+    notePushLanded(chatId);
+  }
+
+  final _localTurnVersions = <String, int>{};
+
+  /// Counts the turns of chat [chatId] this device stored from its own copy
+  /// ([MessagesDao.upsertLocalEchoTurn]). A fetch takes it before it reads
+  /// the chat, so a copy read before an answer was stored here, with an
+  /// error that reached this device first, does not put it back.
+  int localTurnVersion(String chatId) => _localTurnVersions[chatId] ?? 0;
+
+  /// This device stored a turn of chat [chatId] from its own copy.
+  void noteLocalTurn(String chatId) {
+    _localTurnVersions[chatId] = localTurnVersion(chatId) + 1;
   }
 
   /// The model list stored with chat [chatId], or null when it has none.
@@ -243,8 +321,70 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
       _unreadMarksInFlight.containsKey(chatId) ||
       (_readStateTouchedAt[chatId] ?? 0) > since;
 
+  /// Whether a mark of unread of chat [chatId] is under way ([markUnread]
+  /// until its [finishUnread]).
+  bool isMarkingUnread(String chatId) =>
+      _unreadMarksInFlight.containsKey(chatId);
+
   void _touchReadState(String chatId) {
     _readStateTouchedAt[chatId] = ++_readStateClock;
+  }
+
+  /// Pin, archive and owner of every non-tombstoned chat with a server id.
+  Future<Map<String, ({bool pinned, bool archived, String? userId})>>
+  serverChatPinsAndArchives() async {
+    final query = selectOnly(chats)
+      ..addColumns([chats.id, chats.pinned, chats.archived, chats.userId])
+      ..where(chats.deleted.equals(false) & chats.id.like('local:%').not());
+    final rows = await query.get();
+    return {
+      for (final row in rows)
+        row.read(chats.id)!: (
+          pinned: row.read(chats.pinned)!,
+          archived: row.read(chats.archived)!,
+          userId: row.read(chats.userId),
+        ),
+    };
+  }
+
+  /// Takes the pin, the archive and, for a chat with no edits of its own
+  /// waiting, the folder Open WebUI reports for chat [chatId], and its owner
+  /// when the row has none. A chat this device does not hold is left alone.
+  /// Returns whether the row changed.
+  ///
+  /// Pins and archives are taken whatever the row's `dirty`: an Open WebUI
+  /// chat is pinned and archived on the server first and never queued, so a
+  /// pin or archive kept here would only be an older copy -- one a push of
+  /// the chat would otherwise put back on the server, as it sets the server's
+  /// pin and archive to the row's.
+  Future<bool> applyServerPinAndArchive(
+    String chatId, {
+    bool? pinned,
+    bool? archived,
+    Value<String?> folderId = const Value.absent(),
+    String? ownerId,
+  }) {
+    return transaction(() async {
+      final existing = await getChat(chatId);
+      if (existing == null || existing.deleted) return false;
+      final pin = pinned != null && pinned != existing.pinned;
+      final archive = archived != null && archived != existing.archived;
+      final folder =
+          folderId.present &&
+          !existing.dirty &&
+          folderId.value != existing.folderId;
+      final owner = ownerId != null && existing.userId == null;
+      if (!pin && !archive && !folder && !owner) return false;
+      await (update(chats)..where((t) => t.id.equals(chatId))).write(
+        ChatsCompanion(
+          pinned: pin ? Value(pinned) : const Value.absent(),
+          archived: archive ? Value(archived) : const Value.absent(),
+          folderId: folder ? folderId : const Value.absent(),
+          userId: owner ? Value(ownerId) : const Value.absent(),
+        ),
+      );
+      return true;
+    });
   }
 
   /// NARROW projection (REQ §10.2): selectOnly() with exactly the
@@ -346,6 +486,13 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
     );
   }
 
+  /// [watchChatMeta], once.
+  Future<ChatListEntry?> getChatMeta(String chatId) async {
+    final query = _listProjection()..where(chats.id.equals(chatId));
+    final row = await query.getSingleOrNull();
+    return row == null ? null : _entryFromProjection(row);
+  }
+
   /// deleted=false, ORDER BY updatedAt DESC.
   Future<List<ChatListEntry>> getChatsInFolder(String folderId) async {
     final query = _listProjection()
@@ -425,6 +572,9 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
   ///  * existing dirty tombstone (deleted && dirty) → SKIP entirely (the
   ///    pending `deleteChat` wins; the drainer purges on confirm) so the
   ///    fast-forward never resurrects a locally-deleted chat;
+  ///  * a copy older than the base (or read before a push or a turn stored
+  ///    here, [readBeforeLocalWrite], which a never-synced stub honours too)
+  ///    → SKIP entirely, reported as [ChatMergeWriteResult.staleRead];
   ///  * otherwise → pure [mergeChat] then write per [MergeOutcome]:
   ///    - noRemoteChange: rows untouched (only `mustPush` is reported);
   ///    - fastForward: delete+reinsert messages `dirty=false`,
@@ -460,9 +610,20 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
     /// never arrived. Background cycles leave this off: comparing
     /// timestamps is what keeps them cheap.
     bool refreshWhenClean = false,
+
+    /// The copy was read before a push of this chat landed
+    /// ([pushVersion]), or before this device stored a turn of its own
+    /// ([localTurnVersion]): older than either, whatever its `updated_at`
+    /// says.
+    bool readBeforeLocalWrite = false,
   }) {
-    final serverChat = server.chat;
     return transaction(() async {
+      // A message whose delete has not landed yet stays out: the server's
+      // copy may still hold it, such as a held question's empty answer.
+      final serverRows = server.withoutMessages(
+        await _outboxDao.unsentMessageDeletes(server.chat.id),
+      );
+      final serverChat = serverRows.chat;
       final existing = await getChat(serverChat.id);
       // The list may predate a read or unread made here since.
       final listedReadAt =
@@ -479,14 +640,26 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
       // an envelope stub before the first body pull, and _writeChatRows replaces
       // all messages.
       if (existing == null || existing.serverUpdatedAt == null) {
-        if (existing != null && existing.dirty) {
-          if (existing.deleted) {
-            return const ChatMergeWriteResult(
+        if (existing != null && existing.dirty && existing.deleted) {
+          return const ChatMergeWriteResult(
+            outcome: MergeOutcome.noRemoteChange,
+            mustPush: false,
+          );
+        }
+        // A copy read before a push or a turn stored here, as for a synced
+        // chat below. Both writes here would drop a turn this device stored
+        // in the stub since: its rows are clean, and the copy lacks them.
+        if (existing != null && readBeforeLocalWrite) {
+          return _mergeResultWithUpdateOpIfMissing(
+            serverChat.id,
+            ChatMergeWriteResult(
               outcome: MergeOutcome.noRemoteChange,
-              mustPush: false,
-            );
-          }
-
+              mustPush: existing.dirty,
+              staleRead: true,
+            ),
+          );
+        }
+        if (existing != null && existing.dirty) {
           final localMessages = await (select(
             messages,
           )..where((t) => t.chatId.equals(serverChat.id))).get();
@@ -496,7 +669,7 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
               if (m.dirty) m.id,
           };
           final result = mergeChat(
-            server: server,
+            server: serverRows,
             local: local,
             base: serverChat.updatedAt - 1,
             chatEnvelopeDirty: true,
@@ -528,7 +701,17 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
           );
         }
         await _writeChatRows(
-          rows: server,
+          rows: existing == null
+              ? serverRows
+              : withAnswersFinishedHere(
+                  serverRows,
+                  chatRowsFromDb(
+                    existing,
+                    await (select(
+                      messages,
+                    )..where((t) => t.chatId.equals(serverChat.id))).get(),
+                  ).messages,
+                ),
           shareId: shareId,
           userId: userId,
           meta: resolvedMeta,
@@ -563,8 +746,31 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
           if (m.dirty) m.id,
       };
 
+      // A copy older than the base: read before a push of this chat landed,
+      // which moved the base on. Its rows are not news, and taking them (a
+      // pull asked for by name refreshes a clean chat) would put the chat
+      // back to before the push -- a message just sent, and its answer's
+      // placeholder, gone until the next pull, and a queued answer's request
+      // dropped for want of its placeholder. A copy read before a push that
+      // landed in the same second carries the base itself, so the push is
+      // counted too ([readBeforeLocalWrite]), as is an answer this device
+      // stored since the copy was read. Nothing beside the rows is taken
+      // either: the copy's model list is the one the push replaced, and its
+      // tags and share link are no safer. The caller reads the chat again
+      // for them ([ChatMergeWriteResult.staleRead]).
+      if (serverChat.updatedAt < base || readBeforeLocalWrite) {
+        return _mergeResultWithUpdateOpIfMissing(
+          serverChat.id,
+          ChatMergeWriteResult(
+            outcome: MergeOutcome.noRemoteChange,
+            mustPush: existing.dirty || dirtyMessageIds.isNotEmpty,
+            staleRead: true,
+          ),
+        );
+      }
+
       final result = mergeChat(
-        server: server,
+        server: serverRows,
         local: local,
         base: base,
         chatEnvelopeDirty: existing.dirty,
@@ -582,7 +788,7 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
           !existing.dirty &&
           dirtyMessageIds.isEmpty) {
         await _writeChatRows(
-          rows: server,
+          rows: withAnswersFinishedHere(serverRows, local.messages),
           shareId: shareId,
           userId: userId,
           meta: resolvedMeta,
@@ -849,9 +1055,13 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
 
     for (final row in incoming) {
       incomingIds.add(row.id);
-      final payload = jsonEncode(row.payload);
-      final dirty = dirtyIds.contains(row.id);
       final existing = existingById[row.id];
+      // Open WebUI's copy records neither that one of the user's devices was
+      // asked nor the relay that failed; the stored row may.
+      final payload = jsonEncode(
+        withStoredTetherRecord(row.payload, existing?.payload),
+      );
+      final dirty = dirtyIds.contains(row.id);
       if (existing == null) {
         inserts.add(_messageCompanion(row, payload: payload, dirty: dirty));
         continue;
@@ -1047,6 +1257,7 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
     Value<bool> archived = const Value.absent(),
     Value<int> updatedAt = const Value.absent(),
   }) {
+    noteEnvelopeChanged(chatId);
     return (update(chats)..where((t) => t.id.equals(chatId))).write(
       ChatsCompanion(
         title: title,
@@ -1236,6 +1447,7 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
     Value<int> updatedAt = const Value.absent(),
     required bool enqueue,
   }) {
+    noteEnvelopeChanged(chatId);
     return transaction(() async {
       await (update(chats)..where((t) => t.id.equals(chatId))).write(
         ChatsCompanion(
@@ -1834,7 +2046,10 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
             createdAt: message.createdAt,
             orderIndex: orderIndex,
             payload: jsonEncode(
-              withStoredMessageMeta(message.payload, existing?.payload),
+              withStoredTetherRecord(
+                withStoredMessageMeta(message.payload, existing?.payload),
+                existing?.payload,
+              ),
             ),
             dirty: Value(enqueueUpdate),
           ),
@@ -1901,12 +2116,34 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
   /// [chatId] so a turn the user stopped is not re-driven by the next drain.
   /// It also removes the matching empty assistant placeholder before the
   /// co-enqueued `updateChat` drains, so the update reconstructs a blob without
-  /// a permanent empty assistant bubble. An `inFlight` requestCompletion (the
-  /// stream already started) is NOT touched — the stop's transport-cancel
-  /// handles it and its op markDone()s on stream finish. Caller holds the chat
-  /// lock. Returns the number of requestCompletion ops removed.
+  /// a permanent empty assistant bubble. An `inFlight` requestCompletion is
+  /// kept but marked stopped ([RequestCompletionPayload.stopped]): its attempt
+  /// may still be preparing, may fail and come back, or may be resumed after a
+  /// restart, and every attempt reads the mark and never sends. Caller holds
+  /// the chat lock. Returns the number of requestCompletion ops removed.
   Future<int> cancelPendingCompletion(String chatId) {
     return transaction(() async {
+      final inFlight =
+          await (select(_outboxDao.outboxOps)..where(
+                (t) =>
+                    t.chatId.equals(chatId) &
+                    t.kind.equals(OutboxKind.requestCompletion.name) &
+                    t.status.equals(OutboxStatus.inFlight),
+              ))
+              .get();
+      for (final op in inFlight) {
+        final payload = jsonDecode(op.payload);
+        if (payload is! Map<String, dynamic> || payload['stopped'] == true) {
+          continue;
+        }
+        await (update(_outboxDao.outboxOps)
+              ..where((t) => t.seq.equals(op.seq)))
+            .write(
+              OutboxOpsCompanion(
+                payload: Value(jsonEncode({...payload, 'stopped': true})),
+              ),
+            );
+      }
       final pending =
           await (select(_outboxDao.outboxOps)..where(
                 (t) =>
@@ -1956,6 +2193,9 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
                   t.id.isIn([for (final row in placeholders) row.id]),
             ))
             .go();
+        await _dropFromLegacyMessages(chatId, {
+          for (final row in placeholders) row.id,
+        });
 
         final chat = await getChat(chatId);
         if (chat != null &&
@@ -1971,6 +2211,378 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
 
       return removedOps;
     });
+  }
+
+  /// Records that the server took the request writing answer [messageId] of
+  /// chat [chatId]: its row says so
+  /// ([MessagesDao.markAssistantCompletionSubmitted]), and so does the
+  /// `requestCompletion` op that sent it ([RequestCompletionPayload.submitted]),
+  /// which no pull rewrites. Returns whether the row was there to mark.
+  Future<bool> recordCompletionSubmitted({
+    required String chatId,
+    required String messageId,
+  }) {
+    return transaction(() async {
+      final marked = await attachedDatabase.messagesDao
+          .markAssistantCompletionSubmitted(
+            chatId: chatId,
+            messageId: messageId,
+          );
+      final completions =
+          await (select(_outboxDao.outboxOps)..where(
+                (t) =>
+                    t.chatId.equals(chatId) &
+                    t.kind.equals(OutboxKind.requestCompletion.name),
+              ))
+              .get();
+      for (final op in completions) {
+        if (!_requestCompletionAssistantIds(op.payload).contains(messageId)) {
+          continue;
+        }
+        final payload = _decodeJsonObject(op.payload);
+        if (payload['submitted'] == true) continue;
+        await (update(
+          _outboxDao.outboxOps,
+        )..where((t) => t.seq.equals(op.seq))).write(
+          OutboxOpsCompanion(
+            payload: Value(jsonEncode({...payload, 'submitted': true})),
+          ),
+        );
+      }
+      return marked;
+    });
+  }
+
+  /// Records that the server held the question [questionId] of a turn
+  /// instead of answering it, before anything else of the turn's settle
+  /// ([settleHeldTurn]) runs: its empty answers [assistantMessageIds] are
+  /// marked held ([kCompletionHeldMetadataKey]), the `requestCompletion` op
+  /// that sent them only settles from now on
+  /// ([RequestCompletionPayload.held]), with the [earlierHoldIds] its settle
+  /// takes for no answer either, their delete on the server waits in a
+  /// `deleteMessages` op until it lands, and the question says it waits, as
+  /// the server's copy does.
+  ///
+  /// A pull rewrites the answers' rows, so what the settle must not lose is
+  /// kept in the outbox, which no pull touches: while the delete waits a pull
+  /// leaves the answers out ([OutboxDao.unsentMessageDeletes]), and a retry
+  /// of the turn after a settle that failed reads the op and never sends the
+  /// question again. A push of the chat meanwhile leaves them out too, and
+  /// keeps the question waiting. Caller holds the chat lock.
+  Future<void> recordHeldTurn(
+    String chatId, {
+    required String? questionId,
+    required Iterable<String> assistantMessageIds,
+    Iterable<String> earlierHoldIds = const <String>[],
+  }) {
+    return transaction(() async {
+      final answerIds = assistantMessageIds.toSet();
+      if (answerIds.isEmpty) return;
+      final earlier = [
+        for (final id in earlierHoldIds)
+          if (!answerIds.contains(id)) id,
+      ];
+      for (final id in answerIds) {
+        await attachedDatabase.messagesDao.markAssistantCompletionHeld(
+          chatId: chatId,
+          messageId: id,
+        );
+      }
+      final completions =
+          await (select(_outboxDao.outboxOps)..where(
+                (t) =>
+                    t.chatId.equals(chatId) &
+                    t.kind.equals(OutboxKind.requestCompletion.name),
+              ))
+              .get();
+      for (final op in completions) {
+        if (!_requestCompletionAssistantIds(op.payload)
+            .any(answerIds.contains)) {
+          continue;
+        }
+        final payload = _decodeJsonObject(op.payload);
+        if (payload['held'] == true) continue;
+        await (update(
+          _outboxDao.outboxOps,
+        )..where((t) => t.seq.equals(op.seq))).write(
+          OutboxOpsCompanion(
+            payload: Value(
+              jsonEncode({
+                ...payload,
+                'held': true,
+                'heldQuestionId': ?questionId,
+                if (earlier.isNotEmpty) 'heldEarlierIds': earlier,
+              }),
+            ),
+          ),
+        );
+      }
+      final waiting = await _outboxDao.unsentMessageDeletes(chatId);
+      final unrecorded = [
+        for (final id in answerIds)
+          if (!waiting.contains(id)) id,
+      ];
+      if (unrecorded.isNotEmpty) {
+        await _outboxDao.enqueue(
+          kind: OutboxKind.deleteMessages,
+          chatId: chatId,
+          payload: {kDeleteMessagesIdsKey: unrecorded},
+        );
+      }
+      if (questionId == null) return;
+      final question =
+          await (select(messages)..where(
+                (t) => t.chatId.equals(chatId) & t.id.equals(questionId),
+              ))
+              .getSingleOrNull();
+      if (question == null) return;
+      final payload = _decodeJsonObject(question.payload);
+      final meta = payload['meta'];
+      if (meta is Map && meta['status'] == 'pending') return;
+      payload['meta'] = <String, dynamic>{
+        if (meta is Map)
+          for (final entry in meta.entries) entry.key.toString(): entry.value,
+        'status': 'pending',
+      };
+      await (update(messages)
+            ..where((t) => t.chatId.equals(chatId) & t.id.equals(questionId)))
+          .write(MessagesCompanion(payload: Value(jsonEncode(payload))));
+    });
+  }
+
+  /// The answers chat [chatId] stores for question [questionId], and the ids
+  /// known as a hold's empty answers rather than answers: a row marked held
+  /// ([kCompletionHeldMetadataKey]), a message the outbox still has to
+  /// delete, or one a held turn of the question recorded. Read as one: a
+  /// delete that lands meanwhile can't turn a hold into an answer.
+  Future<({List<String> answers, Set<String> holds})> questionAnswers(
+    String chatId,
+    String questionId,
+  ) => transaction(() => _questionAnswers(chatId, questionId));
+
+  Future<({List<String> answers, Set<String> holds})> _questionAnswers(
+    String chatId,
+    String questionId,
+  ) async {
+    final rows = await attachedDatabase.messagesDao.getAnswersTo(
+      chatId,
+      questionId,
+    );
+    final holds = await _outboxDao.unsentMessageDeletes(chatId);
+    final completions =
+        await (select(_outboxDao.outboxOps)..where(
+              (t) =>
+                  t.chatId.equals(chatId) &
+                  t.kind.equals(OutboxKind.requestCompletion.name),
+            ))
+            .get();
+    for (final op in completions) {
+      final payload = _decodeJsonObject(op.payload);
+      if (payload['held'] != true || payload['heldQuestionId'] != questionId) {
+        continue;
+      }
+      holds.addAll(_requestCompletionAssistantIds(op.payload));
+      if (payload['heldEarlierIds'] case final List earlier) {
+        holds.addAll(earlier.whereType<String>());
+      }
+    }
+    for (final row in rows) {
+      if (_decodeJsonObject(row.payload)['metadata'] case {
+        kCompletionHeldMetadataKey: true,
+      }) {
+        holds.add(row.id);
+      }
+    }
+    return (answers: [for (final row in rows) row.id], holds: holds);
+  }
+
+  /// Settles a turn whose question [questionId] the server holds until a reply
+  /// running in its chat ends ([kMessageHeldByServerMetadataKey]): its empty
+  /// answers [assistantMessageIds] go, and the question keeps the server's
+  /// `meta.status: 'pending'`, so a later push of the chat keeps the hold.
+  ///
+  /// Their delete on the server waits in a `deleteMessages` op
+  /// ([recordHeldTurn]) for those of them still there
+  /// ([unsentServerDeletes]: their delete failed), retried until it lands:
+  /// Open WebUI answers the question only once nothing answers it. The
+  /// others leave that op.
+  ///
+  /// Its answers are only those and the empty ones another hold of it left:
+  /// [earlierHoldIds], and any the stored chat knows as a hold's
+  /// ([questionAnswers]). Those go too: their own op deletes them on the
+  /// server. A question with any other child has been answered meanwhile, by
+  /// an answer a pull stored: it does not wait, and keeps that answer
+  /// ([HeldTurnSettle.answeredMeanwhile]). Otherwise the chat's current
+  /// message moves to the question only from one of its answers, so a branch
+  /// picked meanwhile stays picked.
+  ///
+  /// Nothing is marked for a push. The server answers the question under new
+  /// ids, and a push of this copy after that would bring the held question
+  /// back for it to answer twice. Caller holds the chat lock.
+  Future<HeldTurnSettle> settleHeldTurn(
+    String chatId, {
+    required String? questionId,
+    required Iterable<String> assistantMessageIds,
+    Iterable<String> earlierHoldIds = const <String>[],
+    Iterable<String> unsentServerDeletes = const <String>[],
+  }) {
+    return transaction(() async {
+      final answerIds = assistantMessageIds.toList(growable: false);
+      final formerAnswers = <String>{...answerIds, ...earlierHoldIds};
+      if (questionId != null) {
+        final stored = await _questionAnswers(chatId, questionId);
+        formerAnswers.addAll(stored.answers.where(stored.holds.contains));
+      }
+      if (formerAnswers.isNotEmpty) {
+        await (delete(messages)..where(
+              (t) =>
+                  t.chatId.equals(chatId) &
+                  t.id.isIn(formerAnswers.toList()) &
+                  t.role.equals('assistant'),
+            ))
+            .go();
+        await _dropFromLegacyMessages(chatId, formerAnswers);
+      }
+      await _keepHeldDeletes(
+        chatId,
+        answerIds: answerIds,
+        unsent: unsentServerDeletes.toSet(),
+      );
+
+      final unanswered = (answeredMeanwhile: false, removed: formerAnswers);
+      if (questionId == null) return unanswered;
+      final question =
+          await (select(messages)..where(
+                (t) => t.chatId.equals(chatId) & t.id.equals(questionId),
+              ))
+              .getSingleOrNull();
+      if (question == null) return unanswered;
+      // The newest answer the server wrote meanwhile, if a pull stored one.
+      final answerMeanwhile =
+          (await (selectOnly(messages)
+                    ..addColumns([messages.id])
+                    ..where(
+                      messages.chatId.equals(chatId) &
+                          messages.parentId.equals(questionId) &
+                          messages.id.isNotIn(formerAnswers),
+                    )
+                    ..orderBy([OrderingTerm.desc(messages.createdAt)])
+                    ..limit(1))
+                  .getSingleOrNull())
+              ?.read(messages.id);
+      final answeredMeanwhile = answerMeanwhile != null;
+      final payload = _decodeJsonObject(question.payload);
+      final children = payload['childrenIds'];
+      if (children is List) {
+        payload['childrenIds'] = [
+          for (final child in children)
+            if (!formerAnswers.contains(child)) child,
+        ];
+      }
+      final meta = <String, dynamic>{
+        if (payload['meta'] case final Map meta)
+          for (final entry in meta.entries) entry.key.toString(): entry.value,
+      };
+      if (!answeredMeanwhile) {
+        payload['meta'] = {...meta, 'status': 'pending'};
+      } else if (meta['status'] == 'pending') {
+        // A copy the server answered elsewhere may still say it waits.
+        payload['meta'] = meta..remove('status');
+      }
+      await (update(messages)
+            ..where((t) => t.chatId.equals(chatId) & t.id.equals(questionId)))
+          .write(MessagesCompanion(payload: Value(jsonEncode(payload))));
+      // A removed answer can't stay the chat's tip: it moves to the answer
+      // the server wrote meanwhile, or else to the question, which waits.
+      // Any other tip, a branch picked here, stays.
+      final chat = await getChat(chatId);
+      if (chat != null && formerAnswers.contains(chat.currentMessageId)) {
+        await (update(chats)..where((t) => t.id.equals(chatId))).write(
+          ChatsCompanion(
+            currentMessageId: Value<String?>(answerMeanwhile ?? questionId),
+          ),
+        );
+      }
+      return (answeredMeanwhile: answeredMeanwhile, removed: formerAnswers);
+    });
+  }
+
+  /// Removes [ids] from the legacy top-level `messages` list chat [chatId]
+  /// keeps from the server's copy: a later push sends that list as it is,
+  /// once no delete is left to say they are gone. An envelope that can't be
+  /// read is left as it is.
+  Future<void> _dropFromLegacyMessages(String chatId, Set<String> ids) async {
+    final chat = await getChat(chatId);
+    if (chat == null) return;
+    final envelope = _decodeJsonObject(chat.rawExtra);
+    final legacy = envelope['messages'];
+    final kept = ChatRows.legacyMessagesWithout(legacy, ids);
+    if (identical(kept, legacy)) return;
+    await (update(chats)..where((t) => t.id.equals(chatId))).write(
+      ChatsCompanion(
+        rawExtra: Value(jsonEncode({...envelope, 'messages': kept})),
+      ),
+    );
+  }
+
+  /// Leaves the server delete of each of [answerIds] waiting in a
+  /// `deleteMessages` op only when it is [unsent]: a landed one leaves every
+  /// op not in flight, and an unsent one no op records yet gets one.
+  Future<void> _keepHeldDeletes(
+    String chatId, {
+    required List<String> answerIds,
+    required Set<String> unsent,
+  }) async {
+    final landed = {
+      for (final id in answerIds)
+        if (!unsent.contains(id)) id,
+    };
+    if (landed.isNotEmpty) {
+      final waiting =
+          await (select(_outboxDao.outboxOps)..where(
+                (t) =>
+                    t.chatId.equals(chatId) &
+                    t.kind.equals(OutboxKind.deleteMessages.name) &
+                    t.status.equals(OutboxStatus.inFlight).not(),
+              ))
+              .get();
+      for (final op in waiting) {
+        final payload = _decodeJsonObject(op.payload);
+        final ids = payload[kDeleteMessagesIdsKey];
+        if (ids is! List || !ids.any(landed.contains)) continue;
+        final kept = [
+          for (final id in ids)
+            if (!landed.contains(id)) id,
+        ];
+        if (kept.isEmpty) {
+          await (delete(
+            _outboxDao.outboxOps,
+          )..where((t) => t.seq.equals(op.seq))).go();
+        } else {
+          await (update(
+            _outboxDao.outboxOps,
+          )..where((t) => t.seq.equals(op.seq))).write(
+            OutboxOpsCompanion(
+              payload: Value(
+                jsonEncode({...payload, kDeleteMessagesIdsKey: kept}),
+              ),
+            ),
+          );
+        }
+      }
+    }
+    final recorded = await _outboxDao.unsentMessageDeletes(chatId);
+    final unrecorded = [
+      for (final id in answerIds)
+        if (unsent.contains(id) && !recorded.contains(id)) id,
+    ];
+    if (unrecorded.isNotEmpty) {
+      await _outboxDao.enqueue(
+        kind: OutboxKind.deleteMessages,
+        chatId: chatId,
+        payload: {kDeleteMessagesIdsKey: unrecorded},
+      );
+    }
   }
 
   /// Cancels one queued assistant completion from the chat UI. Unlike
@@ -2042,6 +2654,9 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
                   t.id.isIn([for (final row in placeholders) row.id]),
             ))
             .go();
+        await _dropFromLegacyMessages(chatId, {
+          for (final row in placeholders) row.id,
+        });
 
         final chat = await getChat(chatId);
         final tip = chat == null
@@ -2066,13 +2681,61 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
   }
 
   /// `UPDATE ... SET last_read_at = max(coalesce(last_read_at, 0), ?)` —
-  /// never lowered.
+  /// never lowered. A read here ends [Chats.heldUnread].
   Future<void> setLastReadAt(String chatId, int epochSeconds) {
     _touchReadState(chatId);
     return customUpdate(
-      'UPDATE chats SET last_read_at = max(coalesce(last_read_at, 0), ?) '
-      'WHERE id = ?',
+      'UPDATE chats SET last_read_at = max(coalesce(last_read_at, 0), ?), '
+      'held_unread = 0 WHERE id = ?',
       variables: [Variable.withInt(epochSeconds), Variable.withString(chatId)],
+      updates: {chats},
+      updateKind: UpdateKind.update,
+    );
+  }
+
+  /// A push of chat [chatId] from this device left the server's copy dated
+  /// [serverUpdatedAt], holding nothing from elsewhere: a chat that was read
+  /// stays read through that date. An unread chat, one marked unread or
+  /// held unread here included, is left as it is.
+  Future<void> keepReadThroughOwnPush(String chatId, int serverUpdatedAt) {
+    return customUpdate(
+      'UPDATE chats SET last_read_at = ? '
+      'WHERE id = ? AND held_unread = 0 AND last_read_at >= updated_at '
+      'AND last_read_at < ?',
+      variables: [
+        Variable.withInt(serverUpdatedAt),
+        Variable.withString(chatId),
+        Variable.withInt(serverUpdatedAt),
+      ],
+      updates: {chats},
+      updateKind: UpdateKind.update,
+    );
+  }
+
+  /// Chat [chatId] holds text never shown here, from the server's copy
+  /// (taken into a push, or returned by one for a pull to bring): it is
+  /// held unread ([Chats.heldUnread]) until it is read here, whatever a
+  /// later push of this device's own sends.
+  Future<void> holdUnread(String chatId) {
+    return customUpdate(
+      'UPDATE chats SET held_unread = 1 WHERE id = ?',
+      variables: [Variable.withString(chatId)],
+      updates: {chats},
+      updateKind: UpdateKind.update,
+    );
+  }
+
+  /// A push of chat [chatId] from this device sent text it took from the
+  /// server's copy, still unseen here, which left that copy dated
+  /// [serverUpdatedAt]: the chat is dated so here at once, as a pull would
+  /// date it.
+  Future<void> dateThroughPushOfServerText(String chatId, int serverUpdatedAt) {
+    return customUpdate(
+      'UPDATE chats SET updated_at = max(updated_at, ?) WHERE id = ?',
+      variables: [
+        Variable.withInt(serverUpdatedAt),
+        Variable.withString(chatId),
+      ],
       updates: {chats},
       updateKind: UpdateKind.update,
     );
@@ -2318,6 +2981,7 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
       chats.archived,
       chats.folderId,
       chats.lastReadAt,
+      chats.heldUnread,
     ]);
   }
 
@@ -2330,7 +2994,11 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
       pinned: row.read(chats.pinned)!,
       archived: row.read(chats.archived)!,
       folderId: row.read(chats.folderId),
-      lastReadAt: row.read(chats.lastReadAt),
+      lastReadAt: shownLastReadAt(
+        row.read(chats.lastReadAt),
+        row.read(chats.updatedAt)!,
+        heldUnread: row.read(chats.heldUnread)!,
+      ),
     );
   }
 
@@ -2343,7 +3011,11 @@ class ChatsDao extends DatabaseAccessor<AppDatabase> with _$ChatsDaoMixin {
       pinned: row.read<bool>('pinned'),
       archived: row.read<bool>('archived'),
       folderId: row.readNullable<String>('folder_id'),
-      lastReadAt: row.readNullable<int>('last_read_at'),
+      lastReadAt: shownLastReadAt(
+        row.readNullable<int>('last_read_at'),
+        row.read<int>('updated_at'),
+        heldUnread: row.read<bool>('held_unread'),
+      ),
     );
   }
 }

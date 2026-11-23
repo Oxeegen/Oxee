@@ -17,10 +17,10 @@ class ServerVersionCompat {
   /// Servers reporting a `/api/config` `version` strictly greater than this are
   /// shown a compatibility warning. Bump this (and re-verify against
   /// `openwebui-src/`) whenever a newer server release is validated.
-  static const String maxSupportedVersion = '0.13.3';
+  static const String maxSupportedVersion = '0.13.4';
 
   /// Parsed [maxSupportedVersion] components: `[major, minor, patch]`.
-  static const List<int> _maxSupported = [0, 13, 3];
+  static const List<int> _maxSupported = [0, 13, 4];
 
   /// Whether [rawVersion] is within the supported range (<= [maxSupportedVersion]).
   ///
@@ -64,6 +64,22 @@ class ServerVersionCompat {
   /// The first Open WebUI release that runs a coding agent as a scheduled
   /// task, and lists the agents a task's terminal offers.
   static const String automationAgentsVersion = '0.13.3';
+
+  /// The first Open WebUI release without Direct Connections and Direct
+  /// Integrations: the models, tool servers and terminals a user kept in
+  /// their own settings come from their Tether devices instead.
+  static const String directConnectionsRemovedVersion = '0.13.4';
+
+  /// The first Open WebUI release that no longer reads `model_item` and
+  /// `tool_servers` from a chat request, and passes them on to the provider
+  /// with the rest of it.
+  static const String clientModelFieldsPassedOnVersion = '0.13.4';
+
+  /// The first Open WebUI release that holds a message sent while a reply in
+  /// its chat is still running, and that reads `regeneration_message_id`,
+  /// which keeps a regeneration from being held. An older one passes that
+  /// field on to the provider.
+  static const String heldMessagesVersion = '0.13.4';
 
   /// Whether [rawVersion] is [minimum] or newer, or null when [rawVersion]
   /// cannot be read. For a choice that must not guess either way.

@@ -30,9 +30,16 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
         ["const BackendChooserPage()", "const ConnectAndSignInPage()",
          "ServerConnectionPage(\n          addingAccount: true,"],
     ),
-    "lib/features/profile/views/profile_page.dart": (
-        ["key: const Key('oxee-region-entry')", "showOxeeRegionSwitcher(context, ref)"],
-        ["_buildDonationSection", "cogwheel0", "launchExternalLink"],
+    # Since upstream 4.3.2 the Flutter Settings pages (Android) draw the same
+    # definitions as the iOS native sheet: one set of hooks covers both.
+    "lib/features/settings/views/settings_root_page.dart": (
+        ["oxeeNativeRootSections(ref.watch, buildNativeProfileRootSections(",
+         "region: () => buildOxeeRegionNativeSheetItem(context, ref.watch)"],
+        [],
+    ),
+    "lib/features/settings/settings_controller.dart": (
+        ["event.id == oxeeRegionNativeSheetItemId", "await showOxeeRegionSwitcher(context, ref);"],
+        [],
     ),
     "lib/features/profile/widgets/account_sheet.dart": (
         ["OxeeStrings.of(context).accountKindTitle",
@@ -40,35 +47,29 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
          ": OxeeRegionAddChoices(close: close)"],
         [],
     ),
-    "lib/features/profile/views/manage_accounts_page.dart": (
-        ["if (oxeeOffersOtherBackends) ...[\n          const _DirectCard(),"],
-        [],
-    ),
     "lib/features/navigation/widgets/sidebar_user_pill.dart": (
-        ["oxeeNativeRootSections(", "buildOxeeRegionNativeSheetItem(context, ref.read)"],
+        ["oxeeNativeRootSections(\n      ref.read,", "region: () => buildOxeeRegionNativeSheetItem(context, ref.read)"],
         ["supportItems: supportItems", "supportTitle: l10n.supportConduit", "buy-me-a-coffee"],
     ),
     "lib/core/services/native_sheet_hydration_service.dart": (
-        ["oxeeNativeAccountsDetail(buildNativeAccountsDetail(",
-         "items: oxeeNativeAboutItems(",
-         "region: buildOxeeRegionNativeSheetItem(ctx, _ref.read)"],
+        ["oxeeNativeAccountsDetail(read, buildNativeAccountsDetail(",
+         "items: oxeeNativeAboutItems(\n            _ref.read,",
+         "region: () => buildOxeeRegionNativeSheetItem(ctx, _ref.read)",
+         "oxeePushSections(_ref.read, buildNativePushSections("],
         [],
     ),
     "lib/main.dart": (
-        ["event.id == oxeeRegionNativeSheetItemId", "...oxeeProviderOverrides,"],
+        ["...oxeeProviderOverrides,"],
         ["ReleaseNotesCoordinator("],
     ),
     "lib/brand/oxee_brand.dart": (
-        ["libreChatBackendEnabledProvider.overrideWithValue(false)"],
+        ["libreChatBackendEnabledProvider.overrideWithValue(false)",
+         "oxeeSettingsProvider.overrideWithValue(true)"],
         [],
     ),
-    "lib/core/utils/native_sheet_utils.dart": (
+    "packages/conduit_core/lib/features/support/support_links.dart": (
         [],
         ["github.com/cogwheel0/conduit"],
-    ),
-    "lib/features/profile/views/about_page.dart": (
-        [],
-        ["_openReleaseNotes", "github.com/cogwheel0"],
     ),
     ".github/workflows/release.yml": (
         ["if: github.repository == 'cogwheel0/conduit'"],
@@ -80,9 +81,17 @@ HOOKS: dict[str, tuple[list[str], list[str]]] = {
     ),
 }
 
-# Upstream's donation links and its Pullfrog agent workflow (manual runs
-# with upstream's AI provider keys) have no place in Oxee.
-MUST_NOT_EXIST = [".github/FUNDING.yml", ".github/workflows/pullfrog.yml"]
+# Upstream's donation links, its Pullfrog agent workflow (manual runs with
+# upstream's AI provider keys), and the workflows that build and publish its
+# desktop app (also on every GitHub release) and its Hermes plugin: none has
+# a place in Oxee, a phone app.
+MUST_NOT_EXIST = [
+    ".github/FUNDING.yml",
+    ".github/workflows/pullfrog.yml",
+    ".github/workflows/desktop.yml",
+    ".github/workflows/release-desktop.yml",
+    ".github/workflows/publish-hermes-plugin.yml",
+]
 
 
 def main() -> int:

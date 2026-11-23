@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:checks/checks.dart';
 import 'package:conduit/platform/conduit_platform_apis.g.dart';
 import 'package:conduit/core/services/native_sheet_bridge.dart';
+import 'package:conduit/core/utils/native_sheet_utils.dart';
+import 'package:conduit/l10n/app_localizations.dart';
 import 'package:conduit/shared/theme/theme_extensions.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show Locale;
 import 'package:flutter_test/flutter_test.dart';
 
 final _setThemeChannel = BasicMessageChannel<Object?>(
@@ -194,6 +197,305 @@ void main() {
     check(received).isNotNull();
     check(received!.clearSubtitle).isTrue();
     check(received!.subtitle).isNull();
+  });
+
+  test('a secure row says which account password it holds, if any', () async {
+    NativeSheetBridge.instance.debugIsIOSOverride = true;
+    PlatformNativeSheetApplyDetailPatchRequest? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+          message,
+        ) async {
+          received =
+              (message! as List<Object?>).single!
+                  as PlatformNativeSheetApplyDetailPatchRequest;
+          return <Object?>[true];
+        });
+
+    await NativeSheetBridge.instance.applyDetailPatch(
+      detailId: 'password',
+      items: [
+        ...buildNativePasswordDetail(
+          lookupAppLocalizations(const Locale('en')),
+          passwordChangeEnabled: true,
+        ).items,
+        // Any other secret: no role, so it is never offered to be saved.
+        const NativeSheetItemConfig(
+          id: 'api-key',
+          title: 'API Key',
+          kind: NativeSheetItemKind.secureTextField,
+        ),
+      ],
+    );
+
+    check({for (final item in received!.items) item.id: item.passwordRole})
+        .deepEquals({
+          'current-password': 'current',
+          'new-password': 'newPassword',
+          'confirm-password': 'newPassword',
+          'api-key': null,
+        });
+  });
+
+  test('a row menu item that opens a page names it to the sheet', () async {
+    NativeSheetBridge.instance.debugIsIOSOverride = true;
+    PlatformNativeSheetApplyDetailPatchRequest? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+          message,
+        ) async {
+          received =
+              (message! as List<Object?>).single!
+                  as PlatformNativeSheetApplyDetailPatchRequest;
+          return <Object?>[true];
+        });
+    const opens = NativeSheetRowAction(
+      id: 'push',
+      label: 'Push Settings',
+      detailId: 'push-target-page:x',
+    );
+    const sends = NativeSheetRowAction(id: 'sign-out', label: 'Sign Out');
+
+    await NativeSheetBridge.instance.applyDetailPatch(
+      detailId: 'accounts',
+      items: const [
+        NativeSheetItemConfig(
+          id: 'account',
+          title: 'Ada',
+          rowActions: [opens, sends],
+        ),
+      ],
+    );
+
+    check([
+      for (final action in received!.items.single.rowActions!) action.detailId,
+    ]).deepEquals(['push-target-page:x', null]);
+    check(opens.toMap()['detailId']).equals('push-target-page:x');
+  });
+
+  test("a page's search field goes to the sheet with the page", () async {
+    NativeSheetBridge.instance.debugIsIOSOverride = true;
+    PlatformNativeSheetApplyDetailPatchRequest? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+          message,
+        ) async {
+          received =
+              (message! as List<Object?>).single!
+                  as PlatformNativeSheetApplyDetailPatchRequest;
+          return <Object?>[true];
+        });
+    final page = NativeSheetDetailConfig(
+      id: 'tasks',
+      title: 'Tasks',
+      items: const [NativeSheetItemConfig(id: 'row', title: 'Row')],
+      search: const NativeSheetSearchConfig(
+        id: 'tasks.search',
+        placeholder: 'Search tasks',
+        value: 'news',
+      ),
+    );
+
+    await NativeSheetBridge.instance.applyDetailPatch(
+      detailId: page.id,
+      items: page.items,
+      whole: page,
+    );
+
+    final search = received!.whole!.search!;
+    check(search.id).equals('tasks.search');
+    check(search.placeholder).equals('Search tasks');
+    check(search.value).equals('news');
+    check(page.toMap()['search']! as Map<String, Object?>)
+        .deepEquals(<String, Object?>{
+          'id': 'tasks.search',
+          'placeholder': 'Search tasks',
+          'value': 'news',
+        });
+  });
+
+  test("a page's month calendar, its bar button's page and a row's symbol "
+      'colour go to the sheet with the page', () async {
+    NativeSheetBridge.instance.debugIsIOSOverride = true;
+    PlatformNativeSheetApplyDetailPatchRequest? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+          message,
+        ) async {
+          received =
+              (message! as List<Object?>).single!
+                  as PlatformNativeSheetApplyDetailPatchRequest;
+          return <Object?>[true];
+        });
+    final page = NativeSheetDetailConfig(
+      id: 'month',
+      title: 'Calendar',
+      trailingActionDetailId: 'new-event',
+      trailingActionSfSymbol: 'plus',
+      items: const [
+        NativeSheetItemConfig(
+          id: 'event',
+          title: 'Planning',
+          symbolColor: 0xFF3366FF,
+        ),
+        NativeSheetItemConfig(id: 'plain', title: 'Plain'),
+      ],
+      calendar: const NativeSheetMonthCalendarConfig(
+        id: 'grid',
+        month: '2026-10-01',
+        selectedDay: '2026-10-06',
+        marks: [
+          NativeSheetCalendarMark(day: '2026-10-06', colors: [0xFF3366FF]),
+        ],
+      ),
+    );
+
+    await NativeSheetBridge.instance.applyDetailPatch(
+      detailId: page.id,
+      items: page.items,
+      whole: page,
+    );
+
+    final calendar = received!.whole!.calendar!;
+    check(calendar.id).equals('grid');
+    check(calendar.month).equals('2026-10-01');
+    check(calendar.selectedDay).equals('2026-10-06');
+    check(calendar.marks.single.day).equals('2026-10-06');
+    check(calendar.marks.single.colors).deepEquals([0xFF3366FF]);
+    check({for (final item in received!.items) item.id: item.symbolColor})
+        .deepEquals({'event': 0xFF3366FF, 'plain': null});
+    check(page.calendar!.monthChangedId).equals('grid:month');
+    check(received!.whole!.trailingActionDetailId).equals('new-event');
+    check(page.toMap()['trailingActionDetailId']).equals('new-event');
+    check(page.calendar!.daySelectedId).equals('grid:day');
+  });
+
+  test(
+    'a date or time row goes to the sheet as one, with its bounds',
+    () async {
+      NativeSheetBridge.instance.debugIsIOSOverride = true;
+      PlatformNativeSheetApplyDetailPatchRequest? received;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+            message,
+          ) async {
+            received =
+                (message! as List<Object?>).single!
+                    as PlatformNativeSheetApplyDetailPatchRequest;
+            return <Object?>[true];
+          });
+
+      await NativeSheetBridge.instance.applyDetailPatch(
+        detailId: 'task',
+        items: [
+          NativeSheetItemConfig(
+            id: 'day',
+            title: 'Date',
+            kind: NativeSheetItemKind.date,
+            value: nativeSheetDateValue(DateTime(2026, 3, 10, 9, 30)),
+            min: 1,
+            max: 2,
+          ),
+          NativeSheetItemConfig(
+            id: 'time',
+            title: 'Time',
+            kind: NativeSheetItemKind.time,
+            value: nativeSheetDateValue(DateTime(2000, 1, 1, 17, 5)),
+          ),
+        ],
+      );
+
+      final [day, time] = received!.items;
+      check(day.kind).equals(PlatformNativeSheetItemKind.date);
+      check(day.value).equals('2026-03-10T09:30:00.000');
+      check(day.min).equals(1);
+      check(day.max).equals(2);
+      check(time.kind).equals(PlatformNativeSheetItemKind.time);
+      check(time.value).equals('2000-01-01T17:05:00.000');
+    },
+  );
+
+  test(
+    'a diff line reaches the sheet with its change and spoken label',
+    () async {
+      NativeSheetBridge.instance.debugIsIOSOverride = true;
+      addTearDown(() => NativeSheetBridge.instance.debugIsIOSOverride = null);
+      PlatformNativeSheetApplyDetailPatchRequest? received;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+            message,
+          ) async {
+            received =
+                (message! as List<Object?>).single!
+                    as PlatformNativeSheetApplyDetailPatchRequest;
+            return <Object?>[true];
+          });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockDecodedMessageHandler<Object?>(
+              _applyDetailPatchChannel,
+              null,
+            ),
+      );
+
+      await NativeSheetBridge.instance.applyDetailPatch(
+        detailId: 'diff',
+        items: [
+          NativeSheetItemConfig(
+            id: 'line',
+            title: 'Pack a towel.',
+            subtitle: 'Removed: Pack a towel.',
+            kind: NativeSheetItemKind.diffLine,
+            value: NativeSheetDiffLine.removed.name,
+          ),
+        ],
+      );
+
+      final [line] = received!.items;
+      check(line.kind).equals(PlatformNativeSheetItemKind.diffLine);
+      check(line.value).equals('removed');
+      check(line.subtitle).equals('Removed: Pack a towel.');
+    },
+  );
+
+  test('a row of code reaches the sheet as code, with its source', () async {
+    NativeSheetBridge.instance.debugIsIOSOverride = true;
+    addTearDown(() => NativeSheetBridge.instance.debugIsIOSOverride = null);
+    PlatformNativeSheetApplyDetailPatchRequest? received;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockDecodedMessageHandler<Object?>(_applyDetailPatchChannel, (
+          message,
+        ) async {
+          received =
+              (message! as List<Object?>).single!
+                  as PlatformNativeSheetApplyDetailPatchRequest;
+          return <Object?>[true];
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockDecodedMessageHandler<Object?>(
+            _applyDetailPatchChannel,
+            null,
+          ),
+    );
+
+    await NativeSheetBridge.instance.applyDetailPatch(
+      detailId: 'source',
+      items: [
+        NativeSheetItemConfig(
+          id: 'code',
+          title: 'Python Source',
+          kind: NativeSheetItemKind.code,
+          value: 'class Tools:\n    pass\n',
+          disabled: true,
+        ),
+      ],
+    );
+
+    final [row] = received!.items;
+    check(row.kind).equals(PlatformNativeSheetItemKind.code);
+    check(row.value).equals('class Tools:\n    pass\n');
+    check(row.disabled).equals(true);
   });
 
   group('NativeSheetBridge.updateProfile', () {

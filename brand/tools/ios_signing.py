@@ -5,11 +5,13 @@ Distribution signing only: it needs no registered iPhone and no Mac of our own.
 
   1. imports the Oxee distribution certificate (OXEE_IOS_DIST_P12, made once by
      brand/tools/ios_certificate.py) into a throwaway keychain;
-  2. finds or creates an App Store provisioning profile for the app and its two
-     extensions through the App Store Connect API, and checks each one carries
-     the App Group the share extension and widget need;
-  3. switches the Release configuration of those three targets to manual
-     signing with those profiles (in the CI checkout only);
+  2. finds or creates an App Store provisioning profile for the app and its
+     extensions through the App Store Connect API, and checks the app, share
+     extension and widget profiles carry their App Group (the notification
+     extension has none in Oxee: no push yet); an extension's app id missing
+     on the account is registered;
+  3. switches the Release configuration of those targets to manual signing
+     with those profiles (in the CI checkout only);
   4. writes the ExportOptions.plist for `xcodebuild -exportArchive`.
 
     python3 brand/tools/ios_signing.py <work dir>
@@ -42,7 +44,10 @@ BRAND = json.loads((ROOT / "brand/brand.json").read_text(encoding="utf-8"))
 TEAM = BRAND["appleTeamId"]
 BUNDLE = BRAND["bundleId"]
 APP_GROUP = BRAND["appGroupId"]
-TARGETS = [BUNDLE, BUNDLE + ".ShareExtension", BUNDLE + ".ConduitWidget"]
+TARGETS = [BUNDLE, BUNDLE + ".ShareExtension", BUNDLE + ".ConduitWidget", BUNDLE + ".NotificationService"]
+# Targets whose entitlements name the App Group. The notification extension's
+# is removed by brand/tools/rebrand.py until Oxee has push.
+GROUP_TARGETS = set(TARGETS[:3])
 PBXPROJ = ROOT / "ios/Runner.xcodeproj/project.pbxproj"
 API = "https://api.appstoreconnect.apple.com/v1"
 WWDR_G3 = "https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer"
@@ -131,14 +136,25 @@ def ensure_profile(api: Api, identifier: str, cert: str) -> tuple[str, bytes]:
     name = f"Oxee App Store {identifier}"
     bundles = api.call("GET", "/bundleIds", params={"filter[identifier]": identifier})["data"]
     bundles = [b for b in bundles if b["attributes"]["identifier"] == identifier]
+    if not bundles and identifier != BUNDLE:
+        # A new upstream extension (the notification extension, upstream
+        # 4.3.2): its app id needs no capability, so it is registered here.
+        name_suffix = identifier[len(BUNDLE) + 1:]
+        bundles = [api.call("POST", "/bundleIds", json={"data": {
+            "type": "bundleIds",
+            "attributes": {"identifier": identifier, "name": f"Oxee {name_suffix}", "platform": "IOS"},
+        }})["data"]]
+        print(f"Registered app id {identifier}.")
     if not bundles:
         raise SystemExit(f"App id {identifier} is not registered. Run the 'Apple setup' workflow.")
     bundle_id = bundles[0]["id"]
+    needs_group = identifier in GROUP_TARGETS
 
     def fits(content: bytes) -> bool:
         entitlements = profile_entitlements(content)
         return (entitlements.get("application-identifier") == f"{TEAM}.{identifier}"
-                and APP_GROUP in entitlements.get("com.apple.security.application-groups", []))
+                and (not needs_group
+                     or APP_GROUP in entitlements.get("com.apple.security.application-groups", [])))
 
     for attempt in range(2):
         # filter[name] matches substrings: "...com.oxeegen.oxee" also returns
@@ -229,7 +245,8 @@ def main() -> int:
         name, content = ensure_profile(api, identifier, cert)
         uuid = install_profile(content)
         profiles[identifier] = name
-        print(f"Profile ready: {name} ({uuid}), App Group {APP_GROUP} included.")
+        group = f", App Group {APP_GROUP} included" if identifier in GROUP_TARGETS else ""
+        print(f"Profile ready: {name} ({uuid}){group}.")
 
     patch_project(profiles)
 
