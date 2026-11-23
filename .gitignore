@@ -173,3 +173,7 @@ relay/target/
 
 # T3 Code worktree setup markers (tool/setup_worktree.dart).
 .t3/
+
+# Unpacked in CI by brand/tools/onnxruntime_pods.py from Microsoft's NuGet package.
+brand/vendor/onnxruntime-c/onnxruntime.xcframework/
+brand/vendor/onnxruntime-c/Headers/

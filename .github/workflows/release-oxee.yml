@@ -25,6 +25,11 @@ on:
         description: 'Upload iOS to TestFlight and create the GitHub release'
         type: boolean
         default: false
+      ios_runner:
+        description: 'Mac for the iOS build (Intel when Apple Silicon runners are short)'
+        type: choice
+        options: [macos-26, macos-26-intel]
+        default: macos-26
 
 concurrency:
   group: release-oxee-${{ github.ref }}
@@ -145,7 +150,7 @@ jobs:
   ios:
     name: iOS
     needs: prepare
-    runs-on: macos-26
+    runs-on: ${{ inputs.ios_runner || 'macos-26' }}
     env:
       ASC_KEY_ID: ${{ secrets.OXEE_ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.OXEE_ASC_ISSUER_ID }}
@@ -183,6 +188,11 @@ jobs:
               (cd "$dir" && dart run build_runner build)
             fi
           done
+      # CocoaPods would fetch ONNX Runtime (for voice detection) from
+      # download.onnxruntime.ai, which is dead: built from Microsoft's NuGet
+      # package instead. brand/tools/onnxruntime_pods.py explains.
+      - name: ONNX Runtime pods
+        run: python3 brand/tools/onnxruntime_pods.py
       - name: CocoaPods
         run: cd ios && pod install
       # App Store (distribution) signing only: no registered iPhone needed.

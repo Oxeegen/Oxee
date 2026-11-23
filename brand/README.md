@@ -44,6 +44,7 @@ device see) is `com.oxeegen.oxee`.
 | `tools/android_keystore.py` | Run once: creates the permanent Android signing key, stores it in GitHub secrets and writes a backup to Documents\Oxee signing keys. |
 | `tools/ios_certificate.py` | Run once: creates the Apple Distribution certificate through the API and stores it in GitHub secrets without printing it. |
 | `tools/ios_signing.py` | CI: App Store profiles through the API, throwaway keychain, manual Release signing, ExportOptions. |
+| `tools/onnxruntime_pods.py`, `vendor/` | CI: ONNX Runtime 1.22.0 for iOS (voice detection) without its dead download host. See "ONNX Runtime on iOS". |
 | `assets/` | `oxee-icon-1024.png` (store icon, README), `oxee-mark-1024.png`, `oxee-mark.svg`. |
 | `../lib/brand/oxee_brand.dart` | Regions, the strings the layer adds (English and French), the region switcher, the iOS native-sheet row, `oxeeProviderOverrides` (LibreChat off). |
 | `../lib/brand/oxee_region_page.dart` | First-run / change-server screen. Health check and Open WebUI check against the fixed region URL, then upstream's sign-in page. Also `OxeeRegionAddChoices`, the account sheet's Oxeegen tab. |
@@ -156,6 +157,28 @@ GitHub's macOS runners. No Mac is needed.
 Without secrets both jobs still build (Android with a throwaway key, iOS
 unsigned): that proves the code compiles on both platforms but produces
 nothing installable on iPhone.
+
+Apple Silicon runners are sometimes all taken ("The job was not acquired by
+Runner"). Run the workflow with `ios_runner` set to `macos-26-intel`: same
+macOS and Xcode on Intel, slower but usually free.
+
+### ONNX Runtime on iOS
+
+The vendored vad plugin (voice detection) calls ONNX Runtime through FFI and
+pulls it in with the CocoaPods pods `onnxruntime-objc` and `onnxruntime-c`
+1.22.0. CocoaPods downloads them from download.onnxruntime.ai, dead since
+November 2026 (wrong certificate, then 404), and `github.com/microsoft/onnxruntime`
+is gone too. Before `pod install`, `tools/onnxruntime_pods.py` builds both pods
+from Microsoft's own copies and points the CI checkout's Podfile at them:
+
+- `onnxruntime-c`: the iOS xcframework and headers from the NuGet package
+  Microsoft.ML.OnnxRuntime 1.22.0, checked against nuget.org's SHA-512.
+- `onnxruntime-objc`: `vendor/onnxruntime-objc`, the sources of the same
+  release commit, committed (its README says where they came from).
+
+The podspecs repeat CocoaPods trunk's settings. When vad moves to another
+ONNX Runtime version, update the NuGet version and hash, and the vendored
+sources, together.
 
 ### iOS signing
 
