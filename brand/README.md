@@ -148,7 +148,9 @@ number, always increasing, as both stores require).
 GitHub's macOS runners. No Mac is needed.
 
 - Test build: Actions -> Release Oxee -> Run workflow, version `1.0.0`,
-  publish unticked. Artifacts: arm64/armv7 APKs, the AAB, and the IPA.
+  publish unticked. Artifacts: arm64/armv7 APKs, the AAB, and the IPA. The
+  IPA also goes through App Store Connect's upload checks (`altool
+  --validate-app`), so a build Apple would refuse fails here, not at publish.
 - TestFlight: the same with publish ticked, or push an annotated tag
   `oxee-v1.0.0` whose message is the release notes (written about Oxee only).
   The iOS build is uploaded to App Store Connect; a tag also makes a GitHub
