@@ -188,12 +188,109 @@ enum NativeSheetHaptics {
     }
 }
 
-final class NativeSheetNavigationController: UINavigationController {
+/// A page that may hold unsaved changes, and asks before they are dropped.
+protocol NativeSheetLeaveGuarding: AnyObject {
+    /// Whether leaving now would drop unsaved changes.
+    var blocksLeaving: Bool { get }
+    /// Whether the page has a question to ask before its changes go.
+    var asksBeforeDiscarding: Bool { get }
+    /// Whether text typed on the page is not done yet.
+    var holdsUnfinishedText: Bool { get }
+    /// Asks, then runs [leave] once the user chooses to discard. With
+    /// [always], asks even when the page holds nothing unsaved itself: a page
+    /// it opened does.
+    func askBeforeLeaving(always: Bool, then leave: @escaping () -> Void)
+    /// Forgets what the page holds unsaved, once it was chosen to discard.
+    func dropUnsavedChanges()
+}
+
+extension NativeSheetLeaveGuarding {
+    func askBeforeLeaving(then leave: @escaping () -> Void) {
+        askBeforeLeaving(always: false, then: leave)
+    }
+}
+
+/// Of [controllers], first to top, the page whose changes closing them all
+/// would drop, if any: the highest page that holds unsaved changes, or a
+/// form under pages of its own that hold text not yet done. With `always`,
+/// the form asks although it holds nothing unsaved itself.
+func nativeSheetGuardingPage(
+    in controllers: [UIViewController]
+) -> (page: NativeSheetLeaveGuarding, always: Bool)? {
+    var textAbove = false
+    for controller in controllers.reversed() {
+        guard let page = controller as? NativeSheetLeaveGuarding else {
+            continue
+        }
+        if page.blocksLeaving { return (page, false) }
+        if textAbove && page.asksBeforeDiscarding { return (page, true) }
+        textAbove = textAbove || page.holdsUnfinishedText
+    }
+    return nil
+}
+
+/// A presented Settings sheet, one column or two, whose pages may hold
+/// unsaved changes: swiping it away asks the page that would lose them.
+protocol NativeSheetCloseGuarding: AnyObject {
+    /// The page whose changes closing the sheet would drop, if any; with
+    /// `always`, it asks although it holds nothing unsaved itself.
+    var guardingClosePage: (page: NativeSheetLeaveGuarding, always: Bool)? { get }
+    /// Chosen to close without saving: no page sends what it held.
+    func dropUnsavedChanges()
+}
+
+final class NativeSheetNavigationController: UINavigationController, UIGestureRecognizerDelegate, NativeSheetCloseGuarding {
     override func viewDidLoad() {
         super.viewDidLoad()
         modalPresentationStyle = .pageSheet
         navigationBar.prefersLargeTitles = false
         NativeSheetTheme.shared.apply(to: self)
+        // A swipe back asks first, as Back does, when it would drop unsaved
+        // changes.
+        interactivePopGestureRecognizer?.delegate = self
+        if #available(iOS 26.0, *) {
+            interactiveContentPopGestureRecognizer?.delegate = self
+        }
+    }
+
+    /// The page on top that would drop unsaved changes if it left, if any.
+    var guardingTopPage: NativeSheetLeaveGuarding? {
+        guard let page = topViewController as? NativeSheetLeaveGuarding,
+              page.blocksLeaving
+        else { return nil }
+        return page
+    }
+
+    /// The page whose changes closing the sheet would drop, if any: the
+    /// highest page that holds unsaved changes, or a form under pages of its
+    /// own that hold text not yet done -- what a form's pages hold is the
+    /// form's (an address's Advanced page, say). With `always`, the form
+    /// asks although it holds nothing unsaved itself.
+    var guardingClosePage: (page: NativeSheetLeaveGuarding, always: Bool)? {
+        nativeSheetGuardingPage(in: viewControllers)
+    }
+
+    /// Chosen to close the sheet without saving: no page sends what it held
+    /// as the sheet goes.
+    func dropUnsavedChanges() {
+        for controller in viewControllers {
+            (controller as? NativeSheetLeaveGuarding)?.dropUnsavedChanges()
+        }
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // The delegate is ours now, so it keeps UIKit's own rules: nothing to
+        // go back to, or a push still running, starts no swipe.
+        guard viewControllers.count > 1, transitionCoordinator == nil else {
+            return false
+        }
+        if let page = guardingTopPage {
+            page.askBeforeLeaving { [weak self] in
+                _ = self?.popViewController(animated: true)
+            }
+            return false
+        }
+        return true
     }
 
     override func viewWillLayoutSubviews() {

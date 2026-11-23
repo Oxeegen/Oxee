@@ -42,7 +42,41 @@ const String kMessageAuthorIdMetadataKey = 'authorUserId';
 /// `{status, content}` object, or absent.
 const String kMessageMergedMetadataKey = 'merged';
 
+/// Where a question's metadata says the server holds it: Open WebUI 0.13.4
+/// keeps a message sent while a reply in its chat is still running
+/// (`meta.status: 'pending'`, with no answer under it) and answers it once
+/// that reply ends, under new ids. Absent for any other message.
+const String kMessageHeldByServerMetadataKey = 'heldByServer';
+
+/// Where an answer's metadata says the server held its question instead of
+/// answering it ([kMessageHeldByServerMetadataKey]): the request went out,
+/// and nothing comes under this id. A regeneration of the question reads it
+/// to tell this empty answer from one that answers; a retry of the turn
+/// reads its op instead ([RequestCompletionPayload.held]).
+const String kCompletionHeldMetadataKey = 'completionHeld';
+
+/// Where an answer's metadata says it was stopped on this device by a Stop
+/// the server has not accepted: its text stays on this device, and a push of
+/// the chat carries the answer as the server holds it, unfinished and empty.
+const String kStoppedHereMetadataKey = 'stoppedHere';
+
+/// Where an answer's metadata says this device finished it itself, stopped or
+/// cut off, and has not yet seen that reach the server: its push never lets
+/// the server's copy, finished or not, give way to one that holds less.
+/// Kept on this device only.
+const String kSettledHereMetadataKey = 'settledHere';
+
+/// Where an answer's metadata says a push of this device took its text from
+/// the server's copy (a fuller answer, or one finished elsewhere), and no
+/// push of it has landed since: that text was never shown here, so the push
+/// does not keep its chat read. Kept on this device only, through a failed
+/// attempt.
+const String kTakenFromServerMetadataKey = 'takenFromServer';
+
 extension ChatMessageComparisonFields on ChatMessage {
+  /// Whether the server holds this question until a running reply ends.
+  bool get isHeldByServer => metadata?[kMessageHeldByServerMetadataKey] == true;
+
   /// The account that wrote this message, when the server said.
   String? get authorUserId {
     final stored = metadata?[kMessageAuthorIdMetadataKey];
@@ -134,6 +168,11 @@ class ChatComparisonAnswer {
     return structured.trim().isNotEmpty ? structured : content;
   }
 
+  /// Whether a merge may read this answer: finished, without an error, with
+  /// text of its own.
+  bool get isMergeable =>
+      !isStreaming && error == null && sourceText.trim().isNotEmpty;
+
   /// A short label for the model that answered.
   String get label {
     final name = modelName?.trim();
@@ -177,6 +216,24 @@ class ChatComparisonGroup {
   /// The slot that holds the displayed message.
   ChatComparisonSlot get displayedSlot =>
       slots.firstWhere((slot) => slot.answers.any((a) => a.isDisplayed));
+
+  /// The finished answers of this turn a merge may read, one per slot in slot
+  /// order: the answer [shownId] names for its own slot, otherwise the slot's
+  /// current one. An answer still being written, failed, or without text is
+  /// left out, so one unfinished slot never blocks merging the others.
+  List<ChatComparisonAnswer> mergeableAnswers({String? shownId}) {
+    final shown = shownId == null
+        ? null
+        : [
+            for (final slot in slots) ...slot.answers,
+          ].where((a) => a.messageId == shownId).firstOrNull;
+    return [
+      for (final slot in slots)
+        if ((shown != null && slot.index == shown.slot ? shown : slot.current)
+            case final answer when answer.isMergeable)
+          answer,
+    ];
+  }
 
   ChatComparisonSlot? slotAt(int index) {
     for (final slot in slots) {

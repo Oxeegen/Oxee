@@ -67,6 +67,13 @@ bool _isAccountlessBackendLocation(String location) {
       location == Routes.chatSettings ||
       location == Routes.dataConnectionSettings ||
       location == Routes.personalization ||
+      // Device-level notification settings and push, which cover Hermes and
+      // Direct too; the page hides what needs an Open WebUI account.
+      location == Routes.notificationSettings ||
+      location == Routes.pushPrivacy ||
+      // Settings pages: which ones there are is the root's to decide, as it
+      // is in the native sheet.
+      location.startsWith('/profile/page/') ||
       isDirectConnectionsLocation(location) ||
       isHermesSettingsLocation(location) ||
       location == Routes.hermesSessions ||

@@ -1,6 +1,6 @@
 name: conduit
 description: Open-source mobile client for Open-WebUI
-version: 4.3.1+155
+version: 4.3.2+156
 publish_to: 'none'
 
 environment:
@@ -18,7 +18,9 @@ workspace:
   - packages/conduit_core
   - packages/conduit_ddgs
   - packages/conduit_markdown
+  - packages/conduit_protocol
   - packages/conduit_theme
+  - apps/daemon
 
 dependencies:
   flutter:
@@ -118,16 +120,21 @@ dependencies:
   share_plus: ^13.3.1
   riverpod_annotation: ^4.0.7
   flutter_local_notifications: ^23.0.0
+  timezone: ^0.11.0
   connectivity_plus: ^7.3.0
   flutter_cache_manager: ^3.4.1
   http: ^1.5.0
-  flutter_callkit_incoming: ^3.1.6
+  # flutter_callkit_incoming 3.1.6, patched; see its PATCHES.md.
+  flutter_callkit_incoming:
+    path: third_party/flutter_callkit_incoming
   quick_actions: ^1.1.0
   html_unescape: ^2.0.0
   home_widget: ^0.10.0
   flutter_highlight: ^0.7.0
-  just_audio: ^0.10.5
-  cupertino_native_better: ^2.5.1
+  # just_audio 0.10.6, patched; see its PATCHES.md.
+  just_audio:
+    path: third_party/just_audio
+  cupertino_native_better: ^2.5.2
   flutter_tex: ^5.2.6
   xterm: ^4.0.0
   web_socket: ^1.0.1
@@ -172,6 +179,8 @@ dev_dependencies:
   plugin_platform_interface: ^2.1.8
   # Used only in tests to fake the video player platform.
   video_player_platform_interface: ^6.9.0
+  # Used only in tests to fake the audio player platform.
+  just_audio_platform_interface: ^4.6.0
 
 flutter:
   config:
@@ -191,6 +200,7 @@ flutter:
     - assets/flutter_tex.js
     - assets/flutter_tex.css
     - assets/vad/
+    - assets/server_plugins/openwebui_conduit_push.py
 
 flutter_native_splash:
   # Splash background matches the light theme; `color_dark` handles dark mode.

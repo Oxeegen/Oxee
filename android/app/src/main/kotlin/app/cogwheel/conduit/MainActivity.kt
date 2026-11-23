@@ -23,6 +23,7 @@ import android.webkit.CookieManager
 import android.webkit.MimeTypeMap
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import app.cogwheel.conduit.push.PushBridge
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileNotFoundException
@@ -523,11 +524,18 @@ class MainActivity : FlutterFragmentActivity() {
     private lateinit var nativeTtsBridge: NativeTtsBridge
     private lateinit var realtimeAudioBridge: RealtimeAudioBridge
     private lateinit var imageGalleryBridge: ImageGalleryBridge
+    private lateinit var userCertificatesBridge: UserCertificatesBridge
+    private lateinit var pushBridge: PushBridge
     private lateinit var telecomCallBridge: TelecomCallBridge
+
+    // Built with the activity: its Auth Tab result launcher must be
+    // registered before the activity starts.
+    private val browserAuthBridge = BrowserAuthBridge(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         reconcileInterruptedShareImportIfNeeded()
         sanitizeLaunchIntent(intent)?.let { setIntent(it) }
+        PushBridge.captureLaunchIntent(this, intent, isRecreated = savedInstanceState != null)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
@@ -633,8 +641,13 @@ class MainActivity : FlutterFragmentActivity() {
         realtimeAudioBridge.setup(flutterEngine)
         imageGalleryBridge = ImageGalleryBridge(this)
         imageGalleryBridge.setup(flutterEngine)
+        userCertificatesBridge = UserCertificatesBridge()
+        userCertificatesBridge.setup(flutterEngine)
+        pushBridge = PushBridge(this)
+        pushBridge.setup(flutterEngine)
         telecomCallBridge = TelecomCallBridge(this)
         telecomCallBridge.setup(flutterEngine)
+        browserAuthBridge.setup(flutterEngine)
 
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ASSISTANT_CHANNEL)
         assistantLaunches.reset()
@@ -763,10 +776,25 @@ class MainActivity : FlutterFragmentActivity() {
         return true
     }
 
+    override fun onResume() {
+        super.onResume()
+        browserAuthBridge.onResume()
+    }
+
+    override fun onPause() {
+        browserAuthBridge.onPause()
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         val sanitizedIntent = sanitizeLaunchIntent(intent) ?: intent
         setIntent(sanitizedIntent)
         super.onNewIntent(sanitizedIntent)
+        if (::pushBridge.isInitialized) {
+            pushBridge.handleNewIntent(sanitizedIntent)
+        } else {
+            PushBridge.captureLaunchIntent(this, sanitizedIntent, isRecreated = false)
+        }
         handleIntent(sanitizedIntent)
     }
 
@@ -1778,7 +1806,7 @@ class MainActivity : FlutterFragmentActivity() {
     private fun handleIntent(intent: Intent) {
         Log.d("MainActivity", "handleIntent called")
 
-        val action = AssistantLaunchAction.take(intent)
+        val action = AssistantLaunchAction.take(intent, cacheDir)
         if (action == null) {
             Log.d("MainActivity", "No assistant request found")
             return
@@ -1802,8 +1830,18 @@ class MainActivity : FlutterFragmentActivity() {
         if (::imageGalleryBridge.isInitialized) {
             imageGalleryBridge.dispose()
         }
+        if (::userCertificatesBridge.isInitialized) {
+            userCertificatesBridge.dispose()
+        }
+        if (::pushBridge.isInitialized) {
+            pushBridge.dispose()
+        }
+        browserAuthBridge.dispose()
         if (::backgroundStreamingHandler.isInitialized) {
             backgroundStreamingHandler.cleanup()
+        }
+        if (::telecomCallBridge.isInitialized) {
+            telecomCallBridge.dispose()
         }
         super.onDestroy()
     }

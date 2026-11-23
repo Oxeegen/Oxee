@@ -14,53 +14,6 @@ final class NativeSheetNavigationOrigin {
   const NativeSheetNavigationOrigin();
 }
 
-typedef NativeSheetNavigationRequest = ({String routeName, Object extra});
-
-/// Direct Connections is pushed as the native profile sheet starts to slide
-/// away, so the page is already underneath when it has gone. Keep its route and transition marker coupled so this entry point cannot
-/// accidentally restore a second Cupertino transition over the native sheet.
-const NativeSheetNavigationRequest
-directConnectionsNativeSheetNavigationRequest = (
-  routeName: RouteNames.directConnections,
-  extra: NativeSheetNavigationOrigin(),
-);
-
-/// Personal connections open the same way: the list page is pushed as the
-/// native sheet slides away, without a second transition over it.
-const NativeSheetNavigationRequest
-personalConnectionsNativeSheetNavigationRequest = (
-  routeName: RouteNames.personalConnections,
-  extra: NativeSheetNavigationOrigin(),
-);
-
-/// Scheduled tasks open the same way, from the native Settings sheet.
-const NativeSheetNavigationRequest scheduledTasksNativeSheetNavigationRequest =
-    (
-      routeName: RouteNames.scheduledTasks,
-      extra: NativeSheetNavigationOrigin(),
-    );
-
-/// The calendar opens the same way, from the native Settings sheet.
-const NativeSheetNavigationRequest calendarNativeSheetNavigationRequest = (
-  routeName: RouteNames.calendar,
-  extra: NativeSheetNavigationOrigin(),
-);
-
-/// LibreChat's Personalization opens the same way, from the native Settings
-/// sheet.
-const NativeSheetNavigationRequest
-libreChatPersonalizationNativeSheetNavigationRequest = (
-  routeName: RouteNames.personalization,
-  extra: NativeSheetNavigationOrigin(),
-);
-
-/// Data controls open the same way, from the native Settings sheet.
-const NativeSheetNavigationRequest
-chatDataControlsNativeSheetNavigationRequest = (
-  routeName: RouteNames.chatDataControls,
-  extra: NativeSheetNavigationOrigin(),
-);
-
 /// Service for handling navigation throughout the app.
 ///
 /// With GoRouter in place, this class mostly provides convenient wrappers

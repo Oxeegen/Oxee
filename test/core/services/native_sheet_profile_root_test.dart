@@ -3,7 +3,10 @@ import 'package:conduit/core/services/native_sheet_bridge.dart';
 import 'package:conduit/core/utils/native_sheet_utils.dart';
 import 'package:conduit/features/navigation/widgets/sidebar_user_pill.dart'
     show nativeProfileSheetFieldsDiffer;
+import 'package:conduit/features/settings/pages/direct_connection_page_ids.dart';
+import 'package:conduit/features/settings/pages/hermes_page_ids.dart';
 import 'package:conduit/l10n/app_localizations.dart';
+import 'package:conduit_core/features/direct_connections/controllers/direct_connection_editor_draft.dart';
 import 'package:conduit_core/auth/openwebui_account_summaries.dart';
 import 'package:conduit_core/features/direct_connections/models/direct_connection_profile.dart';
 import 'package:conduit_core/features/hermes/models/hermes_config.dart';
@@ -12,6 +15,7 @@ import 'package:conduit_core/models/account_metadata.dart';
 import 'package:conduit_core/models/openwebui_registry.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:flutter/widgets.dart' show Locale;
+import 'package:conduit_core/features/release_notes/models/release_note.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 final _l10n = lookupAppLocalizations(const Locale('en'));
@@ -101,6 +105,13 @@ List<NativeSheetSectionConfig> _root({
   card: _card,
   appLanguageTag: appLanguageTag,
   otherAccountCount: otherAccountCount,
+);
+
+
+/// The editor adding a provider on this device.
+final _newDirectEditor = directConnectionPageId(
+  DirectConnectionEditorSource.local,
+  null,
 );
 
 void main() {
@@ -206,7 +217,8 @@ void main() {
       expect(symbols.where((symbol) => symbol.endsWith('.fill')), isEmpty);
     });
 
-    test('Advanced rows use their own symbols and close the sheet', () {
+    test('Advanced rows use their own symbols and open pages of Settings '
+        "'s own, inside it", () {
       final sections = _root(visibility: _everything);
 
       final expected = {
@@ -217,8 +229,8 @@ void main() {
       for (final MapEntry(:key, :value) in expected.entries) {
         final item = _item(sections, key);
         expect(item.sfSymbol, value, reason: key);
-        expect(item.dismissOnSelect, isTrue, reason: key);
-        expect(item.actionId, key, reason: key);
+        expect(item.dismissOnSelect, isFalse, reason: key);
+        expect(item.actionId, isNull, reason: key);
       }
     });
 
@@ -301,7 +313,7 @@ void main() {
       expect(_ids(sections).first, [nativeAccountsDetailId]);
     });
 
-    test('with LibreChat in charge, Personalization opens its Flutter page',
+    test('with LibreChat in charge, Personalization opens its memories page',
         () {
       const libreChat = NativeProfileRootVisibility(
         showLibreChatPersonalization: true,
@@ -311,13 +323,42 @@ void main() {
         nativeLibreChatPersonalizationActionId,
       );
       expect(item.title, _l10n.personalization);
-      expect(item.dismissOnSelect, isTrue);
-      expect(item.actionId, nativeLibreChatPersonalizationActionId);
+      // The page is Settings's own, inside the sheet.
+        expect(item.dismissOnSelect, isFalse);
+      expect(item.actionId, isNull);
       // An Open WebUI account signed in has its own AI & Memory instead.
       expect(
         _ids(_root(visibility: libreChat)).expand((ids) => ids),
         isNot(contains(nativeLibreChatPersonalizationActionId)),
       );
+    });
+
+    test('without an account, Notifications stays for Hermes and push', () {
+      final sections = _root(
+        account: null,
+        visibility: const NativeProfileRootVisibility(
+          showNotificationsWithoutAccount: true,
+        ),
+      );
+      expect(_ids(sections)[1], [
+        NativeSheetRoutes.appearance,
+        // The app's language, beside Appearance.
+        nativeAppLanguageId,
+        NativeSheetRoutes.chats,
+        NativeSheetRoutes.voice,
+        NativeSheetRoutes.notificationSettings,
+      ]);
+      // With an account it stays among the account's rows, listed once.
+      final withAccount = _ids(
+        _root(
+          visibility: const NativeProfileRootVisibility(
+            showNotificationsWithoutAccount: true,
+          ),
+        ),
+      ).expand((ids) => ids).where(
+        (id) => id == NativeSheetRoutes.notificationSettings,
+      );
+      expect(withAccount, hasLength(1));
     });
   });
 
@@ -327,12 +368,18 @@ void main() {
       List<HermesConnectionProfile> hermes = const [],
       String? hermesInUseId,
       List<DirectConnectionProfile>? direct = const [],
+      Set<String> pushAttention = const {},
+      bool appleOnDevice = false,
+      bool applePcc = false,
     }) => buildNativeAccountsDetail(
       _l10n,
       accounts: accounts,
       hermesConnections: hermes,
       hermesInUseId: hermesInUseId,
       directProfiles: direct,
+      pushAttention: pushAttention,
+      appleOnDevice: appleOnDevice,
+      applePcc: applePcc,
     );
 
     test('a card for each server, its accounts under it, the active one '
@@ -352,22 +399,29 @@ void main() {
       expect(page.trailingActionSfSymbol, isNull);
       expect(_ids(page.sections).take(2), [
         [
-          '$nativeAccountServerActionId:home',
+          '${nativeServerAddressesPagePrefix}home',
           '$nativeAccountSwitchActionId:alex-home',
           '$nativeAccountSwitchActionId:sam-home',
         ],
         [
-          '$nativeAccountServerActionId:work',
+          '${nativeServerAddressesPagePrefix}work',
           '$nativeAccountSwitchActionId:alex-work',
         ],
       ]);
-      final server = _item(page.sections, '$nativeAccountServerActionId:home');
+      final server = _item(
+        page.sections,
+        '${nativeServerAddressesPagePrefix}home',
+      );
       expect(server.title, 'Home Lab');
       expect(server.avatarName, 'Home Lab');
-      expect(server.actionId, nativeAccountServerActionId);
-      expect(server.actionValue, 'home');
+      // It opens the server's page, its accounts and addresses.
+      expect(server.dismissOnSelect, isFalse);
+      expect(server.actionId, isNull);
       expect(
-        _item(page.sections, '$nativeAccountServerActionId:work').avatarName,
+        _item(
+          page.sections,
+          '${nativeServerAddressesPagePrefix}work',
+        ).avatarName,
         'Work',
       );
 
@@ -407,7 +461,10 @@ void main() {
         accounts: [_entry('ada-local', local, name: 'Ada', isActive: true)],
       );
 
-      final server = _item(page.sections, '$nativeAccountServerActionId:local');
+      final server = _item(
+        page.sections,
+        '${nativeServerAddressesPagePrefix}local',
+      );
       expect(server.title, '127.0.0.1');
       expect(server.avatarName, isNull);
       expect(server.sfSymbol, 'server.rack');
@@ -474,10 +531,31 @@ void main() {
       expect(laptop.sfSymbol, 'desktopcomputer');
       expect(laptop.actionId, nativeHermesUseActionId);
       expect(laptop.actionValue, 'hermes-laptop');
-      // Its own row opens the Hermes page.
+      // Its own row opens Hermes Agent's page of Settings.
+      final hermes = _item(page.sections, hermesSettingsPageId);
+      expect(hermes.dismissOnSelect, isFalse);
+      expect(hermes.actionId, isNull);
+    });
+
+    test('an account or connection whose push needs the user says so', () {
+      final page = accountsPage(
+        accounts: [_entry('alex-home', _home, name: 'Alex', isActive: true)],
+        hermes: const [_homeAgent, _laptop],
+        pushAttention: {'owui:alex-home', 'hermes:hermes-laptop'},
+      );
+
       expect(
-        _item(page.sections, 'accounts-hermes').actionId,
-        NativeSheetRoutes.hermes,
+        _item(page.sections, '$nativeAccountSwitchActionId:alex-home').subtitle,
+        startsWith(_l10n.pushAttentionChip),
+      );
+      expect(
+        _item(page.sections, '$nativeHermesUseActionId:hermes-laptop').subtitle,
+        '${_l10n.pushAttentionChip} · Desktop Gateway · 10.0.0.6 · '
+        'Not encrypted',
+      );
+      expect(
+        _item(page.sections, '$nativeHermesUseActionId:hermes-home').subtitle,
+        isNot(contains(_l10n.pushAttentionChip)),
       );
     });
 
@@ -494,14 +572,37 @@ void main() {
         ],
       );
 
-      final desk = _item(page.sections, '$nativeDirectEditActionId:desk');
+      // A page of Settings's own: the sheet stays open.
+      final desk = _item(
+        page.sections,
+        directConnectionPageId(DirectConnectionEditorSource.local, 'desk'),
+      );
       expect(desk.subtitle, 'Ollama · Disabled');
       expect(desk.checked, isFalse);
-      expect(desk.actionId, nativeDirectEditActionId);
-      expect(desk.actionValue, 'desk');
+      expect(desk.dismissOnSelect, isFalse);
+      expect(desk.actionId, isNull);
       expect(
         _ids(page.sections).expand((ids) => ids),
-        isNot(contains('accounts-direct-add')),
+        isNot(contains(_newDirectEditor)),
+      );
+    });
+
+    test('Direct and its Apple models open their pages in Settings', () {
+      final page = accountsPage(appleOnDevice: true, applePcc: true);
+
+      for (final id in [
+        directConnectionsPageId,
+        directApplePageId(directAppleOnDevice),
+        directApplePageId(directApplePcc),
+      ]) {
+        final row = _item(page.sections, id);
+        expect(row.dismissOnSelect, isFalse, reason: id);
+        expect(row.actionId, isNull, reason: id);
+      }
+      // Apple's models are accounts enough: no Add Connection.
+      expect(
+        _ids(page.sections).expand((ids) => ids),
+        isNot(contains(_newDirectEditor)),
       );
     });
 
@@ -525,12 +626,46 @@ void main() {
       expect(add.title, _l10n.accountsAddAccount);
       expect(add.sfSymbol, 'plus.circle');
       expect(add.accent, isTrue);
-      expect(add.dismissOnSelect, isTrue);
-      // An action, not a page: no chevron.
-      expect(add.showsDisclosure, isFalse);
-      expect(add.actionId, nativeAccountAddActionId);
-      // Any kind: the sheet opens on Open WebUI.
-      expect(add.actionValue, isTrue);
+      // It opens the kinds to choose from, a page of Settings's own.
+      expect(add.dismissOnSelect, isFalse);
+      expect(add.showsDisclosure, isTrue);
+    });
+
+    test('Add Account lists each kind, each opening its own sign-in', () {
+      List<NativeSheetItemConfig> kinds({required bool libreChat}) =>
+          buildNativeAddAccountDetail(
+            _l10n,
+            libreChatEnabled: libreChat,
+          ).sections.single.items;
+
+      expect(kinds(libreChat: false).map((row) => row.actionValue), [
+        'openWebUi',
+        null,
+        null,
+      ]);
+      final rows = kinds(libreChat: true);
+      expect(rows.map((row) => row.actionValue), [
+        'openWebUi',
+        'libreChat',
+        null,
+        null,
+      ]);
+      // A sign-in is a flow of its own, opened as the sheet closes.
+      expect(
+        rows.take(2).every(
+          (row) =>
+              row.dismissOnSelect && row.actionId == nativeAccountAddActionId,
+        ),
+        isTrue,
+      );
+      // A Hermes connection and a provider are forms of Settings's own, the
+      // sheet staying open.
+      final hermes = rows[2];
+      expect(hermes.id, hermesConnectConnectionPageId);
+      expect(hermes.dismissOnSelect, isFalse);
+      final direct = rows.last;
+      expect(direct.id, directConnectionAddAccountPageId);
+      expect(direct.dismissOnSelect, isFalse);
     });
 
     test('an empty card offers to add its first, on its own tab', () {
@@ -538,14 +673,21 @@ void main() {
 
       for (final (id, kind) in [
         ('accounts-openwebui-add', 'openWebUi'),
-        ('accounts-hermes-add', 'hermes'),
-        ('accounts-direct-add', 'direct'),
       ]) {
         final add = _item(page.sections, id);
         expect(add.accent, isTrue, reason: id);
         expect(add.actionId, nativeAccountAddActionId, reason: id);
         expect(add.actionValue, kind, reason: id);
       }
+      // Direct's opens the editor adding a provider, in Settings.
+      final direct = _item(page.sections, _newDirectEditor);
+      expect(direct.accent, isTrue);
+      expect(direct.dismissOnSelect, isFalse);
+      expect(direct.actionId, isNull);
+      // Hermes adds its first connection in a page of Settings's own.
+      final hermes = _item(page.sections, hermesConnectConnectionPageId);
+      expect(hermes.accent, isTrue);
+      expect(hermes.dismissOnSelect, isFalse);
     });
 
     test('unread accounts say so, and unread providers offer no add', () {
@@ -553,7 +695,7 @@ void main() {
 
       final ids = _ids(page.sections).expand((ids) => ids).toList();
       expect(ids, contains('accounts-unreadable'));
-      expect(ids, isNot(contains('accounts-direct-add')));
+      expect(ids, isNot(contains(_newDirectEditor)));
     });
 
     test('signing out of every account is offered with several', () {
@@ -571,15 +713,41 @@ void main() {
           _entry('sam-home', _home, name: 'Sam'),
         ],
       );
-      expect(_ids(page.sections).last, [nativeSignOutActionId]);
+      expect(_ids(page.sections).last, [
+        nativeAccountSignOutOfDetailId,
+        nativeSignOutActionId,
+      ]);
       expect(
         _item(page.sections, nativeSignOutActionId).title,
         _l10n.accountsSignOutAll,
       );
     });
+
+    // Signing out of one account leaves the others signed in; it asks
+    // first, so on iOS the sheet closes before the question.
+    test('one saved account can be signed out of alone', () {
+      final page = buildNativeAccountSignOutDetail(
+        _l10n,
+        accounts: [
+          _entry('alex-home', _home, name: 'Alex', isActive: true),
+          _entry('sam-home', _home, name: 'Sam'),
+        ],
+      );
+
+      final rows = page.sections.single.items;
+      expect(rows.map((row) => row.title), [
+        _l10n.accountsSignOutOf('Alex'),
+        _l10n.accountsSignOutOf('Sam'),
+      ]);
+      final sam = rows.last;
+      expect(sam.destructive, isTrue);
+      expect(sam.dismissOnSelect, isTrue);
+      expect(sam.actionId, nativeAccountSignOutOfActionId);
+      expect(sam.actionValue, 'sam-home');
+    });
   });
 
-  test('About rows that open Flutter pages close the sheet with a chevron', () {
+  test("What's New and the licenses are pages of Settings's own", () {
     final items = buildNativeAboutItems(_l10n, appVersion: '1.0');
 
     for (final id in [
@@ -587,9 +755,57 @@ void main() {
       NativeSheetRoutes.openSourceLicenses,
     ]) {
       final item = items.singleWhere((item) => item.id == id);
-      expect(item.dismissOnSelect, isTrue, reason: id);
-      expect(item.showsDisclosure, isTrue, reason: id);
+      expect(item.dismissOnSelect, isFalse, reason: id);
+      expect(item.url, isNull, reason: id);
     }
+  });
+
+  test("What's New lists each release's highlights, then rating and support",
+      () {
+    final page = buildNativeReleaseNotesDetail(
+      _l10n,
+      notes: [
+        ReleaseNote(
+          version: '2.0.0',
+          title: 'New',
+          intro: 'Hello.',
+          bullets: const ['Faster', 'Hermes'],
+          bulletIcons: const ['direct', 'hermes'],
+        ),
+      ],
+      reviewUrl: 'https://example.com/review',
+      supportUrl: 'https://example.com/support',
+    );
+
+    final release = page.sections.first;
+    expect(release.title, '2.0.0');
+    expect(release.items.first.kind, NativeSheetItemKind.readOnlyText);
+    expect(release.items.first.value, 'Hello.');
+    expect(release.items[1].title, 'Faster');
+    expect(release.items[1].sfSymbol, 'bolt');
+    expect(release.items[2].iconAsset, 'assets/icons/hermes_agent.png');
+    expect(page.sections.last.items.map((item) => item.url), [
+      'https://example.com/review',
+      'https://example.com/support',
+    ]);
+  });
+
+  test('the licenses list each package once, in order, opening its texts', () {
+    final list = buildNativeLicensesDetail(_l10n, {'zeta': 1, 'Alpha': 2});
+    final rows = list.sections.single.items;
+    expect(rows.map((row) => row.title), ['Alpha', 'zeta']);
+    expect(rows.first.id, '${nativeLicensePagePrefix}Alpha');
+    expect(rows.first.subtitle, '2');
+
+    final texts = buildNativeLicenseDetail('Alpha', ['MIT', 'BSD']);
+    expect(texts.id, rows.first.id);
+    expect(texts.items.map((item) => item.value), ['MIT', 'BSD']);
+    // Every row has a title: the native sheet draws none without one.
+    expect(texts.items.map((item) => item.title), ['Alpha (1)', 'Alpha (2)']);
+    expect(
+      texts.items.every((item) => item.kind == NativeSheetItemKind.readOnlyText),
+      isTrue,
+    );
   });
 
   group('Webhook destinations row', () {
@@ -609,9 +825,43 @@ void main() {
       expect(section.footer, _l10n.notificationTargetsDescription);
       final item = section.items.single;
       expect(item.sfSymbol, 'bell.and.waves.left.and.right');
-      expect(item.dismissOnSelect, isTrue);
-      expect(item.actionId, nativeNotificationTargetsActionId);
+      // It opens the destinations' own page, inside Settings.
+      expect(item.id, nativeNotificationTargetsActionId);
+      expect(item.dismissOnSelect, isFalse);
     });
+  });
+
+  test('profile page says the account role and status the server holds', () {
+    final sections = buildNativeProfileDetailSections(
+      _l10n,
+      displayName: 'Ada',
+      accountProfile: const AccountMetadata(
+        id: 'user-1',
+        email: 'ada@example.com',
+        name: 'Ada',
+        role: 'admin',
+        isActive: true,
+        statusEmoji: '🌴',
+        statusMessage: 'Away',
+      ),
+    );
+
+    expect(_item(sections, 'profile-role').subtitle, 'Admin');
+    expect(
+      _item(sections, 'profile-status').subtitle,
+      '${_l10n.activeStatus} • 🌴 Away',
+    );
+    // Without a profile there is nothing to say about it.
+    expect(
+      _ids(
+        buildNativeProfileDetailSections(
+          _l10n,
+          displayName: 'Ada',
+          accountProfile: null,
+        ),
+      ).expand((ids) => ids),
+      isNot(contains('profile-role')),
+    );
   });
 
   test('profile page rows show the About text, or Not set', () {

@@ -156,6 +156,9 @@ Future<List<ChatSendPlaceholderHandle>> durableCompareSend(
   void Function()? onCommitted,
   void Function(ChatSendPlaceholderHandle handle)?
   onAssistantPlaceholderCreated,
+
+  /// As for [durableSend].
+  List<FileUploadState>? attachmentStates,
 }) async {
   final activeAtSendStart = ref.read(activeConversationProvider);
   final sendMutationOwner = captureChatMutationOwner(ref, activeAtSendStart);
@@ -312,6 +315,7 @@ Future<List<ChatSendPlaceholderHandle>> durableCompareSend(
     attachmentList,
     sourceApi: sendMutationOwner.openWebUiApi,
     sourceAuthSnapshot: sendMutationOwner.openWebUiAuthSnapshot,
+    attachmentStates: attachmentStates,
     requireSourceContext: () =>
         _requireChatMutationOpenWebUiAuthSession(ref, sendMutationOwner),
   );
@@ -383,6 +387,7 @@ Future<List<ChatSendPlaceholderHandle>> durableCompareSend(
           kMessageModelIdxMetadataKey: index,
           if (models[index].name.trim().isNotEmpty)
             'modelName': models[index].name.trim(),
+          ...tetherAnswerRecord(models[index]),
         },
       ),
   ];
@@ -474,7 +479,7 @@ Future<List<ChatSendPlaceholderHandle>> durableCompareSend(
         text: message,
         files: durableFiles,
         slots: slots,
-        modelNames: [for (final model in models) model.name],
+        models: models,
         now: now,
         chatParams: draftChatParams,
       );
@@ -562,7 +567,7 @@ Future<List<ChatSendPlaceholderHandle>> durableCompareSend(
             payload: _durableComparisonAssistantPayload(
               slot: slots[index],
               parentId: userMessageId,
-              modelName: models[index].name,
+              model: models[index],
               timestamp: now,
             ),
           ),
@@ -626,15 +631,16 @@ Future<List<ChatSendPlaceholderHandle>> durableCompareSend(
 Map<String, dynamic> _durableComparisonAssistantPayload({
   required ComparisonSlotSnapshot slot,
   required String parentId,
-  required String modelName,
+  required Model model,
   required int timestamp,
 }) => <String, dynamic>{
   ..._durableAssistantPayload(
     id: slot.assistantMessageId,
     parentId: parentId,
     modelId: slot.model,
-    modelName: modelName,
+    modelName: model.name,
     timestamp: timestamp,
+    viaTether: isTetherModel(model),
   ),
   // The column is what keeps two runs of one model apart, here and upstream.
   kMessageModelIdxMetadataKey: slot.modelIdx,
@@ -646,7 +652,7 @@ Map<String, dynamic> _buildDurableComparisonChatBlob({
   required String text,
   required List<Map<String, dynamic>> files,
   required List<ComparisonSlotSnapshot> slots,
-  required List<String> modelNames,
+  required List<Model> models,
   required int now,
   Map<String, dynamic> chatParams = const <String, dynamic>{},
 }) {
@@ -673,7 +679,7 @@ Map<String, dynamic> _buildDurableComparisonChatBlob({
           slots[index].assistantMessageId: _durableComparisonAssistantPayload(
             slot: slots[index],
             parentId: userMsgId,
-            modelName: modelNames[index],
+            model: models[index],
             timestamp: now,
           ),
       },
@@ -700,6 +706,10 @@ const String _comparisonNoTaskError =
 /// has navigated away from. Either way the request is sent once: the first
 /// accepted response marks every slot submitted, and any later run of the same
 /// op recovers by pull alone.
+///
+/// [settledIfStopped] is asked after the last wait before the request: true
+/// when a Stop reached the op, whose answers it has settled as stopped. A
+/// Stop after it stops the request itself.
 Future<void> runComparisonCompletion(
   dynamic ref, {
   required String chatId,
@@ -719,6 +729,7 @@ Future<void> runComparisonCompletion(
   OpenWebUiChatSettingsSnapshot? chatSettings,
   int recoveryAttempts = 6,
   Duration recoveryDelay = const Duration(seconds: 2),
+  Future<bool> Function()? settledIfStopped,
 }) async {
   final api = ref.read(apiServiceProvider);
   if (api == null) {
@@ -813,20 +824,6 @@ Future<void> runComparisonCompletion(
   );
   requireOwner();
 
-  if (live) {
-    final notifier =
-        ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier;
-    for (final slot in slots) {
-      notifier.updateMessageById(slot.assistantMessageId, (message) {
-        if (message.isStreaming) return message;
-        return message.copyWith(
-          isStreaming: true,
-          metadata: notifier._metadataWithoutResponseDone(message.metadata),
-        );
-      });
-    }
-  }
-
   final visibleModels =
       (ref.read(modelsProvider) as AsyncValue<List<Model>>).asData?.value ??
       const <Model>[];
@@ -837,6 +834,19 @@ Future<void> runComparisonCompletion(
     return model != null
         ? _buildLocalModelItem(model)
         : <String, dynamic>{'id': id, 'name': id};
+  }
+
+  // The answers that recorded, when the turn was admitted, that one of the
+  // user's devices offers their model. A chat read back from the store keeps
+  // the answers it does not open on among another's versions, which hold no
+  // record: those are read from their own rows.
+  final viaTether = <String>{};
+  for (final id in slotIds) {
+    final shown = messages.where((message) => message.id == id).firstOrNull;
+    if ((shown != null && answerViaTether(shown)) ||
+        await _storedAnswerViaTether(owner, id)) {
+      viaTether.add(id);
+    }
   }
 
   final socketService = _readOpenWebUiSocketForApi(ref, api);
@@ -851,7 +861,9 @@ Future<void> runComparisonCompletion(
       ref,
       owner: owner,
       slotIds: slotIds,
-      error: 'Comparing models needs a live connection to the server.',
+      error: const ChatMessageError(
+        content: 'Comparing models needs a live connection to the server.',
+      ),
       live: live,
     );
     throw const _QueuedCompletionDeferred(
@@ -898,6 +910,10 @@ Future<void> runComparisonCompletion(
       ref,
       now: DateTime.now(),
       userSettings: userSettingsData,
+      prompts: _openWebUiRequestPrompts(
+        requestMessages,
+        models: <Model?>[for (final slot in slots) modelFor(slot.model)],
+      ),
     );
   } catch (_) {}
   try {
@@ -914,6 +930,22 @@ Future<void> runComparisonCompletion(
     // name all of them and every model that was asked.
     userMessageMap['childrenIds'] = slotIds;
     userMessageMap['models'] = [for (final slot in slots) slot.model];
+  }
+
+  // A stopped answer is never shown streaming again.
+  if (await settledIfStopped?.call() ?? false) return;
+  if (live) {
+    final notifier =
+        ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier;
+    for (final slot in slots) {
+      notifier.updateMessageById(slot.assistantMessageId, (message) {
+        if (message.isStreaming) return message;
+        return message.copyWith(
+          isStreaming: true,
+          metadata: notifier._metadataWithoutResponseDone(message.metadata),
+        );
+      });
+    }
   }
 
   final bufferedChatId = owner.chatId;
@@ -935,32 +967,71 @@ Future<void> runComparisonCompletion(
         admitted: admittedToolServers,
       );
     }
-    final session = await api.sendMessageSession(
-      messages: requestMessages,
-      model: primary.model,
-      conversationId: owner.chatId,
-      terminalId: terminalId,
-      toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
-      filterIds: filterIds.isNotEmpty ? filterIds : null,
-      enableWebSearch: enableWebSearch,
-      enableImageGeneration: enableImageGeneration,
-      enableCodeInterpreter: enableCodeInterpreter,
-      isVoiceMode: isVoiceMode,
-      modelItem: modelItemFor(primary.model),
-      sessionIdOverride: socketSessionId,
-      toolServers: toolServers,
-      backgroundTasks: bgTasks,
-      responseMessageId: primary.assistantMessageId,
-      userSettings: userSettingsData,
-      globalParams: turnSettings.baseline?.globalParams,
-      chatParams: turnSettings.chatParams,
-      reasoningEffort: turnSettings.reasoningEffort,
-      parentId: userMessageMap?['parentId']?.toString(),
-      userMessage: userMessageMap,
-      variables: promptVars,
-      files: _extractTopLevelRequestFiles(userMessageMap),
-      messageIds: comparisonTargets(group),
-    );
+    final ChatCompletionSession session;
+    try {
+      session = await api.sendMessageSession(
+        messages: requestMessages,
+        model: primary.model,
+        conversationId: owner.chatId,
+        terminalId: terminalId,
+        toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
+        filterIds: filterIds.isNotEmpty ? filterIds : null,
+        enableWebSearch: enableWebSearch,
+        enableImageGeneration: enableImageGeneration,
+        enableCodeInterpreter: enableCodeInterpreter,
+        isVoiceMode: isVoiceMode,
+        modelItem: modelItemFor(primary.model),
+        sessionIdOverride: socketSessionId,
+        toolServers: toolServers,
+        backgroundTasks: bgTasks,
+        responseMessageId: primary.assistantMessageId,
+        userSettings: userSettingsData,
+        globalParams: turnSettings.baseline?.globalParams,
+        chatParams: turnSettings.chatParams,
+        reasoningEffort: turnSettings.reasoningEffort,
+        parentId: userMessageMap?['parentId']?.toString(),
+        userMessage: userMessageMap,
+        variables: promptVars,
+        files: _extractTopLevelRequestFiles(userMessageMap),
+        messageIds: comparisonTargets(group),
+        viaTether: viaTether.contains(primary.assistantMessageId),
+        authSnapshot: owner.authSnapshot,
+      );
+    } on ChatCompletionStopped {
+      await settleStoppedOpenWebUiCompletion(
+        ref,
+        api: api,
+        owner: owner,
+        assistantMessageIds: slotIds,
+      );
+      return;
+    } on ChatCompletionHeld {
+      await settleHeldOpenWebUiCompletion(
+        ref,
+        api: api,
+        owner: owner,
+        questionId: userMessageMap?['id']?.toString(),
+        assistantMessageIds: slotIds,
+      );
+      return;
+    } on ChatCompletionHttpException catch (refusal) {
+      // As for one answer: a status a later attempt may pass goes back to the
+      // outbox; any other refusal, a failed relay to a device's included,
+      // settles every answer, since sending it again could run it twice.
+      if (refusal.mayPassLater) rethrow;
+      await _refuseComparison(
+        ref,
+        owner: owner,
+        slotIds: slotIds,
+        error: chatMessageErrorFor(refusal),
+        live: live,
+      );
+      _checkSessionAfterRefusedCompletion(ref, refusal);
+      throw SyncTerminalException(
+        statusCode: refusal.statusCode,
+        message: refusal.toString(),
+      );
+    }
     final completed = await _markComparisonAcceptedOrAbort(
       ref,
       session: session,
@@ -1076,6 +1147,7 @@ Future<void> runComparisonCompletion(
           for (final id in slotIds)
             if (id != slot.assistantMessageId) id,
         ],
+        viaTether: viaTether.contains(slot.assistantMessageId),
       );
       if (!attached) detached.add(slot.assistantMessageId);
     }
@@ -1131,11 +1203,12 @@ Future<Set<String>> _markComparisonAcceptedOrAbort(
     }
   } catch (_) {
     await _abortQuietly(session);
-    for (final taskId in session.taskIds) {
-      try {
-        await api.stopTask(taskId);
-      } catch (_) {}
-    }
+    await _stopRequestTasksQuietly(
+      api,
+      administrator: _maySingleTasksBeStopped(ref),
+      taskIds: session.taskIds,
+      session: owner.authSnapshot,
+    );
     rethrow;
   }
   return completed;
@@ -1210,7 +1283,7 @@ Future<void> _refuseComparison(
   dynamic ref, {
   required OpenWebUiCompletionOwner owner,
   required List<String> slotIds,
-  required String error,
+  required ChatMessageError error,
   required bool live,
 }) async {
   final notifier =
@@ -1220,10 +1293,7 @@ Future<void> _refuseComparison(
     if (live) {
       notifier.updateMessageById(
         id,
-        (message) => message.copyWith(
-          isStreaming: false,
-          error: ChatMessageError(content: error),
-        ),
+        (message) => message.copyWith(isStreaming: false, error: error),
       );
     }
     try {
@@ -1257,7 +1327,7 @@ Future<Never> _rejectUnsupportedComparisonInterpreter(
     ref,
     owner: owner,
     slotIds: slotIds,
-    error: chatErrorContentForException(error),
+    error: chatMessageErrorFor(error),
     live: live,
   );
   throw SyncTerminalException(message: error.toString());
@@ -1383,13 +1453,13 @@ Future<List<String>?> _pullSubmittedOpenWebUiComparison(
     if (conversation == null) continue;
     // Every answer of the turn, whichever one is the chat's current branch:
     // the pulled messages hold the current one, its siblings sit in versions.
-    final landed = <String>{};
-    for (final message in conversation.messages) {
-      if (_headlessAssistantLanded(message)) landed.add(message.id);
-      for (final version in message.versions) {
-        if (_comparisonVersionLanded(version)) landed.add(version.id);
-      }
-    }
+    final landed = <String>{
+      for (final message in conversation.messages) ...[
+        if (_headlessAssistantLanded(message)) message.id,
+        for (final version in message.versions)
+          if (_comparisonVersionLanded(version)) version.id,
+      ],
+    };
     waiting = [
       for (final id in waiting)
         if (!landed.contains(id)) id,
@@ -1563,7 +1633,17 @@ class ComparisonMergeController extends Notifier<String?> {
   bool _cancelled = false;
 
   @override
-  String? build() => null;
+  String? build() {
+    // A chat session scope closing mid-merge stops it: nothing of the scope
+    // can be read or written after, so it ends as if the chat had changed.
+    ref.onDispose(() {
+      _cancelled = true;
+      final cancel = _cancelRequest;
+      _cancelRequest = null;
+      if (cancel != null) unawaited(cancel());
+    });
+    return null;
+  }
 
   /// Stops the running merge. Text that already arrived is kept.
   Future<void> cancel() async {
@@ -1597,15 +1677,19 @@ class ComparisonMergeController extends Notifier<String?> {
         responses: responses,
       );
     } catch (_) {
-      state = null;
+      if (ref.mounted) state = null;
       rethrow;
+    }
+    if (!ref.mounted) {
+      throw const ComparisonMergeException(ComparisonMergeFailure.ownerChanged);
     }
     if (_cancelled) {
       state = null;
       return;
     }
     final (:owner, :database, :api, :authSnapshot, :prompt) = admitted;
-    bool ownsContext() => openWebUiCompletionContextIsCurrent(ref, owner);
+    bool ownsContext() =>
+        ref.mounted && openWebUiCompletionContextIsCurrent(ref, owner);
 
     // The merge the target shows, wherever the transcript keeps it: on the
     // displayed message itself or on one of its stored alternatives.
@@ -1640,6 +1724,7 @@ class ComparisonMergeController extends Notifier<String?> {
     // a result that landed in its place meanwhile is newer and stays.
     void show(Map<String, dynamic>? merged, {bool restoring = false}) {
       // The transcript only changes while it is still this chat's.
+      if (!ref.mounted) return;
       if (activeOpenWebUiChatIdForMutation(ref, owner) == null) return;
       final notifier = ref.read(chatMessagesProvider.notifier);
       notifier.updateMessageById(displayedMessageId, (message) {
@@ -1761,7 +1846,13 @@ class ComparisonMergeController extends Notifier<String?> {
       }
     } finally {
       _cancelRequest = null;
-      state = null;
+      if (ref.mounted) {
+        state = null;
+      } else {
+        failure ??= const ComparisonMergeException(
+          ComparisonMergeFailure.ownerChanged,
+        );
+      }
       // The merge is saved as far as it got, like Open WebUI saves what it has
       // when its stream ends or is stopped. Failing before any text leaves what
       // the answer showed before, not an empty merge and not nothing.
@@ -1811,13 +1902,16 @@ class ComparisonMergeController extends Notifier<String?> {
     // row names its owner, which a cached copy on screen may not carry.
     final currentUserId = ref.read(currentUserProvider2)?.id;
     final storedOwner = (await database.chatsDao.getChat(active.id))?.userId;
+    if (!ref.mounted) {
+      throw const ComparisonMergeException(ComparisonMergeFailure.ownerChanged);
+    }
     if (isReadOnlySharedConversation(active, currentUserId) ||
         (storedOwner != null && storedOwner != currentUserId)) {
       throw const ComparisonMergeException(ComparisonMergeFailure.notMergeable);
     }
 
     final prompt = await _mergePrompt(owner, parentMessageId);
-    if (!openWebUiCompletionContextIsCurrent(ref, owner)) {
+    if (!ref.mounted || !openWebUiCompletionContextIsCurrent(ref, owner)) {
       throw const ComparisonMergeException(ComparisonMergeFailure.ownerChanged);
     }
     return (

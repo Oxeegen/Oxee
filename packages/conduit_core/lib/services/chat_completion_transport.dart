@@ -1,19 +1,48 @@
 import 'dart:async';
 
+import 'package:conduit_core/features/tether/tether_relay_failure.dart';
+
 /// The transport mode chosen by the server for a chat completion request.
 enum ChatCompletionTransport { httpStream, taskSocket, jsonCompletion }
 
 /// A completion request Open WebUI refused with an HTTP error status.
 final class ChatCompletionHttpException implements Exception {
-  const ChatCompletionHttpException(this.statusCode, this.detail);
+  const ChatCompletionHttpException(
+    this.statusCode,
+    this.detail, {
+    this.viaTether = false,
+  });
 
   final int statusCode;
   final String detail;
+
+  /// Whether the request went to a model one of the user's devices offers,
+  /// as it recorded when it was sent.
+  final bool viaTether;
+
+  /// The failed relay to one of the user's devices this refusal reports, or
+  /// null for any other refusal. The answer keeps it with its error.
+  TetherRelayFailure? get relay =>
+      tetherRelayFailureOf(detail, viaTether: viaTether);
 
   /// Whether the refusal could mean the session ended. Open WebUI refuses an
   /// ended session with 401 or 403, but also passes a model provider's own
   /// 401 or 403 through, so only the session endpoint can tell them apart.
   bool get mayRejectSession => statusCode == 401 || statusCode == 403;
+
+  /// Whether a later attempt may well be answered: a timeout, a rate limit,
+  /// or a gateway in front of the server that could not reach it. A queued
+  /// completion is sent again for these rather than settled as refused.
+  ///
+  /// Not a failed relay to one of the user's devices, whose statuses look
+  /// the same: the turn may have run there.
+  bool get mayPassLater =>
+      (statusCode == 408 ||
+          statusCode == 429 ||
+          statusCode == 502 ||
+          statusCode == 503 ||
+          statusCode == 504) &&
+      relay == null;
 
   @override
   String toString() => 'Chat completion failed ($statusCode): $detail';
@@ -168,3 +197,60 @@ final class ChatCompletionSession {
   /// Abort handle to cancel the active HTTP request.
   final Future<void> Function()? abort;
 }
+
+/// The server kept the message instead of answering it: Open WebUI 0.13.4
+/// answers `{queued: true}`, with no task, to a message sent while a reply in
+/// its chat is still running, and answers it under new ids once that reply
+/// ends. No answer comes for this request, and it must not be sent again.
+final class ChatCompletionHeld implements Exception {
+  const ChatCompletionHeld();
+
+  @override
+  String toString() =>
+      'The server holds this message until its chat\'s '
+      'running reply ends';
+}
+
+/// Stored as the error of a regeneration the server held
+/// ([ChatCompletionHeld]) whose question already has an answer: Open WebUI
+/// 0.13.4 answers a held message only while nothing answers it, so it never
+/// would. The app shows it in the user's language.
+const String kReplyStillRunningMessage =
+    'A reply is still running. Stop it, then try again.';
+
+/// Whether a stored reply error is [kReplyStillRunningMessage].
+bool isReplyStillRunningError(String? message) =>
+    message?.trim() == kReplyStillRunningMessage;
+
+/// Ends the byte stream of a held completion whose saved reply was still not
+/// finished when Conduit stopped waiting for it: the server may still be
+/// writing it. The turn shows [kHeldReplyUnresolvedMessage] instead of closing
+/// as an empty answer, and is not sent again.
+final class HeldReplyUnresolved implements Exception {
+  const HeldReplyUnresolved();
+
+  @override
+  String toString() => kHeldReplyUnresolvedMessage;
+}
+
+/// Ends the byte stream of a held completion whose wait for its saved reply
+/// was cut off because its client was closed (the host shutting down). The
+/// reply may still finish on the server; the turn stays queued for a later
+/// read of it, not settled as failed.
+final class HeldReplyAbandoned implements Exception {
+  const HeldReplyAbandoned();
+
+  @override
+  String toString() =>
+      'The wait for a held reply ended because its client was closed.';
+}
+
+/// Stored as the reply's error for [HeldReplyUnresolved]; the app shows it in
+/// the user's language.
+const String kHeldReplyUnresolvedMessage =
+    'The server is still working on this reply. Open this chat again later '
+    'to see it.';
+
+/// Whether a stored reply error is [kHeldReplyUnresolvedMessage].
+bool isHeldReplyUnresolvedError(String? message) =>
+    message?.trim() == kHeldReplyUnresolvedMessage;

@@ -5,6 +5,7 @@ library;
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:conduit_core/database/app_database.dart';
 import 'package:conduit_core/sync/sync_api_client.dart';
 
 import 'fake_open_webui_server.dart';
@@ -52,6 +53,20 @@ class FakeSyncApiClient implements SyncApiClient {
     ];
   }
 
+  /// When set, [getPinnedChatIds] throws.
+  bool failPinnedList = false;
+
+  /// When set, [getArchivedChatCount] throws, as on a server without the
+  /// route.
+  bool failArchivedCount = false;
+
+  /// When set, [getPinnedChatIds] runs it after the server answers and
+  /// before the caller sees the answer, like a change made meanwhile.
+  Future<void> Function()? whilePinnedListLoads;
+
+  /// [whilePinnedListLoads] for [getArchivedChatCount].
+  Future<void> Function()? whileArchivedCountLoads;
+
   /// When set, [getFoldersRaw] throws.
   bool failFolders = false;
 
@@ -68,6 +83,8 @@ class FakeSyncApiClient implements SyncApiClient {
   // ---- instrumentation ----
   int chatListPageRequests = 0;
   int archivedListPageRequests = 0;
+  int pinnedListRequests = 0;
+  int archivedCountRequests = 0;
   int foldersRequests = 0;
 
   /// Ids in the order [getChatRaw] calls STARTED.
@@ -93,6 +110,31 @@ class FakeSyncApiClient implements SyncApiClient {
       throw StateError('injected archived list failure (page $page)');
     }
     return _hide(server.getArchivedChatList(page: page));
+  }
+
+  @override
+  SyncApiClient? ownedBy(AppDatabase db) => this;
+
+  @override
+  Future<Set<String>> getPinnedChatIds() async {
+    pinnedListRequests++;
+    if (failPinnedList) throw StateError('injected pinned list failure');
+    final ids = server.getPinnedChatIds().toSet();
+    final hook = whilePinnedListLoads;
+    whilePinnedListLoads = null;
+    await hook?.call();
+    return ids;
+  }
+
+  @override
+  Future<int?> getArchivedChatCount() async {
+    archivedCountRequests++;
+    if (failArchivedCount) throw StateError('injected archived count failure');
+    final count = server.getArchivedChatCount();
+    final hook = whileArchivedCountLoads;
+    whileArchivedCountLoads = null;
+    await hook?.call();
+    return count;
   }
 
   @override
@@ -202,15 +244,48 @@ class FakeSyncApiClient implements SyncApiClient {
     return server.createChat(chatBlob, folderId: folderId);
   }
 
+  /// Called with each [updateChat]'s blob as the push starts.
+  void Function(String id, Map<String, dynamic> blob)? onUpdateChat;
+
+  /// When set, every [updateChat] awaits this future before the server takes
+  /// it — lets a test hold an updateChat op `inFlight`.
+  Future<void>? updateChatGate;
+
   @override
   Future<Map<String, dynamic>?> updateChat(
     String id,
     Map<String, dynamic> fullBlob,
   ) async {
     updateChatCalls++;
+    onUpdateChat?.call(id, fullBlob);
     await Future<void>.delayed(Duration.zero);
+    final gate = updateChatGate;
+    if (gate != null) {
+      await gate;
+    }
     _maybeThrow(id);
     return server.updateChat(id, fullBlob);
+  }
+
+  /// Chat ids whose stop fails, as when the connection drops.
+  final Set<String> failChatStopIds = <String>{};
+
+  @override
+  Future<List<String>> getChatTaskIds(String chatId) async {
+    await Future<void>.delayed(Duration.zero);
+    return server.getTaskIdsByChat(chatId);
+  }
+
+  @override
+  Future<String?> sessionUserId() async => FakeOpenWebUiServer.userId;
+
+  @override
+  Future<void> stopChatTasks(String chatId) async {
+    await Future<void>.delayed(Duration.zero);
+    if (failChatStopIds.contains(chatId)) {
+      throw StateError('injected chat stop failure ($chatId)');
+    }
+    server.stopTasksByChat(chatId);
   }
 
   @override
@@ -219,6 +294,18 @@ class FakeSyncApiClient implements SyncApiClient {
     await Future<void>.delayed(Duration.zero);
     _maybeThrow(id);
     return server.deleteChat(id);
+  }
+
+  @override
+  Future<void> deleteChatMessages(
+    String chatId,
+    List<String> messageIds,
+  ) async {
+    for (final messageId in messageIds) {
+      await Future<void>.delayed(Duration.zero);
+      _maybeThrow(chatId);
+      server.deleteChatMessage(chatId, messageId);
+    }
   }
 
   @override

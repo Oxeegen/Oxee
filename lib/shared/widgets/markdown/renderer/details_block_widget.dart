@@ -28,12 +28,14 @@ class MarkdownDetailsBlock extends StatefulWidget {
     super.key,
     required this.detailsData,
     this.bodyBuilder,
+    this.mcpAppCacheId,
     this.inlineExpansionStateId,
     this.deferHeavyContent = false,
   });
 
   final CompiledMarkdownDetailsData detailsData;
   final DetailsMarkdownBodyBuilder? bodyBuilder;
+  final String? mcpAppCacheId;
   final String? inlineExpansionStateId;
   final bool deferHeavyContent;
 
@@ -265,7 +267,11 @@ class _MarkdownDetailsBlockState extends State<MarkdownDetailsBlock> {
       context: context,
       isScrollControlled: true,
       constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width),
-      builder: _buildDetailsBottomSheet,
+      // The sheet's embeds came from the same chat as the block's.
+      builder: (sheetContext) => WebEmbedServerMediaScope.carry(
+        context,
+        _buildDetailsBottomSheet(sheetContext),
+      ),
     ).whenComplete(() {
       _isSheetOpen = false;
     });
@@ -721,7 +727,12 @@ class _MarkdownDetailsBlockState extends State<MarkdownDetailsBlock> {
                 const SizedBox(height: Spacing.sm),
               KeyedSubtree(
                 key: ValueKey('tool-call-mcp-app-$index-${app.binding}'),
-                child: McpAppEmbed(app: app),
+                child: McpAppEmbed(
+                  app: app,
+                  cacheId: widget.mcpAppCacheId == null
+                      ? null
+                      : '${widget.mcpAppCacheId}|embed:$index',
+                ),
               ),
             ],
         ],

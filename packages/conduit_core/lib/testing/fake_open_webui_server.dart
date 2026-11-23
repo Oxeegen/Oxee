@@ -31,7 +31,8 @@
 ///   re-derivation; `utils/middleware.py` `serialize_output`). Finally
 ///   `updated_at` is restamped and the title re-derived from the merged
 ///   blob. There is no concurrency control: stale writes are never
-///   rejected.
+///   rejected. An assistant message stored, or sent, as not done keeps its
+///   stored copy, as `update_chat_by_id`'s guard keeps it.
 /// * `deleteChat` mirrors `DELETE /api/v1/chats/{id}`: missing ids fail
 ///   (the route raises 404), existing ids are removed.
 ///
@@ -68,6 +69,7 @@ class _ChatRecord {
     this.pinned = false,
     this.archived = false,
     this.lastReadAt,
+    this.ownerId,
   });
 
   final String id;
@@ -79,6 +81,10 @@ class _ChatRecord {
   bool pinned;
   bool archived;
   int? lastReadAt;
+
+  /// Another user's id for a chat they shared with this account through a
+  /// folder; null for the account's own. Only its own reach its lists.
+  final String? ownerId;
 }
 
 /// Internal mutable note row, shaped like the vendored `Note` table
@@ -206,7 +212,7 @@ class FakeOpenWebUiServer {
   }) {
     var records = _chats.values
         // include_archived defaults to false on this route.
-        .where((c) => !c.archived)
+        .where((c) => !c.archived && c.ownerId == null)
         // `filter_by(folder_id=None)` unless include_folders.
         .where((c) => includeFolders || c.folderId == null)
         // `or_(pinned == False, pinned == None)` unless include_pinned.
@@ -254,7 +260,9 @@ class FakeOpenWebUiServer {
   /// selects no `last_read_at`, so the validated model carries its `null`
   /// default.
   List<Map<String, dynamic>> getArchivedChatList({int? page}) {
-    var records = _chats.values.where((c) => c.archived).toList();
+    var records = _chats.values
+        .where((c) => c.archived && c.ownerId == null)
+        .toList();
 
     // `order_by(Chat.updated_at.desc(), Chat.id)`.
     records.sort((a, b) {
@@ -331,11 +339,128 @@ class FakeOpenWebUiServer {
 
     final incoming = _cleanNullBytes(_deepCopy(blob)) as Map<String, dynamic>;
     final merged = <String, dynamic>{...record.chat, ...incoming};
+    if (incoming.containsKey('history')) {
+      _keepUnfinishedAnswers(existing: record.chat, merged: merged);
+    }
+    return _store(record, merged);
+  }
+
+  /// [blob] saved into chat [id] by the server itself, as a running answer's
+  /// task saves its text: [updateChat] without its guard for unfinished
+  /// answers, which only a client's update meets.
+  Map<String, dynamic>? saveFromTask(String id, Map<String, dynamic> blob) {
+    final record = _chats[id];
+    if (record == null) return null;
+    final incoming = _cleanNullBytes(_deepCopy(blob)) as Map<String, dynamic>;
+    return _store(record, <String, dynamic>{...record.chat, ...incoming});
+  }
+
+  Map<String, dynamic> _store(_ChatRecord record, Map<String, dynamic> merged) {
     _rederiveContentFromOutput(existing: record.chat, merged: merged);
     record.chat = merged;
     record.title = _titleFromBlob(merged);
     record.updatedAt = _now();
     return _toChatResponse(record);
+  }
+
+  /// `update_chat_by_id`'s guard (`models/chats.py`, Open WebUI 0.13.2 and
+  /// 0.13.4): each assistant message it stores as not done (`done: false`),
+  /// or that the update sends as not done, keeps its stored copy whatever
+  /// the update sends. A running answer's own saves are left to its task.
+  static void _keepUnfinishedAnswers({
+    required Map<String, dynamic> existing,
+    required Map<String, dynamic> merged,
+  }) {
+    final storedHistory = existing['history'];
+    final storedMessages = storedHistory is Map
+        ? storedHistory['messages']
+        : null;
+    final mergedHistory = merged['history'];
+    if (storedMessages is! Map || mergedHistory is! Map) return;
+    final sentMessages = mergedHistory['messages'];
+    final messages = <String, dynamic>{
+      if (sentMessages is Map)
+        for (final entry in sentMessages.entries) '${entry.key}': entry.value,
+    };
+    for (final entry in storedMessages.entries) {
+      final stored = entry.value;
+      final sent = messages['${entry.key}'];
+      if (stored is Map &&
+          stored['role'] == 'assistant' &&
+          (stored['done'] == false || (sent is Map && sent['done'] == false))) {
+        messages['${entry.key}'] = _deepCopy(Map<String, dynamic>.from(stored));
+      }
+    }
+    merged['history'] = <String, dynamic>{
+      for (final entry in mergedHistory.entries) '${entry.key}': entry.value,
+      'messages': messages,
+    };
+  }
+
+  /// The tasks running in each chat, by chat id.
+  final Map<String, List<String>> _tasks = <String, List<String>>{};
+
+  /// The chats whose stop (`POST /api/tasks/chat/{id}/stop`) was asked, in
+  /// order.
+  final List<String> chatStops = <String>[];
+
+  /// Task [taskId] runs in chat [chatId], as an answer another device
+  /// started there does, until [endTask].
+  void runTask(String chatId, String taskId) =>
+      (_tasks[chatId] ??= <String>[]).add(taskId);
+
+  void endTask(String chatId, String taskId) {
+    final running = _tasks[chatId];
+    running?.remove(taskId);
+    if (running != null && running.isEmpty) _tasks.remove(chatId);
+  }
+
+  /// Mirrors `GET /api/tasks/chat/{id}`: the tasks running in [chatId].
+  List<String> getTaskIdsByChat(String chatId) =>
+      List<String>.of(_tasks[chatId] ?? const <String>[]);
+
+  /// Mirrors `POST /api/tasks/chat/{id}/stop` (`main.py`,
+  /// `stop_tasks_by_chat_id_endpoint`): each task running in [chatId] is
+  /// stopped. With none running, each of the user's assistant messages
+  /// stored as not done, on any branch, is marked done, keeping the text it
+  /// has stored, and without moving the chat's `updated_at`. A tool call it
+  /// waits on (`pending`, `queued` or `requires_approval`) is rejected.
+  void stopTasksByChat(String chatId) {
+    chatStops.add(chatId);
+    final running = _tasks.remove(chatId);
+    if (running != null && running.isNotEmpty) return;
+    final record = _chats[chatId];
+    final history = record?.chat['history'];
+    final messages = history is Map ? history['messages'] : null;
+    if (record == null || messages is! Map) return;
+    for (final message in messages.values) {
+      if (message is! Map ||
+          message['role'] != 'assistant' ||
+          message['done'] != false) {
+        continue;
+      }
+      // `message.get('user_id') or chat.user_id`: an empty id names no one.
+      final named = message['user_id'];
+      final author = named is String && named.isNotEmpty
+          ? named
+          : record.ownerId ?? userId;
+      if (author != userId) continue;
+      message['done'] = true;
+      final output = message['output'];
+      if (output is! List) continue;
+      for (final item in output) {
+        if (item is Map &&
+            item['type'] == 'function_call' &&
+            const {
+              'pending',
+              'queued',
+              'requires_approval',
+            }.contains(item['status'])) {
+          item['status'] = 'rejected';
+          item.remove('approved');
+        }
+      }
+    }
   }
 
   /// The `update_chat_by_id` route's output-to-content pass
@@ -384,6 +509,56 @@ class FakeOpenWebUiServer {
   /// Mirrors `DELETE /api/v1/chats/{id}`: false when the id does not exist
   /// (the vendored route raises 404), true after removal.
   bool deleteChat(String id) => _chats.remove(id) != null;
+
+  /// Mirrors `DELETE /api/v1/chats/{id}/messages/{messageId}`
+  /// (`delete_message_from_history`): the message and every reply under it
+  /// leave the chat's history, its parent stops naming it, and a current
+  /// message among them falls back to that parent. A message already gone
+  /// changes nothing. False when the chat does not exist.
+  bool deleteChatMessage(String chatId, String messageId) {
+    final record = _chats[chatId];
+    if (record == null) return false;
+    final history = record.chat['history'];
+    final messages = history is Map ? history['messages'] : null;
+    if (messages is! Map || messages[messageId] is! Map) return true;
+    final parentId = (messages[messageId] as Map)['parentId'];
+    final removed = <String>{};
+    void remove(String id) {
+      final message = messages.remove(id);
+      if (message is! Map) return;
+      removed.add(id);
+      for (final child in [...?(message['childrenIds'] as List?)]) {
+        remove(child.toString());
+      }
+    }
+
+    remove(messageId);
+    final parent = parentId == null ? null : messages[parentId];
+    if (parent is Map && parent['childrenIds'] is List) {
+      parent['childrenIds'] = [
+        for (final child in parent['childrenIds'] as List)
+          if (child != messageId) child,
+      ];
+    }
+    if (removed.contains((history as Map)['currentId'])) {
+      history['currentId'] = parentId;
+    }
+    record.updatedAt = _now();
+    return true;
+  }
+
+  /// Mirrors `GET /api/v1/chats/pinned` (`get_pinned_chats_by_user_id`): the
+  /// ids of pinned chats that are not archived.
+  List<String> getPinnedChatIds() => [
+    for (final record in _chats.values)
+      if (record.pinned && !record.archived && record.ownerId == null)
+        record.id,
+  ];
+
+  /// Mirrors `GET /api/v1/chats/archived/count`
+  /// (`count_archived_chats_by_user_id`).
+  int getArchivedChatCount() =>
+      _chats.values.where((c) => c.archived && c.ownerId == null).length;
 
   /// Mirrors `GET /api/v1/chats/{id}/pinned`
   /// (`get_pinned_status_by_id`): the chat's `pinned` flag; throws 401 when
@@ -1008,6 +1183,7 @@ class FakeOpenWebUiServer {
     bool pinned = false,
     bool archived = false,
     int? lastReadAt,
+    String? ownerId,
   }) {
     if (folderId != null) {
       seedFolder(folderId);
@@ -1023,6 +1199,7 @@ class FakeOpenWebUiServer {
       pinned: pinned,
       archived: archived,
       lastReadAt: lastReadAt,
+      ownerId: ownerId,
     );
   }
 
@@ -1162,7 +1339,7 @@ class FakeOpenWebUiServer {
   /// `ChatResponse` shape from the vendored `models/chats.py`.
   Map<String, dynamic> _toChatResponse(_ChatRecord record) => <String, dynamic>{
     'id': record.id,
-    'user_id': userId,
+    'user_id': record.ownerId ?? userId,
     'title': record.title,
     'chat': _deepCopy(record.chat),
     'updated_at': record.updatedAt,

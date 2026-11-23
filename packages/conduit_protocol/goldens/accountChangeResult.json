@@ -1,0 +1,10 @@
+{
+  "outcome": "blockedByActiveReply",
+  "accounts": {
+    "accounts": [],
+    "addingAccount": false,
+    "libreChatAccounts": [],
+    "primary": "openWebUi",
+    "libreChatSession": "none"
+  }
+}

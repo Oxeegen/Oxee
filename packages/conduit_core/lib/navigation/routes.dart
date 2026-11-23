@@ -27,6 +27,7 @@ class Routes {
   static const String serverAddresses = '/profile/accounts/addresses';
   static const String serverAddressEditor = '/profile/accounts/address';
   static const String notificationSettings = '/profile/notifications';
+  static const String pushPrivacy = '/profile/notifications/push-privacy';
   static const String appearanceSettings = '/profile/appearance';
   static const String chatSettings = '/profile/chat';
   static const String dataConnectionSettings = '/profile/data-connection';
@@ -54,6 +55,11 @@ class Routes {
   static const String hermesMcp = '/profile/hermes/mcp';
   static const String hermesHiddenSessions = '/profile/hermes/hidden-chats';
   static const String about = '/profile/about';
+
+  /// A Settings page by its id, drawn from its definition.
+  static const String settingsPage = '/profile/page/:id';
+  static String settingsPageLocation(String id) =>
+      '/profile/page/${Uri.encodeComponent(id)}';
   static const String notes = '/notes';
   static const String terminal = '/terminal';
   static const String channels = '/channels';
@@ -99,6 +105,7 @@ class RouteNames {
   static const String serverAddresses = 'server-addresses';
   static const String serverAddressEditor = 'server-address-editor';
   static const String notificationSettings = 'notification-settings';
+  static const String pushPrivacy = 'push-privacy';
   static const String appearanceSettings = 'appearance-settings';
   static const String chatSettings = 'chat-settings';
   static const String dataConnectionSettings = 'data-connection-settings';
@@ -119,6 +126,7 @@ class RouteNames {
   static const String hermesMcp = 'hermes-mcp';
   static const String hermesHiddenSessions = 'hermes-hidden-chats';
   static const String about = 'about';
+  static const String settingsPage = 'settings-page';
   static const String notes = 'notes';
   static const String channels = 'channels';
   static const String hermesSessions = 'hermes-sessions';

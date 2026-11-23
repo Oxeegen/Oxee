@@ -22,6 +22,7 @@ import '../../../shared/widgets/sidebar_layout_contract.dart';
 
 import 'dart:async';
 
+import 'package:conduit_core/features/chat/services/url_context.dart';
 import 'package:conduit_core/features/chat/providers/chat_model_choice.dart';
 import 'package:conduit_core/features/chat/models/model_selector_layout.dart';
 import 'package:conduit_core/providers/app_providers.dart';
@@ -36,6 +37,7 @@ import 'package:conduit_core/services/performance_profiler.dart';
 
 import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/connectivity_service.dart';
+import 'package:conduit_core/services/settings_service.dart';
 
 import 'package:conduit_core/database/database_provider.dart';
 
@@ -776,6 +778,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   void startNewChat() {
+    clearHermesTrayForNewChat(ref);
     resetHermesForNewChat(ref);
     clearSelectedFiltersForConversationBoundary(ref);
 
@@ -795,7 +798,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     ref.read(pendingOpenWebUiChatSettingsProvider.notifier).replace(const {});
 
     // Reset to default model for new conversations (fixes #296)
-    restoreDefaultModel(ref);
+    restoreDefaultModelForNewChat(ref);
 
     if (_timelineViewportController.hasClients) {
       _timelineViewportController.jumpToLatest();
@@ -1092,18 +1095,24 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _handleMessageSend(String text) async {
-    await _sendMessage(text, includeComposerContext: true);
+    await _sendMessage(text, sentFiles: _captureSentFiles());
   }
+
+  /// The composer's uploaded files, taken for a send that did not take them
+  /// itself. Read before the send waits on anything.
+  MediaAttachmentOwnershipSnapshot _captureSentFiles() =>
+      ref.read(mediaUploadControllerProvider).captureSentAttachments();
 
   Future<ChatSendPlaceholderHandle?> _handleDraftSend(
     String text,
+    MediaAttachmentOwnershipSnapshot files,
     void Function(ChatSendPlaceholderHandle) onPrepared,
   ) {
     final committed = Completer<ChatSendPlaceholderHandle?>();
     unawaited(
       _sendMessage(
         text,
-        includeComposerContext: true,
+        sentFiles: files,
         onSendPrepared: onPrepared,
         onDraftCommitted: (handle) {
           if (!committed.isCompleted) committed.complete(handle);
@@ -1127,12 +1136,13 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   Future<ChatSendPlaceholderHandle?> _handleCompareSend(
     String text,
     List<Model> models,
+    MediaAttachmentOwnershipSnapshot files,
     void Function(ChatSendPlaceholderHandle) onPrepared,
   ) async {
     ChatSendPlaceholderHandle? committed;
     final result = await _sendMessage(
       text,
-      includeComposerContext: true,
+      sentFiles: files,
       compareModels: models,
       onSendPrepared: onPrepared,
       onComparisonCommitted: (handle) => committed = handle,
@@ -1280,7 +1290,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
   }
 
   Future<void> _handleFollowUpSend(String text) async {
-    await _sendMessage(text, includeComposerContext: false);
+    await _sendMessage(text);
   }
 
   void _scheduleScreenContextSubmission() {
@@ -1300,7 +1310,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       final result = await _sendMessage(
         'Here is the content of my screen:\n\n$screenContext\n\n'
         'Can you summarize this?',
-        includeComposerContext: true,
+        sentFiles: _captureSentFiles(),
       );
       if (!mounted) return;
 
@@ -1411,14 +1421,42 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     _syncLayoutBottomAnchor();
   }
 
+  /// Sends [text] with [sentFiles], the composer's files taken for it; a send
+  /// with none (a tapped follow-up) takes no file.
   Future<({bool admitted, bool dispatched})> _sendMessage(
     String text, {
-    required bool includeComposerContext,
+    MediaAttachmentOwnershipSnapshot? sentFiles,
     List<Model>? compareModels,
     void Function(ChatSendPlaceholderHandle committed)? onComparisonCommitted,
     void Function(ChatSendPlaceholderHandle)? onSendPrepared,
     void Function(ChatSendPlaceholderHandle)? onDraftCommitted,
   }) async {
+    final media = ref.read(mediaUploadControllerProvider);
+    try {
+      return await _sendMessageWithFiles(
+        text,
+        sentFiles: sentFiles,
+        compareModels: compareModels,
+        onComparisonCommitted: onComparisonCommitted,
+        onSendPrepared: onSendPrepared,
+        onDraftCommitted: onDraftCommitted,
+      );
+    } finally {
+      if (sentFiles != null) unawaited(media.releaseSentAttachments(sentFiles));
+    }
+  }
+
+  Future<({bool admitted, bool dispatched})> _sendMessageWithFiles(
+    String text, {
+    required MediaAttachmentOwnershipSnapshot? sentFiles,
+    List<Model>? compareModels,
+    void Function(ChatSendPlaceholderHandle committed)? onComparisonCommitted,
+    void Function(ChatSendPlaceholderHandle)? onSendPrepared,
+    void Function(ChatSendPlaceholderHandle)? onDraftCommitted,
+  }) async {
+    // Named as the send is asked for, with its files: after any wait below,
+    // the message goes only to this account and chat.
+    final owner = captureChatSendOwner(ref);
     if (!debugCanSubmitChatMessageForTesting(
       isLoadingConversation: ref.read(isLoadingConversationProvider),
       isSavingTemporary: _isSavingTemporary,
@@ -1433,7 +1471,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     try {
       dispatched = await _sendMessageAfterAdmission(
         text,
-        includeComposerContext: includeComposerContext,
+        owner: owner,
+        sentFiles: sentFiles,
         sendOwner: sendOwner,
         compareModels: compareModels,
         onComparisonCommitted: onComparisonCommitted,
@@ -1448,7 +1487,8 @@ class _ChatPageState extends ConsumerState<ChatPage> {
 
   Future<bool> _sendMessageAfterAdmission(
     String text, {
-    required bool includeComposerContext,
+    required ChatSendOwner owner,
+    required MediaAttachmentOwnershipSnapshot? sentFiles,
     required Object sendOwner,
     List<Model>? compareModels,
     void Function(ChatSendPlaceholderHandle committed)? onComparisonCommitted,
@@ -1469,7 +1509,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       } catch (_) {
         failed = true;
       }
-      if (!mounted) return false;
+      if (!mounted || !chatSendOwnerIsCurrent(ref, owner)) return false;
       // A model picked while that waited is the user's choice; the fallback
       // only stands in for none.
       selectedModel = ref.read(selectedModelProvider) ?? fallback;
@@ -1490,13 +1530,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     var pendingSends = const <ChatSendPlaceholderHandle>[];
     var didDispatch = false;
     try {
-      // Get attached files and collect uploaded file IDs (including data URLs for images)
-      final attachedFiles = includeComposerContext
-          ? ref.read(attachedFilesProvider)
-          : const <FileUploadState>[];
+      // Collect uploaded file IDs (including data URLs for images)
+      final attachedFiles = sentFiles?.attachments ?? const <FileUploadState>[];
       final mediaUploadController = ref.read(mediaUploadControllerProvider);
-      final sentAttachmentOwnership = mediaUploadController
-          .captureAttachmentOwnership();
       final uploadedFileIds = attachedFiles
           .where(
             (file) =>
@@ -1506,10 +1542,9 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           .map((file) => file.fileId!)
           .toList();
 
-      // Get selected tools
-      final toolIds = includeComposerContext
-          ? ref.read(selectedToolIdsProvider)
-          : const <String>[];
+      // The tools belong to the chat, not the draft: a tapped follow-up
+      // takes them too.
+      final toolIds = ref.read(selectedToolIdsProvider);
       final wasOffline = !ref.read(isOnlineProvider);
       final hasDurableOutbox =
           ref.read(appDatabaseProvider) != null &&
@@ -1529,6 +1564,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           models: compareModels,
           onAssistantPlaceholderCreated: onSendPrepared,
           toolIds: toolIds.isNotEmpty ? toolIds : null,
+          attachmentStates: sentFiles?.attachments,
         );
         pendingSends = handles;
         onComparisonCommitted?.call(handles.first);
@@ -1557,6 +1593,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
           text,
           uploadedFileIds.isNotEmpty ? uploadedFileIds : null,
           toolIds: toolIds.isNotEmpty ? toolIds : null,
+          attachmentStates: sentFiles?.attachments,
           onAssistantPlaceholderCreated: (handle) {
             didDispatch = true;
             _releaseMessageSendAdmission(sendOwner);
@@ -1595,19 +1632,19 @@ class _ChatPageState extends ConsumerState<ChatPage> {
       // Clear only after durableSend has transferred every attachment needed
       // by the message/outbox. Retire only the exact identities/generations
       // captured for this send: a paste or picker result published while the
-      // durable transaction awaited still belongs to the next composer turn.
-      if (includeComposerContext) {
+      // send awaited still belongs to the next composer turn.
+      if (sentFiles != null) {
         unawaited(
-          mediaUploadController
-              .retireAttachmentOwnership(sentAttachmentOwnership)
-              .catchError((Object error, StackTrace stackTrace) {
-                DebugLogger.error(
-                  'sent-attachment-cleanup-failed',
-                  scope: 'chat/attachment',
-                  error: error,
-                  stackTrace: stackTrace,
-                );
-              }),
+          mediaUploadController.retireAttachmentOwnership(sentFiles).catchError(
+            (Object error, StackTrace stackTrace) {
+              DebugLogger.error(
+                'sent-attachment-cleanup-failed',
+                scope: 'chat/attachment',
+                error: error,
+                stackTrace: stackTrace,
+              );
+            },
+          ),
         );
       }
 
@@ -1945,14 +1982,6 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     );
   }
 
-  /// Checks if a URL is a YouTube URL.
-  bool _isYoutubeUrl(String url) {
-    return url.startsWith('https://www.youtube.com') ||
-        url.startsWith('https://youtu.be') ||
-        url.startsWith('https://youtube.com') ||
-        url.startsWith('https://m.youtube.com');
-  }
-
   Future<void> _promptAttachWebpage() async {
     final api = ref.read(apiServiceProvider);
     if (api == null) return;
@@ -2031,53 +2060,21 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                           });
                           try {
                             final trimmedUrl = url.trim();
-                            final isYoutube = _isYoutubeUrl(trimmedUrl);
-
-                            // Use appropriate API based on URL type
-                            final result = isYoutube
-                                ? await api.processYoutube(url: trimmedUrl)
-                                : await api.processWebpage(url: trimmedUrl);
-
-                            final file = (result?['file'] as Map?)
-                                ?.cast<String, dynamic>();
-                            final fileData = (file?['data'] as Map?)
-                                ?.cast<String, dynamic>();
-                            final content =
-                                fileData?['content']?.toString() ?? '';
-                            if (content.isEmpty) {
+                            final page = await readUrlContext(
+                              api,
+                              trimmedUrl,
+                            );
+                            if (page.content.isEmpty) {
                               setError(
-                                isYoutube
+                                page.youtube
                                     ? l10n.youtubeTranscriptFetchFailed
                                     : l10n.webpageNoReadableContent,
                               );
                               return;
                             }
-                            final meta = (file?['meta'] as Map?)
-                                ?.cast<String, dynamic>();
-                            final name =
-                                meta?['name']?.toString() ?? parsed.host;
-                            final collectionName = result?['collection_name']
-                                ?.toString();
-
-                            // Add as appropriate type
-                            final notifier = ref.read(
-                              contextAttachmentsProvider.notifier,
-                            );
-                            if (isYoutube) {
-                              notifier.addYoutube(
-                                displayName: name,
-                                content: content,
-                                url: trimmedUrl,
-                                collectionName: collectionName,
-                              );
-                            } else {
-                              notifier.addWeb(
-                                displayName: name,
-                                content: content,
-                                url: trimmedUrl,
-                                collectionName: collectionName,
-                              );
-                            }
+                            ref
+                                .read(contextAttachmentsProvider.notifier)
+                                .addUrlContext(page);
 
                             if (!mounted || !dialogContext.mounted) {
                               return;
@@ -4279,7 +4276,27 @@ class _ChatPageState extends ConsumerState<ChatPage> {
                       source: readOnlyHermesSource,
                     );
                   }
+                  final selectedModelName = composerRef.watch(
+                    selectedModelProvider.select(
+                      (model) =>
+                          model == null ? null : displayNameForModel(model),
+                    ),
+                  );
+                  final hermesBot = chatHermesBotPresentation(
+                    activeConversation,
+                  );
+                  final showModelName = composerRef.watch(
+                    appSettingsProvider.select(
+                      (settings) => settings.showModelNameInComposer,
+                    ),
+                  );
                   return ModernChatInput(
+                    placeholder: showModelName
+                        ? chatComposerPlaceholder(
+                            AppLocalizations.of(context)!,
+                            modelName: hermesBot?.title ?? selectedModelName,
+                          )
+                        : null,
                     onSendMessage: _handleMessageSend,
                     onSendDraft: _handleDraftSend,
                     onCompareSend: _handleCompareSend,
@@ -4719,7 +4736,7 @@ class _ChatPageState extends ConsumerState<ChatPage> {
     double modelWidth() {
       if (PlatformInfo.isIOS) {
         final room =
-            MediaQuery.sizeOf(context).width -
+            conduitAdaptiveToolbarWidthOf(context) -
             2 * Spacing.inputPadding -
             controlExtent -
             trailingWidth() -
@@ -5426,6 +5443,31 @@ String _formatChatModelDisplayName(String name) =>
 @visibleForTesting
 String temporaryChatToolbarSymbol({required bool isTemporary}) =>
     isTemporary ? 'circle.dashed.inset.filled' : 'circle.dashed';
+
+/// The most characters of a model's name the composer's placeholder shows.
+/// A longer name ends in an ellipsis; the header's model pill shows it
+/// whole.
+@visibleForTesting
+const int kChatComposerPlaceholderMaxNameLength = 24;
+
+/// The composer's placeholder for a chat: "Ask" and the name of the model
+/// (or Hermes bot) it talks to, on one line and cut short past
+/// [kChatComposerPlaceholderMaxNameLength] characters. Null when there is
+/// no name, so the composer keeps its own "Ask Conduit".
+@visibleForTesting
+String? chatComposerPlaceholder(
+  AppLocalizations l10n, {
+  required String? modelName,
+}) {
+  final name = modelName?.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (name == null || name.isEmpty) return null;
+  final characters = name.characters;
+  const maxLength = kChatComposerPlaceholderMaxNameLength;
+  final shown = characters.length <= maxLength
+      ? name
+      : '${characters.take(maxLength - 1).toString().trimRight()}\u2026';
+  return l10n.messageHintTextForModel(shown);
+}
 
 /// The chat title the header shows once the transcript scrolls under it,
 /// or `null` while the chat has no real title yet.

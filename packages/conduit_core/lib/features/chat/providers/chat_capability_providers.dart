@@ -30,7 +30,11 @@ final codeInterpreterEnabledProvider =
 
 /// Whether the interpreter may run for the selected model right now, or why
 /// not. Null means it may.
-final codeInterpreterBlockProvider = Provider<CodeInterpreterBlock?>((ref) {
+final codeInterpreterBlockProvider = Provider<CodeInterpreterBlock?>(
+  _codeInterpreterBlock,
+);
+
+CodeInterpreterBlock? _codeInterpreterBlock(Ref ref) {
   final api = ref.watch(apiServiceProvider);
   final model = ref.watch(selectedModelProvider);
   if (api == null ||
@@ -49,7 +53,7 @@ final codeInterpreterBlockProvider = Provider<CodeInterpreterBlock?>((ref) {
     model: model,
     terminalId: ref.watch(selectedTerminalIdProvider),
   );
-});
+}
 
 /// What the composer shows for the interpreter, or null for nothing.
 ///
@@ -60,7 +64,11 @@ final codeInterpreterBlockProvider = Provider<CodeInterpreterBlock?>((ref) {
 /// reach an Open WebUI server get no offer.
 typedef CodeInterpreterOffer = ({bool selected, CodeInterpreterBlock? block});
 
-final codeInterpreterOfferProvider = Provider<CodeInterpreterOffer?>((ref) {
+final codeInterpreterOfferProvider = Provider<CodeInterpreterOffer?>(
+  _codeInterpreterOffer,
+);
+
+CodeInterpreterOffer? _codeInterpreterOffer(Ref ref) {
   final selected = ref.watch(codeInterpreterEnabledProvider);
   final block = ref.watch(codeInterpreterBlockProvider);
   if (block == CodeInterpreterBlock.notOpenWebUi) return null;
@@ -70,7 +78,7 @@ final codeInterpreterOfferProvider = Provider<CodeInterpreterOffer?>((ref) {
     appSettingsProvider.select((settings) => settings.advancedFeaturesEnabled),
   );
   return advanced ? (selected: false, block: block) : null;
-});
+}
 
 /// Why Open WebUI's code interpreter cannot run a turn.
 enum CodeInterpreterBlock {
@@ -114,6 +122,35 @@ CodeInterpreterBlock? _evaluateCodeInterpreterSupport({
   required Model? model,
   required String? terminalId,
 }) {
+  final serverBlock = codeInterpreterServerBlock(
+    config: config,
+    serverId: serverId,
+    user: user,
+    permissions: permissions,
+  );
+  if (serverBlock != null) return serverBlock;
+
+  if (model == null) return CodeInterpreterBlock.unverified;
+  if (_explicitModelCapability(model, 'code_interpreter') == false) {
+    return CodeInterpreterBlock.modelUnsupported;
+  }
+  if (_resolveTerminalIdForRequest(selectedTerminalId: terminalId) != null &&
+      modelSupportsTerminal(model)) {
+    return CodeInterpreterBlock.terminalActive;
+  }
+  return null;
+}
+
+/// The half of Open WebUI's rule that holds for every model: the server's
+/// flag and engine, and the account's permission. Null means the server and
+/// the account would run the interpreter; the model and the terminal
+/// selection still decide each turn ([codeInterpreterBlockProvider]).
+CodeInterpreterBlock? codeInterpreterServerBlock({
+  required BackendConfig? config,
+  required String serverId,
+  required User? user,
+  required Map<String, dynamic>? permissions,
+}) {
   if (config == null ||
       config.serverId != serverId ||
       config.enableCodeInterpreter == null) {
@@ -133,17 +170,26 @@ CodeInterpreterBlock? _evaluateCodeInterpreterSupport({
       return CodeInterpreterBlock.noPermission;
     }
   }
-
-  if (model == null) return CodeInterpreterBlock.unverified;
-  if (_explicitModelCapability(model, 'code_interpreter') == false) {
-    return CodeInterpreterBlock.modelUnsupported;
-  }
-  if (_resolveTerminalIdForRequest(selectedTerminalId: terminalId) != null &&
-      modelSupportsTerminal(model)) {
-    return CodeInterpreterBlock.terminalActive;
-  }
   return null;
 }
+
+/// Whether the signed-in Open WebUI account's server runs the interpreter
+/// for it, whatever model is selected: [codeInterpreterServerBlock] with
+/// nothing in the way. False while the server's answers load, and for a
+/// session with no signed-in Open WebUI account.
+final codeInterpreterAvailableProvider = Provider<bool>((ref) {
+  final api = ref.watch(apiServiceProvider);
+  if (api == null || !ref.watch(openWebUiAccountAvailableProvider)) {
+    return false;
+  }
+  return codeInterpreterServerBlock(
+        config: ref.watch(backendConfigProvider).asData?.value,
+        serverId: api.serverConfig.id,
+        user: ref.watch(currentUserProvider2),
+        permissions: ref.watch(userPermissionsProvider).asData?.value,
+      ) ==
+      null;
+});
 
 /// Whether a request built now may carry the interpreter flag: it is selected,
 /// and the server, the account, the model and the terminal selection allow it.
@@ -274,7 +320,7 @@ Future<Never> _rejectUnsupportedCodeInterpreter(
       await owner.database?.messagesDao.markAssistantCompletionRefused(
         chatId: owner.chatId,
         messageId: assistantMessageId,
-        error: chatErrorContentForException(error),
+        error: chatMessageErrorFor(error),
       );
     });
   } catch (cause, stackTrace) {

@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:checks/checks.dart';
 import 'package:conduit_core/models/chat_message.dart';
+import 'package:conduit_core/features/chat/providers/attached_files_provider.dart';
 import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit_core/features/direct_connections/direct_connections.dart';
 import 'package:conduit_core/features/hermes/models/hermes_capabilities.dart';
@@ -11,6 +13,9 @@ import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 import 'package:conduit_core/features/hermes/services/hermes_local_document_service.dart';
 import 'package:conduit_core/features/hermes/services/hermes_message_mapper.dart';
 import 'package:conduit_core/features/integrations/personal_connection_settings.dart';
+import 'package:conduit_core/models/file_info.dart';
+import 'package:conduit_core/providers/app_providers.dart'
+    show UserFiles, userFilesProvider;
 import 'package:riverpod/riverpod.dart';
 import 'package:test/test.dart';
 
@@ -134,6 +139,99 @@ void main() {
       ]);
     });
 
+    test('durable attachments carry their names, as Open WebUI stores '
+        'them', () {
+      final files = buildDurableFilesForTest(
+        const ['document-file', 'unnamed-file'],
+        contentTypes: const {'document-file': 'text/markdown'},
+        names: const {'document-file': 'Trip notes.md'},
+        sizes: const {'document-file': 2048},
+      );
+
+      check(files).deepEquals(const [
+        {
+          'type': 'file',
+          'id': 'document-file',
+          'url': 'document-file',
+          'name': 'Trip notes.md',
+          'size': 2048,
+          'content_type': 'text/markdown',
+        },
+        {'type': 'file', 'id': 'unnamed-file', 'url': 'unnamed-file'},
+      ]);
+    });
+
+    group('a sent file is described by name', () {
+      // The stored copy of a sent message is what every client shows after
+      // a reload: Open WebUI's web client and every other client read the
+      // name from it. Only the content type used to be resolved, so files
+      // came back nameless and showed as "file".
+      Future<List<Map<String, dynamic>>> resolve(
+        List<String> ids, {
+        List<FileUploadState> tray = const [],
+        Map<String, Map<String, dynamic>> server = const {},
+      }) async {
+        final container = ProviderContainer(
+          overrides: [
+            userFilesProvider.overrideWith(_NoUserFiles.new),
+            attachedFilesProvider.overrideWith(() => _Tray(tray)),
+          ],
+        );
+        addTearDown(container.dispose);
+        return resolveDurableFilesForTest(
+          container,
+          ids,
+          sourceApi: _FileInfoApi(server),
+        );
+      }
+
+      test('from the server\'s own record of it', () async {
+        final files = await resolve(
+          const ['doc-1'],
+          server: {
+            'doc-1': {
+              'id': 'doc-1',
+              'filename': 'Trip notes.md',
+              'meta': {
+                'name': 'Trip notes.md',
+                'content_type': 'text/markdown',
+                'size': 2048,
+              },
+            },
+          },
+        );
+        check(files.single['name']).equals('Trip notes.md');
+        check(files.single['size']).equals(2048);
+        check(files.single['content_type']).equals('text/markdown');
+      });
+
+      test('from the composer that sent it', () async {
+        final files = await resolve(
+          const ['doc-2'],
+          tray: [
+            FileUploadState(
+              file: File('remote://doc-2'),
+              fileName: 'Packing list.txt',
+              fileSize: 512,
+              progress: 1,
+              status: FileUploadStatus.completed,
+              fileId: 'doc-2',
+            ),
+          ],
+          // The server's record has no name to add.
+          server: {
+            'doc-2': {
+              'id': 'doc-2',
+              'meta': {'content_type': 'text/plain'},
+            },
+          },
+        );
+        check(files.single['name']).equals('Packing list.txt');
+        check(files.single['size']).equals(512);
+        check(files.single['content_type']).equals('text/plain');
+      });
+    });
+
     test(
       'unknown image filename extensions do not block server MIME lookup',
       () {
@@ -213,6 +311,91 @@ void main() {
 
       check(messages).deepEquals(const [
         {'role': 'system', 'content': 'System'},
+      ]);
+    });
+
+    test('a saved chat fetches none of its history images, which its '
+        'request leaves out; a temporary chat still sends them', () async {
+      final history = [
+        ChatMessage(
+          id: 'user-1',
+          role: 'user',
+          content: 'What is on the shelf?',
+          timestamp: DateTime.utc(2026, 11, 2),
+          attachmentIds: const ['image-shelf'],
+        ),
+        ChatMessage(
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'A blue teapot.',
+          timestamp: DateTime.utc(2026, 11, 2),
+        ),
+        ChatMessage(
+          id: 'user-2',
+          role: 'user',
+          content: 'And beside it?',
+          timestamp: DateTime.utc(2026, 11, 2),
+        ),
+      ];
+      final api = _ImageFilesApi();
+
+      final saved = await buildOpenWebUiCompletionRequestMessagesForTest(
+        messages: history,
+        api: api,
+        isTemporary: false,
+      );
+      check(saved).isEmpty();
+      check(api.asked).isEmpty();
+
+      final temporary = await buildOpenWebUiCompletionRequestMessagesForTest(
+        messages: history,
+        api: api,
+      );
+      check(api.asked)
+          .deepEquals(const ['info image-shelf', 'content image-shelf']);
+      check(temporary.first['content']).isA<List<dynamic>>().deepEquals([
+        {'type': 'text', 'text': 'What is on the shelf?'},
+        {
+          'type': 'image_url',
+          'image_url': {'url': 'data:image/png;base64,c2hlbGY='},
+        },
+      ]);
+    });
+
+    // A temporary chat's request carries its whole history, and the server
+    // has no stored copy to rebuild it from: a turn of files alone that the
+    // builder skipped never reached the model.
+    test('a temporary chat sends a turn of files alone, with its image, '
+        'and still leaves out an empty answer', () async {
+      final api = _ImageFilesApi();
+
+      final messages = await buildOpenWebUiCompletionRequestMessagesForTest(
+        messages: [
+          ChatMessage(
+            id: 'user-1',
+            role: 'user',
+            content: '',
+            timestamp: DateTime.utc(2026, 11, 2),
+            attachmentIds: const ['image-shelf'],
+          ),
+          ChatMessage(
+            id: 'assistant-1',
+            role: 'assistant',
+            content: '',
+            timestamp: DateTime.utc(2026, 11, 2),
+            isStreaming: true,
+          ),
+        ],
+        api: api,
+      );
+
+      check(messages).length.equals(1);
+      check(messages.single['role']).equals('user');
+      check(messages.single['content']).isA<List<dynamic>>().deepEquals([
+        {
+          'type': 'image_url',
+          'image_url': {'url': 'data:image/png;base64,c2hlbGY='},
+        },
       ]);
     });
 
@@ -563,4 +746,50 @@ void main() {
       ).isTrue();
     });
   });
+}
+
+/// The files the user's account lists: none here, so a name has to come
+/// from the composer or the server's record of the file.
+class _NoUserFiles extends UserFiles {
+  @override
+  Future<List<FileInfo>> build() async => const <FileInfo>[];
+}
+
+/// The composer's attachment tray, holding [files].
+class _Tray extends AttachedFilesNotifier {
+  _Tray(this.files);
+
+  final List<FileUploadState> files;
+
+  @override
+  List<FileUploadState> build() => files;
+}
+
+/// Serves one stored PNG, keeping each request it is asked.
+class _ImageFilesApi {
+  final asked = <String>[];
+
+  Future<Map<String, dynamic>> getFileInfo(String id) async {
+    asked.add('info $id');
+    return {
+      'id': id,
+      'filename': 'shelf.png',
+      'meta': {'content_type': 'image/png'},
+    };
+  }
+
+  Future<String> getFileContent(String id) async {
+    asked.add('content $id');
+    return 'c2hlbGY=';
+  }
+}
+
+/// Answers `getFileInfo` from [records], as Open WebUI's files API does.
+class _FileInfoApi {
+  _FileInfoApi(this.records);
+
+  final Map<String, Map<String, dynamic>> records;
+
+  Future<Map<String, dynamic>> getFileInfo(String id) async =>
+      records[id] ?? (throw StateError('no file $id'));
 }

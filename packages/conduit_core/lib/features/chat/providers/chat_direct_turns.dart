@@ -16,6 +16,7 @@ Future<_DirectConversationOwner?> _persistDirectTurnStart(
   required Object? openWebUiAuthSessionEpoch,
   required SyncEngine? openWebUiSyncEngine,
   String? pendingFolderId,
+  List<String> attachmentNames = const [],
 }) async {
   final active = expectedConversation;
   final storedActive = active != null && chatStorageKindOf(active) != null;
@@ -23,9 +24,16 @@ Future<_DirectConversationOwner?> _persistDirectTurnStart(
       ref.read(temporaryChatEnabledProvider) ||
       (active != null && isTemporaryChat(active.id) && !storedActive);
   final now = ref.read(syncClockProvider).nowEpochSeconds();
+  // A turn without words is named by its files. A server image joins the
+  // message's files only once it is fetched, after this, so the names the
+  // tray showed are read instead.
   final title = active?.title.trim().isNotEmpty == true
       ? active!.title
-      : _titleFromText(userMessage.content);
+      : _titleFromText(
+          userMessage.content.trim().isEmpty && attachmentNames.isNotEmpty
+              ? attachmentNames.join(', ')
+              : _titleSourceOf(userMessage),
+        );
 
   if (isTemporary) {
     final id = active?.id ?? 'local:${const Uuid().v4()}';
@@ -1858,9 +1866,7 @@ Future<void> _dispatchDirectRunFromChatWithTrackedOwner(
       error: accumulator.error != null
           ? ChatMessageError(content: accumulator.error!.message)
           : terminalFailure != null && !accumulator.hasGeneratedImages
-          ? ChatMessageError(
-              content: chatErrorContentForException(terminalFailure),
-            )
+          ? chatMessageErrorFor(terminalFailure)
           : base.error,
       isStreaming: false,
     );
@@ -1891,11 +1897,89 @@ Future<void> _dispatchDirectRunFromChatWithTrackedOwner(
       rethrow;
     }
     registry.markDurablyPersisted(reservation);
+    await _announceDirectRunCompletion(
+      ref,
+      registry,
+      reservation,
+      owner: owner,
+      message: completed,
+    );
     if (terminalFailure != null && !accumulator.hasGeneratedImages) {
       Error.throwWithStackTrace(terminalFailure, terminalFailureStack!);
     }
   } finally {
     registry.complete(reservation, run);
     await closeMcpSessionBestEffort();
+  }
+}
+
+/// Tells [DirectRunRegistry.completions] that the reply [message] of
+/// [owner]'s chat is done and stored, for a notification when the app is in
+/// the background. Called while the run still holds its database lease.
+/// Never fails the run it reports on.
+Future<void> _announceDirectRunCompletion(
+  dynamic ref,
+  DirectRunRegistry registry,
+  DirectRunReservation reservation, {
+  required _DirectConversationOwner owner,
+  required ChatMessage message,
+}) async {
+  if (registry.isCancelled(reservation)) return;
+  try {
+    final location = owner.location;
+    final active = ref.read(activeConversationProvider) as Conversation?;
+    String? title;
+    if (active != null && active.id == owner.conversationId) {
+      title = active.title;
+    } else if (location != null) {
+      title = await directCompletionChatTitle(
+        location.database,
+        owner.conversationId,
+      );
+    }
+    registry.announceCompletion(
+      reservation,
+      DirectRunCompletion(
+        conversationId: owner.conversationId,
+        message: message,
+        runId: reservation.runId,
+        title: title,
+        storage: location?.storage,
+        openWebUiAccountId: location?.storage == ChatStorageKind.openWebUi
+            ? owner.persistenceOwnerId
+            : null,
+      ),
+    );
+  } catch (error, stackTrace) {
+    DebugLogger.error(
+      'completion-announce-failed',
+      scope: 'direct-connections/chat',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
+}
+
+/// The stored title of chat [conversationId] in [database], for the
+/// notification about its reply. The title only names the chat: a lookup
+/// that fails or takes over two seconds answers null, and the reply is
+/// announced without one.
+@visibleForTesting
+Future<String?> directCompletionChatTitle(
+  AppDatabase database,
+  String conversationId,
+) async {
+  try {
+    final row = await database.chatsDao
+        .getChat(conversationId)
+        .timeout(const Duration(seconds: 2));
+    return row?.title;
+  } catch (error) {
+    DebugLogger.warning(
+      'completion-title-lookup-failed',
+      scope: 'direct-connections/chat',
+      data: {'errorType': error.runtimeType.toString()},
+    );
+    return null;
   }
 }

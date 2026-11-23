@@ -225,6 +225,12 @@ enum PlatformPccEventKind: Int, CaseIterable {
   case done = 4
 }
 
+enum PlatformPushTransport: Int, CaseIterable {
+  case apns = 0
+  case fcm = 1
+  case unifiedPush = 2
+}
+
 enum PlatformNativeSheetItemKind: Int, CaseIterable {
   case navigation = 0
   case textField = 1
@@ -244,6 +250,17 @@ enum PlatformNativeSheetItemKind: Int, CaseIterable {
   /// Each option's swatches paint its preview; one with dark swatches too
   /// previews both halves.
   case appearanceTiles = 13
+  /// A day as a compact date control: value is local ISO 8601 without a
+  /// zone; min and max are the first and last days, in epoch milliseconds.
+  case date = 14
+  /// A time of day as a compact time control; value as for [date].
+  case time = 15
+  /// One read-only line of a comparison: title is the line; value is
+  /// `added`, `removed` or `context`; subtitle is what VoiceOver reads.
+  case diffLine = 16
+  /// Source code, monospaced, filling the page it is the only row of; value
+  /// is the code, sent back as a text row's is; disabled reads only.
+  case code = 17
 }
 
 /// Whether a keyboard attachment row turns an option on and off, or runs a
@@ -251,6 +268,14 @@ enum PlatformNativeSheetItemKind: Int, CaseIterable {
 enum PlatformKeyboardAttachmentActionKind: Int, CaseIterable {
   case toggle = 0
   case command = 1
+}
+
+/// How a system-browser sign-in ended.
+enum PlatformBrowserAuthOutcome: Int, CaseIterable {
+  case success = 0
+  case cancelled = 1
+  case unavailable = 2
+  case failed = 3
 }
 
 /// Generated class from Pigeon that represents data sent in messages.
@@ -1464,6 +1489,23 @@ struct PlatformNativeSheetItem: Hashable, CustomStringConvertible {
   /// the row's own title and subtitle.
   var usesProfileAvatar: Bool? = nil
   var filterAllLabel: String? = nil
+  /// Asked before the row acts; the row's title confirms.
+  var confirmMessage: String? = nil
+  /// Shown dimmed, and does nothing when tapped.
+  var disabled: Bool? = nil
+  /// The keyboard a text row brings up: `url`, `email`, `number`, or the
+  /// default when null.
+  var keyboard: String? = nil
+  /// For a secure row holding the account's own password: `current`, or
+  /// `newPassword` for one being set. Null marks any other secret (an API
+  /// key, a token), which the system must not offer to save as a password.
+  var passwordRole: String? = nil
+  /// What else the row can do, besides what a tap does: a long press lists
+  /// them, and a swipe offers them where the page is not reordering.
+  var rowActions: [PlatformNativeSheetRowAction]? = nil
+  /// The colour the row's symbol is drawn in, as ARGB, in place of the
+  /// page's tint: a calendar's own colour, say.
+  var symbolColor: Int64? = nil
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -1501,6 +1543,12 @@ struct PlatformNativeSheetItem: Hashable, CustomStringConvertible {
     let accent: Bool? = nilOrValue(pigeonVar_list[30])
     let usesProfileAvatar: Bool? = nilOrValue(pigeonVar_list[31])
     let filterAllLabel: String? = nilOrValue(pigeonVar_list[32])
+    let confirmMessage: String? = nilOrValue(pigeonVar_list[33])
+    let disabled: Bool? = nilOrValue(pigeonVar_list[34])
+    let keyboard: String? = nilOrValue(pigeonVar_list[35])
+    let passwordRole: String? = nilOrValue(pigeonVar_list[36])
+    let rowActions: [PlatformNativeSheetRowAction]? = nilOrValue(pigeonVar_list[37])
+    let symbolColor: Int64? = nilOrValue(pigeonVar_list[38])
 
     return PlatformNativeSheetItem(
       id: id,
@@ -1535,7 +1583,13 @@ struct PlatformNativeSheetItem: Hashable, CustomStringConvertible {
       checked: checked,
       accent: accent,
       usesProfileAvatar: usesProfileAvatar,
-      filterAllLabel: filterAllLabel
+      filterAllLabel: filterAllLabel,
+      confirmMessage: confirmMessage,
+      disabled: disabled,
+      keyboard: keyboard,
+      passwordRole: passwordRole,
+      rowActions: rowActions,
+      symbolColor: symbolColor
     )
   }
   func toList() -> [Any?] {
@@ -1573,13 +1627,19 @@ struct PlatformNativeSheetItem: Hashable, CustomStringConvertible {
       accent,
       usesProfileAvatar,
       filterAllLabel,
+      confirmMessage,
+      disabled,
+      keyboard,
+      passwordRole,
+      rowActions,
+      symbolColor,
     ]
   }
   static func == (lhs: PlatformNativeSheetItem, rhs: PlatformNativeSheetItem) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.subtitle, rhs.subtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sfSymbol, rhs.sfSymbol) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.iconAsset, rhs.iconAsset) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.iconSize, rhs.iconSize) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.showsDisclosure, rhs.showsDisclosure) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.destructive, rhs.destructive) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.dismissOnSelect, rhs.dismissOnSelect) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.actionId, rhs.actionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.actionValue, rhs.actionValue) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.url, rhs.url) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.kind, rhs.kind) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.value, rhs.value) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.placeholder, rhs.placeholder) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.options, rhs.options) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sourceIndex, rhs.sourceIndex) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sourceUrl, rhs.sourceUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sourceType, rhs.sourceType) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.snippet, rhs.snippet) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.faviconUrl, rhs.faviconUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.queries, rhs.queries) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.links, rhs.links) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.pending, rhs.pending) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.min, rhs.min) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.max, rhs.max) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.divisions, rhs.divisions) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.avatarName, rhs.avatarName) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.avatarBytes, rhs.avatarBytes) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.checked, rhs.checked) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.accent, rhs.accent) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.usesProfileAvatar, rhs.usesProfileAvatar) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.filterAllLabel, rhs.filterAllLabel)
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.subtitle, rhs.subtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sfSymbol, rhs.sfSymbol) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.iconAsset, rhs.iconAsset) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.iconSize, rhs.iconSize) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.showsDisclosure, rhs.showsDisclosure) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.destructive, rhs.destructive) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.dismissOnSelect, rhs.dismissOnSelect) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.actionId, rhs.actionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.actionValue, rhs.actionValue) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.url, rhs.url) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.kind, rhs.kind) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.value, rhs.value) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.placeholder, rhs.placeholder) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.options, rhs.options) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sourceIndex, rhs.sourceIndex) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sourceUrl, rhs.sourceUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sourceType, rhs.sourceType) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.snippet, rhs.snippet) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.faviconUrl, rhs.faviconUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.queries, rhs.queries) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.links, rhs.links) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.pending, rhs.pending) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.min, rhs.min) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.max, rhs.max) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.divisions, rhs.divisions) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.avatarName, rhs.avatarName) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.avatarBytes, rhs.avatarBytes) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.checked, rhs.checked) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.accent, rhs.accent) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.usesProfileAvatar, rhs.usesProfileAvatar) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.filterAllLabel, rhs.filterAllLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.confirmMessage, rhs.confirmMessage) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.disabled, rhs.disabled) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.keyboard, rhs.keyboard) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.passwordRole, rhs.passwordRole) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.rowActions, rhs.rowActions) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.symbolColor, rhs.symbolColor)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -1617,10 +1677,80 @@ struct PlatformNativeSheetItem: Hashable, CustomStringConvertible {
     ConduitPlatformApisPigeonInternal.deepHash(value: accent, hasher: &hasher)
     ConduitPlatformApisPigeonInternal.deepHash(value: usesProfileAvatar, hasher: &hasher)
     ConduitPlatformApisPigeonInternal.deepHash(value: filterAllLabel, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: confirmMessage, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: disabled, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: keyboard, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: passwordRole, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: rowActions, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: symbolColor, hasher: &hasher)
   }
 
   public var description: String {
-    return "PlatformNativeSheetItem(id: \(String(describing: id)), title: \(String(describing: title)), subtitle: \(String(describing: subtitle)), sfSymbol: \(String(describing: sfSymbol)), iconAsset: \(String(describing: iconAsset)), iconSize: \(String(describing: iconSize)), showsDisclosure: \(String(describing: showsDisclosure)), destructive: \(String(describing: destructive)), dismissOnSelect: \(String(describing: dismissOnSelect)), actionId: \(String(describing: actionId)), actionValue: \(String(describing: actionValue)), url: \(String(describing: url)), kind: \(String(describing: kind)), value: \(String(describing: value)), placeholder: \(String(describing: placeholder)), options: \(String(describing: options)), sourceIndex: \(String(describing: sourceIndex)), sourceUrl: \(String(describing: sourceUrl)), sourceType: \(String(describing: sourceType)), snippet: \(String(describing: snippet)), faviconUrl: \(String(describing: faviconUrl)), queries: \(String(describing: queries)), links: \(String(describing: links)), pending: \(String(describing: pending)), min: \(String(describing: min)), max: \(String(describing: max)), divisions: \(String(describing: divisions)), avatarName: \(String(describing: avatarName)), avatarBytes: \(String(describing: avatarBytes)), checked: \(String(describing: checked)), accent: \(String(describing: accent)), usesProfileAvatar: \(String(describing: usesProfileAvatar)), filterAllLabel: \(String(describing: filterAllLabel)))"
+    return "PlatformNativeSheetItem(id: \(String(describing: id)), title: \(String(describing: title)), subtitle: \(String(describing: subtitle)), sfSymbol: \(String(describing: sfSymbol)), iconAsset: \(String(describing: iconAsset)), iconSize: \(String(describing: iconSize)), showsDisclosure: \(String(describing: showsDisclosure)), destructive: \(String(describing: destructive)), dismissOnSelect: \(String(describing: dismissOnSelect)), actionId: \(String(describing: actionId)), actionValue: \(String(describing: actionValue)), url: \(String(describing: url)), kind: \(String(describing: kind)), value: \(String(describing: value)), placeholder: \(String(describing: placeholder)), options: \(String(describing: options)), sourceIndex: \(String(describing: sourceIndex)), sourceUrl: \(String(describing: sourceUrl)), sourceType: \(String(describing: sourceType)), snippet: \(String(describing: snippet)), faviconUrl: \(String(describing: faviconUrl)), queries: \(String(describing: queries)), links: \(String(describing: links)), pending: \(String(describing: pending)), min: \(String(describing: min)), max: \(String(describing: max)), divisions: \(String(describing: divisions)), avatarName: \(String(describing: avatarName)), avatarBytes: \(String(describing: avatarBytes)), checked: \(String(describing: checked)), accent: \(String(describing: accent)), usesProfileAvatar: \(String(describing: usesProfileAvatar)), filterAllLabel: \(String(describing: filterAllLabel)), confirmMessage: \(String(describing: confirmMessage)), disabled: \(String(describing: disabled)), keyboard: \(String(describing: keyboard)), passwordRole: \(String(describing: passwordRole)), rowActions: \(String(describing: rowActions)), symbolColor: \(String(describing: symbolColor)))"
+  }
+}
+
+/// One more thing a row can do, sent as its own control id.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformNativeSheetRowAction: Hashable, CustomStringConvertible {
+  var id: String
+  var label: String
+  var sfSymbol: String? = nil
+  var destructive: Bool
+  /// Asked before it acts; the label confirms.
+  var confirmMessage: String? = nil
+  /// The page it opens instead of sending its id.
+  var detailId: String? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformNativeSheetRowAction? {
+    let id = pigeonVar_list[0] as! String
+    let label = pigeonVar_list[1] as! String
+    let sfSymbol: String? = nilOrValue(pigeonVar_list[2])
+    let destructive = pigeonVar_list[3] as! Bool
+    let confirmMessage: String? = nilOrValue(pigeonVar_list[4])
+    let detailId: String? = nilOrValue(pigeonVar_list[5])
+
+    return PlatformNativeSheetRowAction(
+      id: id,
+      label: label,
+      sfSymbol: sfSymbol,
+      destructive: destructive,
+      confirmMessage: confirmMessage,
+      detailId: detailId
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      label,
+      sfSymbol,
+      destructive,
+      confirmMessage,
+      detailId,
+    ]
+  }
+  static func == (lhs: PlatformNativeSheetRowAction, rhs: PlatformNativeSheetRowAction) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.label, rhs.label) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sfSymbol, rhs.sfSymbol) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.destructive, rhs.destructive) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.confirmMessage, rhs.confirmMessage) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.detailId, rhs.detailId)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformNativeSheetRowAction")
+    ConduitPlatformApisPigeonInternal.deepHash(value: id, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: label, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: sfSymbol, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: destructive, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: confirmMessage, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: detailId, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformNativeSheetRowAction(id: \(String(describing: id)), label: \(String(describing: label)), sfSymbol: \(String(describing: sfSymbol)), destructive: \(String(describing: destructive)), confirmMessage: \(String(describing: confirmMessage)), detailId: \(String(describing: detailId)))"
   }
 }
 
@@ -1967,6 +2097,26 @@ struct PlatformNativeSheetDetail: Hashable, CustomStringConvertible {
   /// A bar button that closes the sheet and then sends this action.
   var trailingActionId: String? = nil
   var trailingActionSfSymbol: String? = nil
+  /// With it, the bar button pushes this page, as a row leading to it
+  /// would, rather than sending [trailingActionId].
+  var trailingActionDetailId: String? = nil
+  /// What the page asks before its unsaved changes are dropped, by Back,
+  /// a swipe back, or the sheet swiped away. Null drops them without asking.
+  var discardTitle: String? = nil
+  var discardMessage: String? = nil
+  var discardConfirmLabel: String? = nil
+  var discardCancelLabel: String? = nil
+  /// Working on what Done sent: Done waits, and the rows take no taps.
+  var busy: Bool? = nil
+  /// Read out by assistive technology as the page is described with it.
+  var announcement: String? = nil
+  /// Holds changes not yet saved, made on this page or on the pages it
+  /// leads to: leaving asks the discard question.
+  var edited: Bool? = nil
+  /// A search field above the rows, filtering them as the person types.
+  var search: PlatformNativeSheetSearch? = nil
+  /// A month calendar above the rows, the rows being the chosen day's.
+  var calendar: PlatformNativeSheetMonthCalendar? = nil
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -1981,6 +2131,16 @@ struct PlatformNativeSheetDetail: Hashable, CustomStringConvertible {
     let maxHeightFraction: Double? = nilOrValue(pigeonVar_list[7])
     let trailingActionId: String? = nilOrValue(pigeonVar_list[8])
     let trailingActionSfSymbol: String? = nilOrValue(pigeonVar_list[9])
+    let trailingActionDetailId: String? = nilOrValue(pigeonVar_list[10])
+    let discardTitle: String? = nilOrValue(pigeonVar_list[11])
+    let discardMessage: String? = nilOrValue(pigeonVar_list[12])
+    let discardConfirmLabel: String? = nilOrValue(pigeonVar_list[13])
+    let discardCancelLabel: String? = nilOrValue(pigeonVar_list[14])
+    let busy: Bool? = nilOrValue(pigeonVar_list[15])
+    let announcement: String? = nilOrValue(pigeonVar_list[16])
+    let edited: Bool? = nilOrValue(pigeonVar_list[17])
+    let search: PlatformNativeSheetSearch? = nilOrValue(pigeonVar_list[18])
+    let calendar: PlatformNativeSheetMonthCalendar? = nilOrValue(pigeonVar_list[19])
 
     return PlatformNativeSheetDetail(
       id: id,
@@ -1992,7 +2152,17 @@ struct PlatformNativeSheetDetail: Hashable, CustomStringConvertible {
       confirmActionLabel: confirmActionLabel,
       maxHeightFraction: maxHeightFraction,
       trailingActionId: trailingActionId,
-      trailingActionSfSymbol: trailingActionSfSymbol
+      trailingActionSfSymbol: trailingActionSfSymbol,
+      trailingActionDetailId: trailingActionDetailId,
+      discardTitle: discardTitle,
+      discardMessage: discardMessage,
+      discardConfirmLabel: discardConfirmLabel,
+      discardCancelLabel: discardCancelLabel,
+      busy: busy,
+      announcement: announcement,
+      edited: edited,
+      search: search,
+      calendar: calendar
     )
   }
   func toList() -> [Any?] {
@@ -2007,13 +2177,23 @@ struct PlatformNativeSheetDetail: Hashable, CustomStringConvertible {
       maxHeightFraction,
       trailingActionId,
       trailingActionSfSymbol,
+      trailingActionDetailId,
+      discardTitle,
+      discardMessage,
+      discardConfirmLabel,
+      discardCancelLabel,
+      busy,
+      announcement,
+      edited,
+      search,
+      calendar,
     ]
   }
   static func == (lhs: PlatformNativeSheetDetail, rhs: PlatformNativeSheetDetail) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.subtitle, rhs.subtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.items, rhs.items) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sections, rhs.sections) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.confirmActionId, rhs.confirmActionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.confirmActionLabel, rhs.confirmActionLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.maxHeightFraction, rhs.maxHeightFraction) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.trailingActionId, rhs.trailingActionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.trailingActionSfSymbol, rhs.trailingActionSfSymbol)
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.subtitle, rhs.subtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.items, rhs.items) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sections, rhs.sections) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.confirmActionId, rhs.confirmActionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.confirmActionLabel, rhs.confirmActionLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.maxHeightFraction, rhs.maxHeightFraction) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.trailingActionId, rhs.trailingActionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.trailingActionSfSymbol, rhs.trailingActionSfSymbol) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.trailingActionDetailId, rhs.trailingActionDetailId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.discardTitle, rhs.discardTitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.discardMessage, rhs.discardMessage) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.discardConfirmLabel, rhs.discardConfirmLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.discardCancelLabel, rhs.discardCancelLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.busy, rhs.busy) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.announcement, rhs.announcement) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.edited, rhs.edited) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.search, rhs.search) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.calendar, rhs.calendar)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -2028,10 +2208,181 @@ struct PlatformNativeSheetDetail: Hashable, CustomStringConvertible {
     ConduitPlatformApisPigeonInternal.deepHash(value: maxHeightFraction, hasher: &hasher)
     ConduitPlatformApisPigeonInternal.deepHash(value: trailingActionId, hasher: &hasher)
     ConduitPlatformApisPigeonInternal.deepHash(value: trailingActionSfSymbol, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: trailingActionDetailId, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: discardTitle, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: discardMessage, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: discardConfirmLabel, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: discardCancelLabel, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: busy, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: announcement, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: edited, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: search, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: calendar, hasher: &hasher)
   }
 
   public var description: String {
-    return "PlatformNativeSheetDetail(id: \(String(describing: id)), title: \(String(describing: title)), subtitle: \(String(describing: subtitle)), items: \(String(describing: items)), sections: \(String(describing: sections)), confirmActionId: \(String(describing: confirmActionId)), confirmActionLabel: \(String(describing: confirmActionLabel)), maxHeightFraction: \(String(describing: maxHeightFraction)), trailingActionId: \(String(describing: trailingActionId)), trailingActionSfSymbol: \(String(describing: trailingActionSfSymbol)))"
+    return "PlatformNativeSheetDetail(id: \(String(describing: id)), title: \(String(describing: title)), subtitle: \(String(describing: subtitle)), items: \(String(describing: items)), sections: \(String(describing: sections)), confirmActionId: \(String(describing: confirmActionId)), confirmActionLabel: \(String(describing: confirmActionLabel)), maxHeightFraction: \(String(describing: maxHeightFraction)), trailingActionId: \(String(describing: trailingActionId)), trailingActionSfSymbol: \(String(describing: trailingActionSfSymbol)), trailingActionDetailId: \(String(describing: trailingActionDetailId)), discardTitle: \(String(describing: discardTitle)), discardMessage: \(String(describing: discardMessage)), discardConfirmLabel: \(String(describing: discardConfirmLabel)), discardCancelLabel: \(String(describing: discardCancelLabel)), busy: \(String(describing: busy)), announcement: \(String(describing: announcement)), edited: \(String(describing: edited)), search: \(String(describing: search)), calendar: \(String(describing: calendar)))"
+  }
+}
+
+/// A page's month calendar: the system's month grid, with marks under the
+/// days that hold something. Paging to another month goes back as a change
+/// of `<id>:month` with the month's first day, and choosing a day as a
+/// change of `<id>:day` with that day, each as `yyyy-MM-dd`.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformNativeSheetMonthCalendar: Hashable, CustomStringConvertible {
+  var id: String
+  /// The language the grid's month and weekday names are in, as a BCP 47
+  /// tag: the app's own, which may not be the device's. Null for the
+  /// device's.
+  var locale: String? = nil
+  /// The first day of the month to show, `yyyy-MM-dd`. The grid keeps the
+  /// month the person paged to unless this changes.
+  var month: String
+  /// The chosen day, `yyyy-MM-dd`.
+  var selectedDay: String
+  /// The days that hold something, with the colours to mark them in.
+  var marks: [PlatformNativeSheetCalendarMark]
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformNativeSheetMonthCalendar? {
+    let id = pigeonVar_list[0] as! String
+    let locale: String? = nilOrValue(pigeonVar_list[1])
+    let month = pigeonVar_list[2] as! String
+    let selectedDay = pigeonVar_list[3] as! String
+    let marks = pigeonVar_list[4] as! [PlatformNativeSheetCalendarMark]
+
+    return PlatformNativeSheetMonthCalendar(
+      id: id,
+      locale: locale,
+      month: month,
+      selectedDay: selectedDay,
+      marks: marks
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      locale,
+      month,
+      selectedDay,
+      marks,
+    ]
+  }
+  static func == (lhs: PlatformNativeSheetMonthCalendar, rhs: PlatformNativeSheetMonthCalendar) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.locale, rhs.locale) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.month, rhs.month) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.selectedDay, rhs.selectedDay) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.marks, rhs.marks)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformNativeSheetMonthCalendar")
+    ConduitPlatformApisPigeonInternal.deepHash(value: id, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: locale, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: month, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: selectedDay, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: marks, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformNativeSheetMonthCalendar(id: \(String(describing: id)), locale: \(String(describing: locale)), month: \(String(describing: month)), selectedDay: \(String(describing: selectedDay)), marks: \(String(describing: marks)))"
+  }
+}
+
+/// A day of a month calendar that holds something: a dot under it in each
+/// of [colors] (ARGB), up to three.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformNativeSheetCalendarMark: Hashable, CustomStringConvertible {
+  /// `yyyy-MM-dd`.
+  var day: String
+  var colors: [Int64]
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformNativeSheetCalendarMark? {
+    let day = pigeonVar_list[0] as! String
+    let colors = pigeonVar_list[1] as! [Int64]
+
+    return PlatformNativeSheetCalendarMark(
+      day: day,
+      colors: colors
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      day,
+      colors,
+    ]
+  }
+  static func == (lhs: PlatformNativeSheetCalendarMark, rhs: PlatformNativeSheetCalendarMark) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.day, rhs.day) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.colors, rhs.colors)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformNativeSheetCalendarMark")
+    ConduitPlatformApisPigeonInternal.deepHash(value: day, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: colors, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformNativeSheetCalendarMark(day: \(String(describing: day)), colors: \(String(describing: colors)))"
+  }
+}
+
+/// A page's search field: what is typed goes back as a change of [id] a
+/// moment after typing pauses, and as the empty text on cancel.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformNativeSheetSearch: Hashable, CustomStringConvertible {
+  var id: String
+  var placeholder: String? = nil
+  /// The query the page's rows answer; the field keeps text being typed
+  /// unless this changes.
+  var value: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformNativeSheetSearch? {
+    let id = pigeonVar_list[0] as! String
+    let placeholder: String? = nilOrValue(pigeonVar_list[1])
+    let value = pigeonVar_list[2] as! String
+
+    return PlatformNativeSheetSearch(
+      id: id,
+      placeholder: placeholder,
+      value: value
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      placeholder,
+      value,
+    ]
+  }
+  static func == (lhs: PlatformNativeSheetSearch, rhs: PlatformNativeSheetSearch) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.placeholder, rhs.placeholder) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.value, rhs.value)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformNativeSheetSearch")
+    ConduitPlatformApisPigeonInternal.deepHash(value: id, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: placeholder, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: value, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformNativeSheetSearch(id: \(String(describing: id)), placeholder: \(String(describing: placeholder)), value: \(String(describing: value)))"
   }
 }
 
@@ -2436,6 +2787,178 @@ struct PlatformNativeSheetOptionsSelectorRequest: Hashable, CustomStringConverti
   }
 }
 
+/// One answer to a question asked over the sheet.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformNativeSheetAlertAction: Hashable, CustomStringConvertible {
+  var id: String
+  var label: String
+  /// `default`, `cancel` or `destructive`.
+  var style: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformNativeSheetAlertAction? {
+    let id = pigeonVar_list[0] as! String
+    let label = pigeonVar_list[1] as! String
+    let style = pigeonVar_list[2] as! String
+
+    return PlatformNativeSheetAlertAction(
+      id: id,
+      label: label,
+      style: style
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      id,
+      label,
+      style,
+    ]
+  }
+  static func == (lhs: PlatformNativeSheetAlertAction, rhs: PlatformNativeSheetAlertAction) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.id, rhs.id) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.label, rhs.label) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.style, rhs.style)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformNativeSheetAlertAction")
+    ConduitPlatformApisPigeonInternal.deepHash(value: id, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: label, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: style, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformNativeSheetAlertAction(id: \(String(describing: id)), label: \(String(describing: label)), style: \(String(describing: style)))"
+  }
+}
+
+/// A question asked over whatever the sheet shows.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformNativeSheetAlertRequest: Hashable, CustomStringConvertible {
+  var title: String
+  var message: String? = nil
+  var actions: [PlatformNativeSheetAlertAction]
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformNativeSheetAlertRequest? {
+    let title = pigeonVar_list[0] as! String
+    let message: String? = nilOrValue(pigeonVar_list[1])
+    let actions = pigeonVar_list[2] as! [PlatformNativeSheetAlertAction]
+
+    return PlatformNativeSheetAlertRequest(
+      title: title,
+      message: message,
+      actions: actions
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      title,
+      message,
+      actions,
+    ]
+  }
+  static func == (lhs: PlatformNativeSheetAlertRequest, rhs: PlatformNativeSheetAlertRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.message, rhs.message) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.actions, rhs.actions)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformNativeSheetAlertRequest")
+    ConduitPlatformApisPigeonInternal.deepHash(value: title, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: message, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: actions, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformNativeSheetAlertRequest(title: \(String(describing: title)), message: \(String(describing: message)), actions: \(String(describing: actions)))"
+  }
+}
+
+/// A sign-in page shown in a web view over Settings.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformWebSignInRequest: Hashable, CustomStringConvertible {
+  /// Names this sign-in in the questions the web view asks Dart.
+  var sessionId: String
+  var title: String
+  /// The page it opens on.
+  var url: String
+  /// Body of an async JavaScript function (argument `url`) answering
+  /// whether the user is signed in; run on a page Dart agrees to.
+  var checkScript: String
+  /// The `url` argument of [checkScript].
+  var checkUrl: String
+  var cancelLabel: String
+  var reloadLabel: String
+  var loadFailedMessage: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformWebSignInRequest? {
+    let sessionId = pigeonVar_list[0] as! String
+    let title = pigeonVar_list[1] as! String
+    let url = pigeonVar_list[2] as! String
+    let checkScript = pigeonVar_list[3] as! String
+    let checkUrl = pigeonVar_list[4] as! String
+    let cancelLabel = pigeonVar_list[5] as! String
+    let reloadLabel = pigeonVar_list[6] as! String
+    let loadFailedMessage = pigeonVar_list[7] as! String
+
+    return PlatformWebSignInRequest(
+      sessionId: sessionId,
+      title: title,
+      url: url,
+      checkScript: checkScript,
+      checkUrl: checkUrl,
+      cancelLabel: cancelLabel,
+      reloadLabel: reloadLabel,
+      loadFailedMessage: loadFailedMessage
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      sessionId,
+      title,
+      url,
+      checkScript,
+      checkUrl,
+      cancelLabel,
+      reloadLabel,
+      loadFailedMessage,
+    ]
+  }
+  static func == (lhs: PlatformWebSignInRequest, rhs: PlatformWebSignInRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.sessionId, rhs.sessionId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.url, rhs.url) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.checkScript, rhs.checkScript) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.checkUrl, rhs.checkUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.cancelLabel, rhs.cancelLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.reloadLabel, rhs.reloadLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.loadFailedMessage, rhs.loadFailedMessage)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformWebSignInRequest")
+    ConduitPlatformApisPigeonInternal.deepHash(value: sessionId, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: title, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: url, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: checkScript, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: checkUrl, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: cancelLabel, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: reloadLabel, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: loadFailedMessage, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformWebSignInRequest(sessionId: \(String(describing: sessionId)), title: \(String(describing: title)), url: \(String(describing: url)), checkScript: \(String(describing: checkScript)), checkUrl: \(String(describing: checkUrl)), cancelLabel: \(String(describing: cancelLabel)), reloadLabel: \(String(describing: reloadLabel)), loadFailedMessage: \(String(describing: loadFailedMessage)))"
+  }
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct PlatformNativeSheetDatePickerRequest: Hashable, CustomStringConvertible {
   var title: String
@@ -2615,6 +3138,9 @@ struct PlatformNativeSheetApplyDetailPatchRequest: Hashable, CustomStringConvert
   var subtitle: String? = nil
   var clearSubtitle: Bool
   var detailSheets: [PlatformNativeSheetDetail]? = nil
+  /// The page in full, replacing everything it was -- its bar actions and
+  /// discard question too, which a patch of rows keeps.
+  var whole: PlatformNativeSheetDetail? = nil
 
 
   // swift-format-ignore: AlwaysUseLowerCamelCase
@@ -2626,6 +3152,7 @@ struct PlatformNativeSheetApplyDetailPatchRequest: Hashable, CustomStringConvert
     let subtitle: String? = nilOrValue(pigeonVar_list[4])
     let clearSubtitle = pigeonVar_list[5] as! Bool
     let detailSheets: [PlatformNativeSheetDetail]? = nilOrValue(pigeonVar_list[6])
+    let whole: PlatformNativeSheetDetail? = nilOrValue(pigeonVar_list[7])
 
     return PlatformNativeSheetApplyDetailPatchRequest(
       detailId: detailId,
@@ -2634,7 +3161,8 @@ struct PlatformNativeSheetApplyDetailPatchRequest: Hashable, CustomStringConvert
       title: title,
       subtitle: subtitle,
       clearSubtitle: clearSubtitle,
-      detailSheets: detailSheets
+      detailSheets: detailSheets,
+      whole: whole
     )
   }
   func toList() -> [Any?] {
@@ -2646,13 +3174,14 @@ struct PlatformNativeSheetApplyDetailPatchRequest: Hashable, CustomStringConvert
       subtitle,
       clearSubtitle,
       detailSheets,
+      whole,
     ]
   }
   static func == (lhs: PlatformNativeSheetApplyDetailPatchRequest, rhs: PlatformNativeSheetApplyDetailPatchRequest) -> Bool {
     if Swift.type(of: lhs) != Swift.type(of: rhs) {
       return false
     }
-    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.detailId, rhs.detailId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.items, rhs.items) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sections, rhs.sections) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.subtitle, rhs.subtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.clearSubtitle, rhs.clearSubtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.detailSheets, rhs.detailSheets)
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.detailId, rhs.detailId) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.items, rhs.items) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sections, rhs.sections) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.title, rhs.title) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.subtitle, rhs.subtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.clearSubtitle, rhs.clearSubtitle) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.detailSheets, rhs.detailSheets) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.whole, rhs.whole)
   }
 
   func hash(into hasher: inout Hasher) {
@@ -2664,10 +3193,11 @@ struct PlatformNativeSheetApplyDetailPatchRequest: Hashable, CustomStringConvert
     ConduitPlatformApisPigeonInternal.deepHash(value: subtitle, hasher: &hasher)
     ConduitPlatformApisPigeonInternal.deepHash(value: clearSubtitle, hasher: &hasher)
     ConduitPlatformApisPigeonInternal.deepHash(value: detailSheets, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: whole, hasher: &hasher)
   }
 
   public var description: String {
-    return "PlatformNativeSheetApplyDetailPatchRequest(detailId: \(String(describing: detailId)), items: \(String(describing: items)), sections: \(String(describing: sections)), title: \(String(describing: title)), subtitle: \(String(describing: subtitle)), clearSubtitle: \(String(describing: clearSubtitle)), detailSheets: \(String(describing: detailSheets)))"
+    return "PlatformNativeSheetApplyDetailPatchRequest(detailId: \(String(describing: detailId)), items: \(String(describing: items)), sections: \(String(describing: sections)), title: \(String(describing: title)), subtitle: \(String(describing: subtitle)), clearSubtitle: \(String(describing: clearSubtitle)), detailSheets: \(String(describing: detailSheets)), whole: \(String(describing: whole)))"
   }
 }
 
@@ -3406,6 +3936,414 @@ struct PlatformPccStreamEvent: Hashable, CustomStringConvertible {
   }
 }
 
+/// One end-to-end-encrypted push subscription: a P-256 key pair and auth
+/// secret kept by the platform (Keychain on iOS, Keystore-wrapped on Android),
+/// for one Open WebUI account or Hermes connection. See docs/push/PROTOCOL.md.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformPushSubscription: Hashable, CustomStringConvertible {
+  /// 16 random bytes, base64url. Names the key pair in every push.
+  var sid: String
+  /// `owui:<accountId>` or `hermes:<connectionId>`.
+  var scope: String
+  /// Uncompressed P-256 public key, base64url.
+  var p256dh: String
+  /// 16-byte auth secret, base64url.
+  var auth: String
+  var createdAtMillis: Int64
+  var endpoint: String? = nil
+  var transport: PlatformPushTransport? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformPushSubscription? {
+    let sid = pigeonVar_list[0] as! String
+    let scope = pigeonVar_list[1] as! String
+    let p256dh = pigeonVar_list[2] as! String
+    let auth = pigeonVar_list[3] as! String
+    let createdAtMillis = pigeonVar_list[4] as! Int64
+    let endpoint: String? = nilOrValue(pigeonVar_list[5])
+    let transport: PlatformPushTransport? = nilOrValue(pigeonVar_list[6])
+
+    return PlatformPushSubscription(
+      sid: sid,
+      scope: scope,
+      p256dh: p256dh,
+      auth: auth,
+      createdAtMillis: createdAtMillis,
+      endpoint: endpoint,
+      transport: transport
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      sid,
+      scope,
+      p256dh,
+      auth,
+      createdAtMillis,
+      endpoint,
+      transport,
+    ]
+  }
+  static func == (lhs: PlatformPushSubscription, rhs: PlatformPushSubscription) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.sid, rhs.sid) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.scope, rhs.scope) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.p256dh, rhs.p256dh) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.auth, rhs.auth) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.createdAtMillis, rhs.createdAtMillis) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.endpoint, rhs.endpoint) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.transport, rhs.transport)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformPushSubscription")
+    ConduitPlatformApisPigeonInternal.deepHash(value: sid, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: scope, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: p256dh, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: auth, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: createdAtMillis, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: endpoint, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: transport, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformPushSubscription(sid: \(String(describing: sid)), scope: \(String(describing: scope)), p256dh: \(String(describing: p256dh)), auth: \(String(describing: auth)), createdAtMillis: \(String(describing: createdAtMillis)), endpoint: \(String(describing: endpoint)), transport: \(String(describing: transport)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformPushToken: Hashable, CustomStringConvertible {
+  var transport: PlatformPushTransport
+  /// Hex APNs device token or FCM registration token.
+  var token: String
+  /// Bundle id or application id the relay addresses.
+  var app: String
+  /// `prod` or `dev` (the APNs sandbox).
+  var env: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformPushToken? {
+    let transport = pigeonVar_list[0] as! PlatformPushTransport
+    let token = pigeonVar_list[1] as! String
+    let app = pigeonVar_list[2] as! String
+    let env = pigeonVar_list[3] as! String
+
+    return PlatformPushToken(
+      transport: transport,
+      token: token,
+      app: app,
+      env: env
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      transport,
+      token,
+      app,
+      env,
+    ]
+  }
+  static func == (lhs: PlatformPushToken, rhs: PlatformPushToken) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.transport, rhs.transport) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.token, rhs.token) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.app, rhs.app) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.env, rhs.env)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformPushToken")
+    ConduitPlatformApisPigeonInternal.deepHash(value: transport, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: token, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: app, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: env, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformPushToken(transport: \(String(describing: transport)), token: \(String(describing: token)), app: \(String(describing: app)), env: \(String(describing: env)))"
+  }
+}
+
+/// What the Notification Service Extension / Android receiver needs to show
+/// a push without the Flutter engine. Mirrored into shared storage.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformPushConfig: Hashable, CustomStringConvertible {
+  var enabled: Bool
+  var sound: Bool
+  /// `cp/1` kinds the user wants shown: reply, reply_failed, channel, cron, test.
+  var enabledKinds: [String]
+  var disabledScopes: [String]
+  /// Account or connection name per scope, shown as the subtitle.
+  var scopeLabels: [String: String]
+  var showScopeLabel: Bool
+  /// Localized strings keyed fallbackTitle, fallbackBody, replyTitle,
+  /// replyFailedTitle, replyFailedBody, channelTitle, cronTitle, testTitle,
+  /// testBody.
+  var strings: [String: String]
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformPushConfig? {
+    let enabled = pigeonVar_list[0] as! Bool
+    let sound = pigeonVar_list[1] as! Bool
+    let enabledKinds = pigeonVar_list[2] as! [String]
+    let disabledScopes = pigeonVar_list[3] as! [String]
+    let scopeLabels = pigeonVar_list[4] as! [String: String]
+    let showScopeLabel = pigeonVar_list[5] as! Bool
+    let strings = pigeonVar_list[6] as! [String: String]
+
+    return PlatformPushConfig(
+      enabled: enabled,
+      sound: sound,
+      enabledKinds: enabledKinds,
+      disabledScopes: disabledScopes,
+      scopeLabels: scopeLabels,
+      showScopeLabel: showScopeLabel,
+      strings: strings
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      enabled,
+      sound,
+      enabledKinds,
+      disabledScopes,
+      scopeLabels,
+      showScopeLabel,
+      strings,
+    ]
+  }
+  static func == (lhs: PlatformPushConfig, rhs: PlatformPushConfig) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.enabled, rhs.enabled) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.sound, rhs.sound) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.enabledKinds, rhs.enabledKinds) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.disabledScopes, rhs.disabledScopes) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.scopeLabels, rhs.scopeLabels) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.showScopeLabel, rhs.showScopeLabel) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.strings, rhs.strings)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformPushConfig")
+    ConduitPlatformApisPigeonInternal.deepHash(value: enabled, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: sound, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: enabledKinds, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: disabledScopes, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: scopeLabels, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: showScopeLabel, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: strings, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformPushConfig(enabled: \(String(describing: enabled)), sound: \(String(describing: sound)), enabledKinds: \(String(describing: enabledKinds)), disabledScopes: \(String(describing: disabledScopes)), scopeLabels: \(String(describing: scopeLabels)), showScopeLabel: \(String(describing: showScopeLabel)), strings: \(String(describing: strings)))"
+  }
+}
+
+/// A decrypted push, handed to Dart while the app is in the foreground so the
+/// notification router decides between a banner and nothing.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformPushMessage: Hashable, CustomStringConvertible {
+  var sid: String
+  var scope: String
+  /// The `cp/1` plaintext.
+  var payloadJson: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformPushMessage? {
+    let sid = pigeonVar_list[0] as! String
+    let scope = pigeonVar_list[1] as! String
+    let payloadJson = pigeonVar_list[2] as! String
+
+    return PlatformPushMessage(
+      sid: sid,
+      scope: scope,
+      payloadJson: payloadJson
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      sid,
+      scope,
+      payloadJson,
+    ]
+  }
+  static func == (lhs: PlatformPushMessage, rhs: PlatformPushMessage) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.sid, rhs.sid) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.scope, rhs.scope) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.payloadJson, rhs.payloadJson)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformPushMessage")
+    ConduitPlatformApisPigeonInternal.deepHash(value: sid, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: scope, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: payloadJson, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformPushMessage(sid: \(String(describing: sid)), scope: \(String(describing: scope)), payloadJson: \(String(describing: payloadJson)))"
+  }
+}
+
+/// A tapped push notification.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformPushTap: Hashable, CustomStringConvertible {
+  var scope: String
+  /// The `cp/1` plaintext the notification was built from.
+  var payloadJson: String
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformPushTap? {
+    let scope = pigeonVar_list[0] as! String
+    let payloadJson = pigeonVar_list[1] as! String
+
+    return PlatformPushTap(
+      scope: scope,
+      payloadJson: payloadJson
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      scope,
+      payloadJson,
+    ]
+  }
+  static func == (lhs: PlatformPushTap, rhs: PlatformPushTap) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.scope, rhs.scope) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.payloadJson, rhs.payloadJson)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformPushTap")
+    ConduitPlatformApisPigeonInternal.deepHash(value: scope, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: payloadJson, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformPushTap(scope: \(String(describing: scope)), payloadJson: \(String(describing: payloadJson)))"
+  }
+}
+
+/// A sign-in page to open in the system browser, and the redirect that ends
+/// it. The redirect is matched exactly: scheme, host (empty when the redirect
+/// has none, as `com.googleusercontent.apps.<id>:/oauth2redirect` does) and
+/// path.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformBrowserAuthRequest: Hashable, CustomStringConvertible {
+  var authorizationUrl: String
+  var callbackScheme: String
+  var callbackHost: String
+  var callbackPath: String
+  /// Asks the browser not to share cookies with its other sessions.
+  var preferEphemeralSession: Bool
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformBrowserAuthRequest? {
+    let authorizationUrl = pigeonVar_list[0] as! String
+    let callbackScheme = pigeonVar_list[1] as! String
+    let callbackHost = pigeonVar_list[2] as! String
+    let callbackPath = pigeonVar_list[3] as! String
+    let preferEphemeralSession = pigeonVar_list[4] as! Bool
+
+    return PlatformBrowserAuthRequest(
+      authorizationUrl: authorizationUrl,
+      callbackScheme: callbackScheme,
+      callbackHost: callbackHost,
+      callbackPath: callbackPath,
+      preferEphemeralSession: preferEphemeralSession
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      authorizationUrl,
+      callbackScheme,
+      callbackHost,
+      callbackPath,
+      preferEphemeralSession,
+    ]
+  }
+  static func == (lhs: PlatformBrowserAuthRequest, rhs: PlatformBrowserAuthRequest) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.authorizationUrl, rhs.authorizationUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.callbackScheme, rhs.callbackScheme) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.callbackHost, rhs.callbackHost) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.callbackPath, rhs.callbackPath) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.preferEphemeralSession, rhs.preferEphemeralSession)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformBrowserAuthRequest")
+    ConduitPlatformApisPigeonInternal.deepHash(value: authorizationUrl, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: callbackScheme, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: callbackHost, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: callbackPath, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: preferEphemeralSession, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformBrowserAuthRequest(authorizationUrl: \(String(describing: authorizationUrl)), callbackScheme: \(String(describing: callbackScheme)), callbackHost: \(String(describing: callbackHost)), callbackPath: \(String(describing: callbackPath)), preferEphemeralSession: \(String(describing: preferEphemeralSession)))"
+  }
+}
+
+/// Generated class from Pigeon that represents data sent in messages.
+struct PlatformBrowserAuthResult: Hashable, CustomStringConvertible {
+  var outcome: PlatformBrowserAuthOutcome
+  /// The redirect the browser ended on, for [PlatformBrowserAuthOutcome.success].
+  var callbackUrl: String? = nil
+  /// Why the sign-in did not finish: `presentation_failed`, `no_browser`,
+  /// `start_failed`, `unexpected_callback`, `auth_tab_required`,
+  /// `superseded` or `invalid_request`.
+  var errorCode: String? = nil
+  /// The browser surface used: `web_authentication_session` (iOS),
+  /// `auth_tab`, `custom_tabs` or `external_browser` (Android).
+  var channel: String? = nil
+
+
+  // swift-format-ignore: AlwaysUseLowerCamelCase
+  static func fromList(_ pigeonVar_list: [Any?]) -> PlatformBrowserAuthResult? {
+    let outcome = pigeonVar_list[0] as! PlatformBrowserAuthOutcome
+    let callbackUrl: String? = nilOrValue(pigeonVar_list[1])
+    let errorCode: String? = nilOrValue(pigeonVar_list[2])
+    let channel: String? = nilOrValue(pigeonVar_list[3])
+
+    return PlatformBrowserAuthResult(
+      outcome: outcome,
+      callbackUrl: callbackUrl,
+      errorCode: errorCode,
+      channel: channel
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      outcome,
+      callbackUrl,
+      errorCode,
+      channel,
+    ]
+  }
+  static func == (lhs: PlatformBrowserAuthResult, rhs: PlatformBrowserAuthResult) -> Bool {
+    if Swift.type(of: lhs) != Swift.type(of: rhs) {
+      return false
+    }
+    return ConduitPlatformApisPigeonInternal.deepEquals(lhs.outcome, rhs.outcome) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.callbackUrl, rhs.callbackUrl) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.errorCode, rhs.errorCode) && ConduitPlatformApisPigeonInternal.deepEquals(lhs.channel, rhs.channel)
+  }
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine("PlatformBrowserAuthResult")
+    ConduitPlatformApisPigeonInternal.deepHash(value: outcome, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: callbackUrl, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: errorCode, hasher: &hasher)
+    ConduitPlatformApisPigeonInternal.deepHash(value: channel, hasher: &hasher)
+  }
+
+  public var description: String {
+    return "PlatformBrowserAuthResult(outcome: \(String(describing: outcome)), callbackUrl: \(String(describing: callbackUrl)), errorCode: \(String(describing: errorCode)), channel: \(String(describing: channel)))"
+  }
+}
+
 private class ConduitPlatformApisPigeonCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
@@ -3448,123 +4386,163 @@ private class ConduitPlatformApisPigeonCodecReader: FlutterStandardReader {
     case 135:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformNativeSheetItemKind(rawValue: enumResultAsInt)
+        return PlatformPushTransport(rawValue: enumResultAsInt)
       }
       return nil
     case 136:
       let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
       if let enumResultAsInt = enumResultAsInt {
-        return PlatformKeyboardAttachmentActionKind(rawValue: enumResultAsInt)
+        return PlatformNativeSheetItemKind(rawValue: enumResultAsInt)
       }
       return nil
     case 137:
-      return PlatformBackgroundStreamLease.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return PlatformKeyboardAttachmentActionKind(rawValue: enumResultAsInt)
+      }
+      return nil
     case 138:
-      return PlatformBackgroundStartRequest.fromList(self.readValue() as! [Any?])
+      let enumResultAsInt: Int? = nilOrValue(self.readValue() as! Int?)
+      if let enumResultAsInt = enumResultAsInt {
+        return PlatformBrowserAuthOutcome(rawValue: enumResultAsInt)
+      }
+      return nil
     case 139:
-      return PlatformBackgroundStopRequest.fromList(self.readValue() as! [Any?])
+      return PlatformBackgroundStreamLease.fromList(self.readValue() as! [Any?])
     case 140:
-      return PlatformBackgroundKeepAliveRequest.fromList(self.readValue() as! [Any?])
+      return PlatformBackgroundStartRequest.fromList(self.readValue() as! [Any?])
     case 141:
-      return PlatformBackgroundAudioSessionOwnerRequest.fromList(self.readValue() as! [Any?])
+      return PlatformBackgroundStopRequest.fromList(self.readValue() as! [Any?])
     case 142:
-      return PlatformServiceFailureEvent.fromList(self.readValue() as! [Any?])
+      return PlatformBackgroundKeepAliveRequest.fromList(self.readValue() as! [Any?])
     case 143:
-      return PlatformTimeLimitWarningEvent.fromList(self.readValue() as! [Any?])
+      return PlatformBackgroundAudioSessionOwnerRequest.fromList(self.readValue() as! [Any?])
     case 144:
-      return PlatformStreamsSuspendingEvent.fromList(self.readValue() as! [Any?])
+      return PlatformServiceFailureEvent.fromList(self.readValue() as! [Any?])
     case 145:
-      return PlatformBackgroundTaskExtendedEvent.fromList(self.readValue() as! [Any?])
+      return PlatformTimeLimitWarningEvent.fromList(self.readValue() as! [Any?])
     case 146:
-      return PlatformAppIntentImagePayload.fromList(self.readValue() as! [Any?])
+      return PlatformStreamsSuspendingEvent.fromList(self.readValue() as! [Any?])
     case 147:
-      return PlatformAppIntentResponse.fromList(self.readValue() as! [Any?])
+      return PlatformBackgroundTaskExtendedEvent.fromList(self.readValue() as! [Any?])
     case 148:
-      return PlatformNativePasteImageItem.fromList(self.readValue() as! [Any?])
+      return PlatformAppIntentImagePayload.fromList(self.readValue() as! [Any?])
     case 149:
-      return PlatformNativePastePayload.fromList(self.readValue() as! [Any?])
+      return PlatformAppIntentResponse.fromList(self.readValue() as! [Any?])
     case 150:
-      return PlatformKeyboardAttachmentActionConfig.fromList(self.readValue() as! [Any?])
+      return PlatformNativePasteImageItem.fromList(self.readValue() as! [Any?])
     case 151:
-      return PlatformKeyboardAttachmentConfig.fromList(self.readValue() as! [Any?])
+      return PlatformNativePastePayload.fromList(self.readValue() as! [Any?])
     case 152:
-      return PlatformKeyboardAttachmentActionEvent.fromList(self.readValue() as! [Any?])
+      return PlatformKeyboardAttachmentActionConfig.fromList(self.readValue() as! [Any?])
     case 153:
-      return PlatformKeyboardAttachmentVisibilityEvent.fromList(self.readValue() as! [Any?])
+      return PlatformKeyboardAttachmentConfig.fromList(self.readValue() as! [Any?])
     case 154:
-      return PlatformRect.fromList(self.readValue() as! [Any?])
+      return PlatformKeyboardAttachmentActionEvent.fromList(self.readValue() as! [Any?])
     case 155:
-      return PlatformDropdownOption.fromList(self.readValue() as! [Any?])
+      return PlatformKeyboardAttachmentVisibilityEvent.fromList(self.readValue() as! [Any?])
     case 156:
-      return PlatformImageViewerItem.fromList(self.readValue() as! [Any?])
+      return PlatformRect.fromList(self.readValue() as! [Any?])
     case 157:
-      return PlatformImageViewerRequest.fromList(self.readValue() as! [Any?])
+      return PlatformDropdownOption.fromList(self.readValue() as! [Any?])
     case 158:
-      return PlatformDropdownRequest.fromList(self.readValue() as! [Any?])
+      return PlatformImageViewerItem.fromList(self.readValue() as! [Any?])
     case 159:
-      return PlatformNativeSheetOption.fromList(self.readValue() as! [Any?])
+      return PlatformImageViewerRequest.fromList(self.readValue() as! [Any?])
     case 160:
-      return PlatformNativeSheetTheme.fromList(self.readValue() as! [Any?])
+      return PlatformDropdownRequest.fromList(self.readValue() as! [Any?])
     case 161:
-      return PlatformNativeSheetItem.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetOption.fromList(self.readValue() as! [Any?])
     case 162:
-      return PlatformNativeSheetLink.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetTheme.fromList(self.readValue() as! [Any?])
     case 163:
-      return PlatformNativeSheetSection.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetItem.fromList(self.readValue() as! [Any?])
     case 164:
-      return PlatformNativeEditProfileSheetConfig.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetRowAction.fromList(self.readValue() as! [Any?])
     case 165:
-      return PlatformNativeProfileSheetUser.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetLink.fromList(self.readValue() as! [Any?])
     case 166:
-      return PlatformNativeSheetDetail.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetSection.fromList(self.readValue() as! [Any?])
     case 167:
-      return PlatformNativeProfileSheetConfig.fromList(self.readValue() as! [Any?])
+      return PlatformNativeEditProfileSheetConfig.fromList(self.readValue() as! [Any?])
     case 168:
-      return PlatformNativeSheetModelOption.fromList(self.readValue() as! [Any?])
+      return PlatformNativeProfileSheetUser.fromList(self.readValue() as! [Any?])
     case 169:
-      return PlatformNativeSheetModelSelectorRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetDetail.fromList(self.readValue() as! [Any?])
     case 170:
-      return PlatformNativeSheetModelControl.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetMonthCalendar.fromList(self.readValue() as! [Any?])
     case 171:
-      return PlatformNativeSheetOptionsSelectorRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetCalendarMark.fromList(self.readValue() as! [Any?])
     case 172:
-      return PlatformNativeSheetDatePickerRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetSearch.fromList(self.readValue() as! [Any?])
     case 173:
-      return PlatformNativeSheetTextEditorRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeProfileSheetConfig.fromList(self.readValue() as! [Any?])
     case 174:
-      return PlatformNativeSheetResultRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetModelOption.fromList(self.readValue() as! [Any?])
     case 175:
-      return PlatformNativeSheetApplyDetailPatchRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetModelSelectorRequest.fromList(self.readValue() as! [Any?])
     case 176:
-      return PlatformNativeSheetControlChangedEvent.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetModelControl.fromList(self.readValue() as! [Any?])
     case 177:
-      return PlatformNativeSheetDetailAppearedEvent.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetOptionsSelectorRequest.fromList(self.readValue() as! [Any?])
     case 178:
-      return PlatformNativeSheetModelPinToggledEvent.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetAlertAction.fromList(self.readValue() as! [Any?])
     case 179:
-      return PlatformNativeSheetReasoningEffortChangedEvent.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetAlertRequest.fromList(self.readValue() as! [Any?])
     case 180:
-      return PlatformNativeSheetModelControlChangedEvent.fromList(self.readValue() as! [Any?])
+      return PlatformWebSignInRequest.fromList(self.readValue() as! [Any?])
     case 181:
-      return PlatformNativeEditProfileCommittedEvent.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetDatePickerRequest.fromList(self.readValue() as! [Any?])
     case 182:
-      return PlatformNativeSheetActionResult.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetTextEditorRequest.fromList(self.readValue() as! [Any?])
     case 183:
-      return PlatformPccStatus.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetResultRequest.fromList(self.readValue() as! [Any?])
     case 184:
-      return PlatformPccImage.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetApplyDetailPatchRequest.fromList(self.readValue() as! [Any?])
     case 185:
-      return PlatformPccMessage.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetControlChangedEvent.fromList(self.readValue() as! [Any?])
     case 186:
-      return PlatformPccToolDefinition.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetDetailAppearedEvent.fromList(self.readValue() as! [Any?])
     case 187:
-      return PlatformPccToolCall.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetModelPinToggledEvent.fromList(self.readValue() as! [Any?])
     case 188:
-      return PlatformPccToolResult.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetReasoningEffortChangedEvent.fromList(self.readValue() as! [Any?])
     case 189:
-      return PlatformPccCompletionRequest.fromList(self.readValue() as! [Any?])
+      return PlatformNativeSheetModelControlChangedEvent.fromList(self.readValue() as! [Any?])
     case 190:
+      return PlatformNativeEditProfileCommittedEvent.fromList(self.readValue() as! [Any?])
+    case 191:
+      return PlatformNativeSheetActionResult.fromList(self.readValue() as! [Any?])
+    case 192:
+      return PlatformPccStatus.fromList(self.readValue() as! [Any?])
+    case 193:
+      return PlatformPccImage.fromList(self.readValue() as! [Any?])
+    case 194:
+      return PlatformPccMessage.fromList(self.readValue() as! [Any?])
+    case 195:
+      return PlatformPccToolDefinition.fromList(self.readValue() as! [Any?])
+    case 196:
+      return PlatformPccToolCall.fromList(self.readValue() as! [Any?])
+    case 197:
+      return PlatformPccToolResult.fromList(self.readValue() as! [Any?])
+    case 198:
+      return PlatformPccCompletionRequest.fromList(self.readValue() as! [Any?])
+    case 199:
       return PlatformPccStreamEvent.fromList(self.readValue() as! [Any?])
+    case 200:
+      return PlatformPushSubscription.fromList(self.readValue() as! [Any?])
+    case 201:
+      return PlatformPushToken.fromList(self.readValue() as! [Any?])
+    case 202:
+      return PlatformPushConfig.fromList(self.readValue() as! [Any?])
+    case 203:
+      return PlatformPushMessage.fromList(self.readValue() as! [Any?])
+    case 204:
+      return PlatformPushTap.fromList(self.readValue() as! [Any?])
+    case 205:
+      return PlatformBrowserAuthRequest.fromList(self.readValue() as! [Any?])
+    case 206:
+      return PlatformBrowserAuthResult.fromList(self.readValue() as! [Any?])
     default:
       return super.readValue(ofType: type)
     }
@@ -3591,173 +4569,221 @@ private class ConduitPlatformApisPigeonCodecWriter: FlutterStandardWriter {
     } else if let value = value as? PlatformPccEventKind {
       super.writeByte(134)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformNativeSheetItemKind {
+    } else if let value = value as? PlatformPushTransport {
       super.writeByte(135)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformKeyboardAttachmentActionKind {
+    } else if let value = value as? PlatformNativeSheetItemKind {
       super.writeByte(136)
       super.writeValue(value.rawValue)
-    } else if let value = value as? PlatformBackgroundStreamLease {
+    } else if let value = value as? PlatformKeyboardAttachmentActionKind {
       super.writeByte(137)
-      super.writeValue(value.toList())
-    } else if let value = value as? PlatformBackgroundStartRequest {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? PlatformBrowserAuthOutcome {
       super.writeByte(138)
-      super.writeValue(value.toList())
-    } else if let value = value as? PlatformBackgroundStopRequest {
+      super.writeValue(value.rawValue)
+    } else if let value = value as? PlatformBackgroundStreamLease {
       super.writeByte(139)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformBackgroundKeepAliveRequest {
+    } else if let value = value as? PlatformBackgroundStartRequest {
       super.writeByte(140)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformBackgroundAudioSessionOwnerRequest {
+    } else if let value = value as? PlatformBackgroundStopRequest {
       super.writeByte(141)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformServiceFailureEvent {
+    } else if let value = value as? PlatformBackgroundKeepAliveRequest {
       super.writeByte(142)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformTimeLimitWarningEvent {
+    } else if let value = value as? PlatformBackgroundAudioSessionOwnerRequest {
       super.writeByte(143)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformStreamsSuspendingEvent {
+    } else if let value = value as? PlatformServiceFailureEvent {
       super.writeByte(144)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformBackgroundTaskExtendedEvent {
+    } else if let value = value as? PlatformTimeLimitWarningEvent {
       super.writeByte(145)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformAppIntentImagePayload {
+    } else if let value = value as? PlatformStreamsSuspendingEvent {
       super.writeByte(146)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformAppIntentResponse {
+    } else if let value = value as? PlatformBackgroundTaskExtendedEvent {
       super.writeByte(147)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativePasteImageItem {
+    } else if let value = value as? PlatformAppIntentImagePayload {
       super.writeByte(148)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativePastePayload {
+    } else if let value = value as? PlatformAppIntentResponse {
       super.writeByte(149)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformKeyboardAttachmentActionConfig {
+    } else if let value = value as? PlatformNativePasteImageItem {
       super.writeByte(150)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformKeyboardAttachmentConfig {
+    } else if let value = value as? PlatformNativePastePayload {
       super.writeByte(151)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformKeyboardAttachmentActionEvent {
+    } else if let value = value as? PlatformKeyboardAttachmentActionConfig {
       super.writeByte(152)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformKeyboardAttachmentVisibilityEvent {
+    } else if let value = value as? PlatformKeyboardAttachmentConfig {
       super.writeByte(153)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformRect {
+    } else if let value = value as? PlatformKeyboardAttachmentActionEvent {
       super.writeByte(154)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformDropdownOption {
+    } else if let value = value as? PlatformKeyboardAttachmentVisibilityEvent {
       super.writeByte(155)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformImageViewerItem {
+    } else if let value = value as? PlatformRect {
       super.writeByte(156)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformImageViewerRequest {
+    } else if let value = value as? PlatformDropdownOption {
       super.writeByte(157)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformDropdownRequest {
+    } else if let value = value as? PlatformImageViewerItem {
       super.writeByte(158)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetOption {
+    } else if let value = value as? PlatformImageViewerRequest {
       super.writeByte(159)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetTheme {
+    } else if let value = value as? PlatformDropdownRequest {
       super.writeByte(160)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetItem {
+    } else if let value = value as? PlatformNativeSheetOption {
       super.writeByte(161)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetLink {
+    } else if let value = value as? PlatformNativeSheetTheme {
       super.writeByte(162)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetSection {
+    } else if let value = value as? PlatformNativeSheetItem {
       super.writeByte(163)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeEditProfileSheetConfig {
+    } else if let value = value as? PlatformNativeSheetRowAction {
       super.writeByte(164)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeProfileSheetUser {
+    } else if let value = value as? PlatformNativeSheetLink {
       super.writeByte(165)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetDetail {
+    } else if let value = value as? PlatformNativeSheetSection {
       super.writeByte(166)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeProfileSheetConfig {
+    } else if let value = value as? PlatformNativeEditProfileSheetConfig {
       super.writeByte(167)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetModelOption {
+    } else if let value = value as? PlatformNativeProfileSheetUser {
       super.writeByte(168)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetModelSelectorRequest {
+    } else if let value = value as? PlatformNativeSheetDetail {
       super.writeByte(169)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetModelControl {
+    } else if let value = value as? PlatformNativeSheetMonthCalendar {
       super.writeByte(170)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetOptionsSelectorRequest {
+    } else if let value = value as? PlatformNativeSheetCalendarMark {
       super.writeByte(171)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetDatePickerRequest {
+    } else if let value = value as? PlatformNativeSheetSearch {
       super.writeByte(172)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetTextEditorRequest {
+    } else if let value = value as? PlatformNativeProfileSheetConfig {
       super.writeByte(173)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetResultRequest {
+    } else if let value = value as? PlatformNativeSheetModelOption {
       super.writeByte(174)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetApplyDetailPatchRequest {
+    } else if let value = value as? PlatformNativeSheetModelSelectorRequest {
       super.writeByte(175)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetControlChangedEvent {
+    } else if let value = value as? PlatformNativeSheetModelControl {
       super.writeByte(176)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetDetailAppearedEvent {
+    } else if let value = value as? PlatformNativeSheetOptionsSelectorRequest {
       super.writeByte(177)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetModelPinToggledEvent {
+    } else if let value = value as? PlatformNativeSheetAlertAction {
       super.writeByte(178)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetReasoningEffortChangedEvent {
+    } else if let value = value as? PlatformNativeSheetAlertRequest {
       super.writeByte(179)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetModelControlChangedEvent {
+    } else if let value = value as? PlatformWebSignInRequest {
       super.writeByte(180)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeEditProfileCommittedEvent {
+    } else if let value = value as? PlatformNativeSheetDatePickerRequest {
       super.writeByte(181)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformNativeSheetActionResult {
+    } else if let value = value as? PlatformNativeSheetTextEditorRequest {
       super.writeByte(182)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccStatus {
+    } else if let value = value as? PlatformNativeSheetResultRequest {
       super.writeByte(183)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccImage {
+    } else if let value = value as? PlatformNativeSheetApplyDetailPatchRequest {
       super.writeByte(184)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccMessage {
+    } else if let value = value as? PlatformNativeSheetControlChangedEvent {
       super.writeByte(185)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccToolDefinition {
+    } else if let value = value as? PlatformNativeSheetDetailAppearedEvent {
       super.writeByte(186)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccToolCall {
+    } else if let value = value as? PlatformNativeSheetModelPinToggledEvent {
       super.writeByte(187)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccToolResult {
+    } else if let value = value as? PlatformNativeSheetReasoningEffortChangedEvent {
       super.writeByte(188)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccCompletionRequest {
+    } else if let value = value as? PlatformNativeSheetModelControlChangedEvent {
       super.writeByte(189)
       super.writeValue(value.toList())
-    } else if let value = value as? PlatformPccStreamEvent {
+    } else if let value = value as? PlatformNativeEditProfileCommittedEvent {
       super.writeByte(190)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformNativeSheetActionResult {
+      super.writeByte(191)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccStatus {
+      super.writeByte(192)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccImage {
+      super.writeByte(193)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccMessage {
+      super.writeByte(194)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccToolDefinition {
+      super.writeByte(195)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccToolCall {
+      super.writeByte(196)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccToolResult {
+      super.writeByte(197)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccCompletionRequest {
+      super.writeByte(198)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPccStreamEvent {
+      super.writeByte(199)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPushSubscription {
+      super.writeByte(200)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPushToken {
+      super.writeByte(201)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPushConfig {
+      super.writeByte(202)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPushMessage {
+      super.writeByte(203)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformPushTap {
+      super.writeByte(204)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformBrowserAuthRequest {
+      super.writeByte(205)
+      super.writeValue(value.toList())
+    } else if let value = value as? PlatformBrowserAuthResult {
+      super.writeByte(206)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -4589,6 +5615,39 @@ class ImageGalleryHostApiSetup {
     }
   }
 }
+/// Android only. The certificate authorities the user installed in Settings,
+/// each as PEM text.
+///
+/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
+protocol UserCertificatesHostApi {
+  /// Async so the host reads the store off its main thread.
+  func userCaCertificates(completion: @escaping (Result<[String], Error>) -> Void)
+}
+
+/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
+class UserCertificatesHostApiSetup {
+  static var codec: FlutterStandardMessageCodec { ConduitPlatformApisPigeonCodec.shared }
+  /// Sets up an instance of `UserCertificatesHostApi` to handle messages through the `binaryMessenger`.
+  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: UserCertificatesHostApi?, messageChannelSuffix: String = "") {
+    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+    /// Async so the host reads the store off its main thread.
+    let userCaCertificatesChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.UserCertificatesHostApi.userCaCertificates\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      userCaCertificatesChannel.setMessageHandler { _, reply in
+        api.userCaCertificates { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      userCaCertificatesChannel.setMessageHandler(nil)
+    }
+  }
+}
 /// Generated protocol from Pigeon that represents a handler of messages from Flutter.
 protocol NativeSheetHostApi {
   func setTheme(theme: PlatformNativeSheetTheme) throws
@@ -4606,6 +5665,20 @@ protocol NativeSheetHostApi {
   func presentTextEditor(request: PlatformNativeSheetTextEditorRequest, completion: @escaping (Result<PlatformNativeSheetActionResult?, Error>) -> Void)
   func presentResultSheet(request: PlatformNativeSheetResultRequest, completion: @escaping (Result<PlatformNativeSheetActionResult?, Error>) -> Void)
   func applyDetailPatch(request: PlatformNativeSheetApplyDetailPatchRequest) throws -> Bool
+  /// Closes the open page [detailId] of the native Settings sheet, going
+  /// back to the page that opened it. Returns whether it was open.
+  func closeDetail(detailId: String) throws -> Bool
+  /// Asks [request] over whatever is on screen, the Settings sheet and its
+  /// pages included, without closing them. Answers the id of the action
+  /// chosen, or null when nothing could be shown.
+  func presentAlert(request: PlatformNativeSheetAlertRequest, completion: @escaping (Result<String?, Error>) -> Void)
+  /// Opens [request]'s page in a web view over Settings, for the user to
+  /// sign in there. Each main-frame navigation is Dart's to allow
+  /// ([NativeSheetFlutterApi.webSignInAllowsNavigation]); on each page Dart
+  /// names ([NativeSheetFlutterApi.webSignInChecksPage]) the web view runs
+  /// the request's check. Answers true once the check says the user is
+  /// signed in, closing the web view; false when it is closed before.
+  func presentWebSignIn(request: PlatformWebSignInRequest, completion: @escaping (Result<Bool, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -4824,6 +5897,66 @@ class NativeSheetHostApiSetup {
     } else {
       applyDetailPatchChannel.setMessageHandler(nil)
     }
+    /// Closes the open page [detailId] of the native Settings sheet, going
+    /// back to the page that opened it. Returns whether it was open.
+    let closeDetailChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.NativeSheetHostApi.closeDetail\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      closeDetailChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let detailIdArg = args[0] as! String
+        do {
+          let result = try api.closeDetail(detailId: detailIdArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      closeDetailChannel.setMessageHandler(nil)
+    }
+    /// Asks [request] over whatever is on screen, the Settings sheet and its
+    /// pages included, without closing them. Answers the id of the action
+    /// chosen, or null when nothing could be shown.
+    let presentAlertChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.NativeSheetHostApi.presentAlert\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      presentAlertChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let requestArg = args[0] as! PlatformNativeSheetAlertRequest
+        api.presentAlert(request: requestArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      presentAlertChannel.setMessageHandler(nil)
+    }
+    /// Opens [request]'s page in a web view over Settings, for the user to
+    /// sign in there. Each main-frame navigation is Dart's to allow
+    /// ([NativeSheetFlutterApi.webSignInAllowsNavigation]); on each page Dart
+    /// names ([NativeSheetFlutterApi.webSignInChecksPage]) the web view runs
+    /// the request's check. Answers true once the check says the user is
+    /// signed in, closing the web view; false when it is closed before.
+    let presentWebSignInChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.NativeSheetHostApi.presentWebSignIn\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      presentWebSignInChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let requestArg = args[0] as! PlatformWebSignInRequest
+        api.presentWebSignIn(request: requestArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      presentWebSignInChannel.setMessageHandler(nil)
+    }
   }
 }
 
@@ -4833,10 +5966,18 @@ protocol NativeSheetFlutterApiProtocol {
   func onLogoutRequested(completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onControlChanged(event eventArg: PlatformNativeSheetControlChangedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onDetailAppeared(event eventArg: PlatformNativeSheetDetailAppearedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// Page [event]'s detail is gone: popped, or its sheet closed.
+  func onDetailLeft(event eventArg: PlatformNativeSheetDetailAppearedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onModelPinToggled(event eventArg: PlatformNativeSheetModelPinToggledEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onReasoningEffortChanged(event eventArg: PlatformNativeSheetReasoningEffortChangedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func onModelControlChanged(event eventArg: PlatformNativeSheetModelControlChangedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
   func commitEditProfile(event eventArg: PlatformNativeEditProfileCommittedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// Whether sign-in [sessionId]'s web view may load [url] in its main
+  /// frame.
+  func webSignInAllowsNavigation(sessionId sessionIdArg: String, url urlArg: String, completion: @escaping (Result<Bool, PigeonError>) -> Void)
+  /// Whether sign-in [sessionId]'s web view, having loaded [url], should
+  /// run its check.
+  func webSignInChecksPage(sessionId sessionIdArg: String, url urlArg: String, completion: @escaping (Result<Bool, PigeonError>) -> Void)
 }
 class NativeSheetFlutterApi: NativeSheetFlutterApiProtocol {
   private let binaryMessenger: FlutterBinaryMessenger
@@ -4904,6 +6045,25 @@ class NativeSheetFlutterApi: NativeSheetFlutterApiProtocol {
   }
   func onDetailAppeared(event eventArg: PlatformNativeSheetDetailAppearedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void) {
     let channelName: String = "dev.flutter.pigeon.conduit.NativeSheetFlutterApi.onDetailAppeared\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([eventArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  /// Page [event]'s detail is gone: popped, or its sheet closed.
+  func onDetailLeft(event eventArg: PlatformNativeSheetDetailAppearedEvent, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.NativeSheetFlutterApi.onDetailLeft\(messageChannelSuffix)"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
     channel.sendMessage([eventArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
@@ -4989,6 +6149,52 @@ class NativeSheetFlutterApi: NativeSheetFlutterApiProtocol {
         completion(.failure(PigeonError(code: code, message: message, details: details)))
       } else {
         completion(.success(()))
+      }
+    }
+  }
+  /// Whether sign-in [sessionId]'s web view may load [url] in its main
+  /// frame.
+  func webSignInAllowsNavigation(sessionId sessionIdArg: String, url urlArg: String, completion: @escaping (Result<Bool, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.NativeSheetFlutterApi.webSignInAllowsNavigation\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([sessionIdArg, urlArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else if listResponse[0] == nil {
+        completion(.failure(PigeonError(code: "null-error", message: "Flutter api returned null value for non-null return value.", details: "")))
+      } else {
+        let result = listResponse[0] as! Bool
+        completion(.success(result))
+      }
+    }
+  }
+  /// Whether sign-in [sessionId]'s web view, having loaded [url], should
+  /// run its check.
+  func webSignInChecksPage(sessionId sessionIdArg: String, url urlArg: String, completion: @escaping (Result<Bool, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.NativeSheetFlutterApi.webSignInChecksPage\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([sessionIdArg, urlArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else if listResponse[0] == nil {
+        completion(.failure(PigeonError(code: "null-error", message: "Flutter api returned null value for non-null return value.", details: "")))
+      } else {
+        let result = listResponse[0] as! Bool
+        completion(.success(result))
       }
     }
   }
@@ -5124,6 +6330,492 @@ class PccFlutterApi: PccFlutterApiProtocol {
         let result = listResponse[0] as! PlatformPccToolResult
         completion(.success(result))
       }
+    }
+  }
+}
+/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
+protocol PushHostApi {
+  func availableTransports() throws -> [PlatformPushTransport]
+  func requestPermission(completion: @escaping (Result<Bool, Error>) -> Void)
+  /// The current device token, registering for remote notifications first if
+  /// needed. Null when the transport is unavailable.
+  func currentToken(transport: PlatformPushTransport, completion: @escaping (Result<PlatformPushToken?, Error>) -> Void)
+  /// Generates a fresh key pair, auth secret and sid for [scope].
+  func createSubscription(scope: String) throws -> PlatformPushSubscription
+  func listSubscriptions() throws -> [PlatformPushSubscription]
+  func setEndpoint(sid: String, endpoint: String, transport: PlatformPushTransport) throws
+  func deleteSubscription(sid: String) throws
+  func setConfig(config: PlatformPushConfig) throws
+  /// Records [dedupKey] as shown. False when a push or a local notification
+  /// already claimed it. [localNotificationId] lets a later push replace a
+  /// notification the app posted itself.
+  func claimNotification(dedupKey: String, localNotificationId: String?) throws -> Bool
+  /// Removes delivered notifications that belong to [scope].
+  func cancelScope(scope: String) throws
+  /// The push notification that launched the app, once.
+  func takeLaunchTap() throws -> PlatformPushTap?
+  /// Test nonces the extension or receiver decrypted for [sid] since the last
+  /// call.
+  func takeVerifiedNonces(sid: String) throws -> [String]
+  /// Installed UnifiedPush distributors (package names). Android only.
+  func unifiedPushDistributors() throws -> [String]
+  /// Registers [sid] with [distributor] and answers its endpoint, or null when
+  /// the distributor refuses or does not answer in time.
+  func registerUnifiedPush(sid: String, distributor: String, completion: @escaping (Result<String?, Error>) -> Void)
+  func unregisterUnifiedPush(sid: String) throws
+  /// Stops using [transport] until a token is asked for again: Android turns
+  /// FCM's auto-init off, deletes the token and stops starting Firebase at
+  /// launch; iOS unregisters from APNs.
+  func releaseTransport(transport: PlatformPushTransport) throws
+}
+
+/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
+class PushHostApiSetup {
+  static var codec: FlutterStandardMessageCodec { ConduitPlatformApisPigeonCodec.shared }
+  /// Sets up an instance of `PushHostApi` to handle messages through the `binaryMessenger`.
+  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: PushHostApi?, messageChannelSuffix: String = "") {
+    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+    let availableTransportsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.availableTransports\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      availableTransportsChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.availableTransports()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      availableTransportsChannel.setMessageHandler(nil)
+    }
+    let requestPermissionChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.requestPermission\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      requestPermissionChannel.setMessageHandler { _, reply in
+        api.requestPermission { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      requestPermissionChannel.setMessageHandler(nil)
+    }
+    /// The current device token, registering for remote notifications first if
+    /// needed. Null when the transport is unavailable.
+    let currentTokenChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.currentToken\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      currentTokenChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let transportArg = args[0] as! PlatformPushTransport
+        api.currentToken(transport: transportArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      currentTokenChannel.setMessageHandler(nil)
+    }
+    /// Generates a fresh key pair, auth secret and sid for [scope].
+    let createSubscriptionChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.createSubscription\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      createSubscriptionChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let scopeArg = args[0] as! String
+        do {
+          let result = try api.createSubscription(scope: scopeArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      createSubscriptionChannel.setMessageHandler(nil)
+    }
+    let listSubscriptionsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.listSubscriptions\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      listSubscriptionsChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.listSubscriptions()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      listSubscriptionsChannel.setMessageHandler(nil)
+    }
+    let setEndpointChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.setEndpoint\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setEndpointChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let sidArg = args[0] as! String
+        let endpointArg = args[1] as! String
+        let transportArg = args[2] as! PlatformPushTransport
+        do {
+          try api.setEndpoint(sid: sidArg, endpoint: endpointArg, transport: transportArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setEndpointChannel.setMessageHandler(nil)
+    }
+    let deleteSubscriptionChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.deleteSubscription\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      deleteSubscriptionChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let sidArg = args[0] as! String
+        do {
+          try api.deleteSubscription(sid: sidArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      deleteSubscriptionChannel.setMessageHandler(nil)
+    }
+    let setConfigChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.setConfig\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      setConfigChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let configArg = args[0] as! PlatformPushConfig
+        do {
+          try api.setConfig(config: configArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      setConfigChannel.setMessageHandler(nil)
+    }
+    /// Records [dedupKey] as shown. False when a push or a local notification
+    /// already claimed it. [localNotificationId] lets a later push replace a
+    /// notification the app posted itself.
+    let claimNotificationChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.claimNotification\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      claimNotificationChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let dedupKeyArg = args[0] as! String
+        let localNotificationIdArg: String? = nilOrValue(args[1])
+        do {
+          let result = try api.claimNotification(dedupKey: dedupKeyArg, localNotificationId: localNotificationIdArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      claimNotificationChannel.setMessageHandler(nil)
+    }
+    /// Removes delivered notifications that belong to [scope].
+    let cancelScopeChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.cancelScope\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      cancelScopeChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let scopeArg = args[0] as! String
+        do {
+          try api.cancelScope(scope: scopeArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      cancelScopeChannel.setMessageHandler(nil)
+    }
+    /// The push notification that launched the app, once.
+    let takeLaunchTapChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.takeLaunchTap\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      takeLaunchTapChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.takeLaunchTap()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      takeLaunchTapChannel.setMessageHandler(nil)
+    }
+    /// Test nonces the extension or receiver decrypted for [sid] since the last
+    /// call.
+    let takeVerifiedNoncesChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.takeVerifiedNonces\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      takeVerifiedNoncesChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let sidArg = args[0] as! String
+        do {
+          let result = try api.takeVerifiedNonces(sid: sidArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      takeVerifiedNoncesChannel.setMessageHandler(nil)
+    }
+    /// Installed UnifiedPush distributors (package names). Android only.
+    let unifiedPushDistributorsChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.unifiedPushDistributors\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      unifiedPushDistributorsChannel.setMessageHandler { _, reply in
+        do {
+          let result = try api.unifiedPushDistributors()
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      unifiedPushDistributorsChannel.setMessageHandler(nil)
+    }
+    /// Registers [sid] with [distributor] and answers its endpoint, or null when
+    /// the distributor refuses or does not answer in time.
+    let registerUnifiedPushChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.registerUnifiedPush\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      registerUnifiedPushChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let sidArg = args[0] as! String
+        let distributorArg = args[1] as! String
+        api.registerUnifiedPush(sid: sidArg, distributor: distributorArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      registerUnifiedPushChannel.setMessageHandler(nil)
+    }
+    let unregisterUnifiedPushChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.unregisterUnifiedPush\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      unregisterUnifiedPushChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let sidArg = args[0] as! String
+        do {
+          try api.unregisterUnifiedPush(sid: sidArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      unregisterUnifiedPushChannel.setMessageHandler(nil)
+    }
+    /// Stops using [transport] until a token is asked for again: Android turns
+    /// FCM's auto-init off, deletes the token and stops starting Firebase at
+    /// launch; iOS unregisters from APNs.
+    let releaseTransportChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.PushHostApi.releaseTransport\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      releaseTransportChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let transportArg = args[0] as! PlatformPushTransport
+        do {
+          try api.releaseTransport(transport: transportArg)
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      releaseTransportChannel.setMessageHandler(nil)
+    }
+  }
+}
+
+/// Generated protocol from Pigeon that represents Flutter messages that can be called from Swift.
+protocol PushFlutterApiProtocol {
+  func onToken(token tokenArg: PlatformPushToken, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  func onForegroundPush(message messageArg: PlatformPushMessage, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  func onTap(tap tapArg: PlatformPushTap, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  func onTestReceived(sid sidArg: String, nonce nonceArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  /// The push service dropped [sid] (UnifiedPush unregistered it).
+  func onUnregistered(sid sidArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void)
+  func onUnifiedPushEndpoint(sid sidArg: String, endpoint endpointArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void)
+}
+class PushFlutterApi: PushFlutterApiProtocol {
+  private let binaryMessenger: FlutterBinaryMessenger
+  private let messageChannelSuffix: String
+  init(binaryMessenger: FlutterBinaryMessenger, messageChannelSuffix: String = "") {
+    self.binaryMessenger = binaryMessenger
+    self.messageChannelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+  }
+  var codec: ConduitPlatformApisPigeonCodec {
+    return ConduitPlatformApisPigeonCodec.shared
+  }
+  func onToken(token tokenArg: PlatformPushToken, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.PushFlutterApi.onToken\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([tokenArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  func onForegroundPush(message messageArg: PlatformPushMessage, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.PushFlutterApi.onForegroundPush\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([messageArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  func onTap(tap tapArg: PlatformPushTap, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.PushFlutterApi.onTap\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([tapArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  func onTestReceived(sid sidArg: String, nonce nonceArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.PushFlutterApi.onTestReceived\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([sidArg, nonceArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  /// The push service dropped [sid] (UnifiedPush unregistered it).
+  func onUnregistered(sid sidArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.PushFlutterApi.onUnregistered\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([sidArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+  func onUnifiedPushEndpoint(sid sidArg: String, endpoint endpointArg: String, completion: @escaping (Result<Void, PigeonError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.conduit.PushFlutterApi.onUnifiedPushEndpoint\(messageChannelSuffix)"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([sidArg, endpointArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName: channelName)))
+        return
+      }
+      if listResponse.count > 1 {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(PigeonError(code: code, message: message, details: details)))
+      } else {
+        completion(.success(()))
+      }
+    }
+  }
+}
+/// iOS and Android. Runs a sign-in page in the system browser, where
+/// passkeys and security keys work, and returns the redirect it ends on.
+/// The host ends every sign-in with a [PlatformBrowserAuthResult]; only a
+/// failure of the channel itself throws, as a `PlatformException`.
+///
+/// Generated protocol from Pigeon that represents a handler of messages from Flutter.
+protocol BrowserAuthHostApi {
+  /// Completes when the browser reaches the redirect, is dismissed, or
+  /// fails. Starting another sign-in ends this one as `superseded`.
+  func authenticate(request: PlatformBrowserAuthRequest, completion: @escaping (Result<PlatformBrowserAuthResult, Error>) -> Void)
+  /// Ends the sign-in in progress as cancelled, if any.
+  func cancel() throws
+}
+
+/// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
+class BrowserAuthHostApiSetup {
+  static var codec: FlutterStandardMessageCodec { ConduitPlatformApisPigeonCodec.shared }
+  /// Sets up an instance of `BrowserAuthHostApi` to handle messages through the `binaryMessenger`.
+  static func setUp(binaryMessenger: FlutterBinaryMessenger, api: BrowserAuthHostApi?, messageChannelSuffix: String = "") {
+    let channelSuffix = messageChannelSuffix.count > 0 ? ".\(messageChannelSuffix)" : ""
+    /// Completes when the browser reaches the redirect, is dismissed, or
+    /// fails. Starting another sign-in ends this one as `superseded`.
+    let authenticateChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.BrowserAuthHostApi.authenticate\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      authenticateChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let requestArg = args[0] as! PlatformBrowserAuthRequest
+        api.authenticate(request: requestArg) { result in
+          switch result {
+          case .success(let res):
+            reply(wrapResult(res))
+          case .failure(let error):
+            reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      authenticateChannel.setMessageHandler(nil)
+    }
+    /// Ends the sign-in in progress as cancelled, if any.
+    let cancelChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.conduit.BrowserAuthHostApi.cancel\(channelSuffix)", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      cancelChannel.setMessageHandler { _, reply in
+        do {
+          try api.cancel()
+          reply(wrapResult(nil))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      cancelChannel.setMessageHandler(nil)
     }
   }
 }

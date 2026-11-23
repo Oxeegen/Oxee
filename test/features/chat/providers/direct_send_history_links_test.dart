@@ -1349,6 +1349,72 @@ void main() {
   );
 
   test(
+    'a finished direct reply is announced for notifications once stored',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      addTearDown(db.close);
+      final profile = DirectConnectionProfile(
+        id: 'announce-profile',
+        name: 'Announcing provider',
+        adapterKey: 'recording-adapter',
+        baseUrl: 'http://localhost:11434',
+      );
+      final registry = DirectModelRegistry();
+      final model = registry.replaceProfileModels(profile, [
+        DirectRemoteModel(id: 'model'),
+      ]).single;
+      final runRegistry = DirectRunRegistry();
+      final completions = <DirectRunCompletion>[];
+      runRegistry.completions.listen(completions.add);
+      final chat = await _seedDirectConversation(
+        db: db,
+        chatId: 'direct-local:announce',
+        modelId: model.id,
+        suffix: 'announce',
+      );
+      final container = ProviderContainer(
+        overrides: [
+          secureStorageProvider.overrideWithValue(FlutterSecureKeyValueStore()),
+          activeConversationProvider.overrideWith(_ActiveConversation.new),
+          selectedModelProvider.overrideWithValue(model),
+          reviewerModeProvider.overrideWithValue(false),
+          isAuthenticatedProvider2.overrideWithValue(false),
+          apiServiceProvider.overrideWithValue(null),
+          socketServiceProvider.overrideWithValue(null),
+          appDatabaseProvider.overrideWithValue(null),
+          directLocalDatabaseProvider.overrideWithValue(db),
+          directModelRegistryProvider.overrideWithValue(registry),
+          directRunRegistryProvider.overrideWithValue(runRegistry),
+          directConnectionProfilesProvider.overrideWith(
+            () => _Profiles(profile),
+          ),
+          directProviderAdapterRegistryProvider.overrideWithValue(
+            DirectProviderAdapterRegistry([_RequestRecordingAdapter()]),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.read(activeConversationProvider.notifier).set(chat);
+      container.read(chatMessagesProvider.notifier).setMessages(chat.messages);
+
+      await sendMessageWithContainer(container, 'Continue', null);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(completions, hasLength(1));
+      final completion = completions.single;
+      expect(completion.conversationId, 'direct-local:announce');
+      expect(completion.storage, ChatStorageKind.directLocal);
+      expect(completion.title, 'Chat announce');
+      expect(completion.failed, isFalse);
+      expect(completion.message.content, contains('answer'));
+      final assistant = container
+          .read(chatMessagesProvider)
+          .lastWhere((message) => message.role == 'assistant');
+      expect(completion.assistantMessageId, assistant.id);
+    },
+  );
+
+  test(
     'direct send compacts oversized history before provider dispatch',
     () async {
       final db = AppDatabase(NativeDatabase.memory());
@@ -1444,9 +1510,14 @@ void main() {
     },
   );
 
-  test(
-    'direct document text stays out of the bubble and reaches the adapter',
-    () async {
+  // The send reads its files as it took them: a document removed from the
+  // tray after Send still goes with the message.
+  for (final (label, removedSince) in const [
+    ('in the tray', false),
+    ('removed from the tray since the send took it', true),
+  ]) {
+    test('direct document text stays out of the bubble and reaches the adapter '
+        '($label)', () async {
       final directory = await Directory.systemTemp.createTemp(
         'conduit_direct_send_document_',
       );
@@ -1504,7 +1575,7 @@ void main() {
             (ref) async => _directDocumentTestKey,
           ),
           attachedFilesProvider.overrideWith(
-            () => _SeededDirectAttachments([attachment]),
+            () => _SeededDirectAttachments(removedSince ? [] : [attachment]),
           ),
         ],
       );
@@ -1512,9 +1583,9 @@ void main() {
       container.read(activeConversationProvider.notifier).set(chat);
       container.read(chatMessagesProvider.notifier).setMessages(chat.messages);
 
-      await sendMessageWithContainer(container, 'Summarize this', const [
+      await durableSend(container, 'Summarize this', const [
         attachmentId,
-      ]);
+      ], attachmentStates: removedSince ? [attachment] : null);
 
       final request = adapter.request;
       expect(request, isNotNull);
@@ -1537,8 +1608,8 @@ void main() {
         user.files!.single['direct_extracted_text'],
         'private direct reference',
       );
-    },
-  );
+    });
+  }
 
   test(
     'navigation during direct attachment preflight completes in its owner chat',

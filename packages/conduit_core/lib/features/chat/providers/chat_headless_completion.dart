@@ -32,6 +32,7 @@ Future<void> runQueuedCompletion(
   if (api == null) {
     throw StateError('runQueuedCompletion requires an API service');
   }
+  api.beginSend(assistantMessageId, adopt: true);
   final selectedModel = ref.read(selectedModelProvider);
   // Empty model => fall back to the selected default model (mirrors the
   // migrator's empty-model contract). A still-empty model is a hard error.
@@ -129,12 +130,30 @@ Future<void> runQueuedCompletion(
   );
   requireActiveOwner();
 
+  if (api.sendStopped(assistantMessageId)) {
+    await settleStoppedOpenWebUiCompletion(
+      ref,
+      api: api,
+      owner: owner,
+      assistantMessageIds: [assistantMessageId],
+    );
+    return;
+  }
+
+  // Recorded on the answer's row when the turn was admitted with its model
+  // picked; the model list may not have that device now.
+  final viaTether = await _storedAnswerViaTether(owner, assistantMessageId);
+  requireActiveOwner();
+
   // Ensure the (already-existing) assistant placeholder is loaded + streaming.
   await _preseedAssistantAndPersist(
     ref,
     existingAssistantId: assistantMessageId,
     modelId: effectiveModelId,
     modelName: effectiveModelName,
+    placeholderMetadata: <String, dynamic>{
+      if (viaTether) kCompletionViaTetherKey: true,
+    },
   );
   requireActiveOwner();
 
@@ -142,7 +161,6 @@ Future<void> runQueuedCompletion(
       (selectedModel != null && selectedModel.id == effectiveModelId)
       ? _buildLocalModelItem(selectedModel)
       : <String, dynamic>{'id': effectiveModelId, 'name': effectiveModelId};
-
   final socketService = _readOpenWebUiSocketForApi(ref, api);
   final socketSessionId =
       sessionIdOverride ?? await _ensureConnectedSocketSessionId(socketService);
@@ -186,6 +204,17 @@ Future<void> runQueuedCompletion(
       ref,
       now: DateTime.now(),
       userSettings: userSettingsData,
+      prompts: _openWebUiRequestPrompts(
+        requestMessages,
+        // The model the request goes to, which the picker may not show.
+        models: <Model?>[
+          _openWebUiRequestModel(
+            ref,
+            effectiveModelId,
+            selected: selectedModel,
+          ),
+        ],
+      ),
     );
   } catch (_) {}
   try {
@@ -213,31 +242,71 @@ Future<void> runQueuedCompletion(
       messageId: assistantMessageId,
       admitted: admittedToolServers,
     );
-    final session = await api.sendMessageSession(
-      messages: requestMessages,
-      model: effectiveModelId,
-      conversationId: owner.chatId,
-      terminalId: terminalId,
-      toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
-      filterIds: selectedFilterIds.isNotEmpty ? selectedFilterIds : null,
-      enableWebSearch: enableWebSearch,
-      enableImageGeneration: enableImageGeneration,
-      enableCodeInterpreter: enableCodeInterpreter,
-      isVoiceMode: isVoiceMode,
-      modelItem: modelItem,
-      sessionIdOverride: socketSessionId,
-      toolServers: toolServers,
-      backgroundTasks: bgTasks,
-      responseMessageId: assistantMessageId,
-      userSettings: userSettingsData,
-      globalParams: turnSettings.baseline?.globalParams,
-      chatParams: turnSettings.chatParams,
-      reasoningEffort: turnSettings.reasoningEffort,
-      parentId: parentMsgMap?['parentId']?.toString(),
-      userMessage: parentMsgMap,
-      variables: promptVars2,
-      files: _extractTopLevelRequestFiles(parentMsgMap),
-    );
+    if (api.sendStopped(assistantMessageId)) {
+      await settleStoppedOpenWebUiCompletion(
+        ref,
+        api: api,
+        owner: owner,
+        assistantMessageIds: [assistantMessageId],
+      );
+      return;
+    }
+    final ChatCompletionSession session;
+    try {
+      session = await api.sendMessageSession(
+        messages: requestMessages,
+        model: effectiveModelId,
+        conversationId: owner.chatId,
+        terminalId: terminalId,
+        toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
+        filterIds: selectedFilterIds.isNotEmpty ? selectedFilterIds : null,
+        enableWebSearch: enableWebSearch,
+        enableImageGeneration: enableImageGeneration,
+        enableCodeInterpreter: enableCodeInterpreter,
+        isVoiceMode: isVoiceMode,
+        modelItem: modelItem,
+        sessionIdOverride: socketSessionId,
+        toolServers: toolServers,
+        backgroundTasks: bgTasks,
+        responseMessageId: assistantMessageId,
+        userSettings: userSettingsData,
+        globalParams: turnSettings.baseline?.globalParams,
+        chatParams: turnSettings.chatParams,
+        reasoningEffort: turnSettings.reasoningEffort,
+        parentId: parentMsgMap?['parentId']?.toString(),
+        userMessage: parentMsgMap,
+        variables: promptVars2,
+        files: _extractTopLevelRequestFiles(parentMsgMap),
+        viaTether: viaTether,
+        authSnapshot: owner.authSnapshot,
+      );
+    } on ChatCompletionStopped {
+      await settleStoppedOpenWebUiCompletion(
+        ref,
+        api: api,
+        owner: owner,
+        assistantMessageIds: [assistantMessageId],
+      );
+      return;
+    } on ChatCompletionHeld {
+      await settleHeldOpenWebUiCompletion(
+        ref,
+        api: api,
+        owner: owner,
+        questionId: parentMsgMap?['id']?.toString() ?? lastUserMessageId,
+        assistantMessageIds: [assistantMessageId],
+      );
+      return;
+    } on ChatCompletionHttpException catch (refusal) {
+      if (refusal.mayPassLater) rethrow;
+      await _settleRefusedOpenWebUiCompletion(
+        ref,
+        owner: owner,
+        assistantMessageId: assistantMessageId,
+        refusal: refusal,
+        live: true,
+      );
+    }
     await _markAcceptedOpenWebUiCompletionOrAbort(
       ref,
       session: session,
@@ -266,6 +335,7 @@ Future<void> runQueuedCompletion(
         owner: owner,
         assistantMessageId: assistantMessageId,
         submissionAlreadyMarked: true,
+        viaTether: viaTether,
       );
       return;
     }
@@ -304,6 +374,7 @@ Future<void> runQueuedCompletion(
       filterIds: selectedFilterIds.isNotEmpty ? selectedFilterIds : null,
       ownsActiveConversation: () =>
           activeOpenWebUiChatIdForMutation(ref, owner) != null,
+      viaTether: viaTether,
     );
     if (!attached) {
       await _finishSubmittedOpenWebUiCompletionHeadlessly(
@@ -312,6 +383,7 @@ Future<void> runQueuedCompletion(
         owner: owner,
         assistantMessageId: assistantMessageId,
         submissionAlreadyMarked: true,
+        viaTether: viaTether,
       );
     }
   } finally {
@@ -362,6 +434,7 @@ Future<void> runHeadlessCompletion(
   if (api == null) {
     throw StateError('runHeadlessCompletion requires an API service');
   }
+  api.beginSend(assistantMessageId, adopt: true);
   final owner =
       completionOwner ??
       captureOpenWebUiCompletionOwner(ref, chatId: chatId, api: api);
@@ -448,6 +521,8 @@ Future<void> runHeadlessCompletion(
       (selectedModel != null && selectedModel.id == effectiveModelId)
       ? _buildLocalModelItem(selectedModel)
       : <String, dynamic>{'id': effectiveModelId, 'name': effectiveModelId};
+  final viaTether = await _storedAnswerViaTether(owner, assistantMessageId);
+  requireCurrentOwner();
 
   final socketService = _readOpenWebUiSocketForApi(ref, api);
   final socketSessionId =
@@ -486,6 +561,17 @@ Future<void> runHeadlessCompletion(
       ref,
       now: DateTime.now(),
       userSettings: userSettingsData,
+      prompts: _openWebUiRequestPrompts(
+        requestMessages,
+        // The model the request goes to, which the picker may not show.
+        models: <Model?>[
+          _openWebUiRequestModel(
+            ref,
+            effectiveModelId,
+            selected: selectedModel,
+          ),
+        ],
+      ),
     );
   } catch (_) {}
   requireCurrentOwner();
@@ -505,31 +591,71 @@ Future<void> runHeadlessCompletion(
     messageId: assistantMessageId,
     admitted: admittedToolServers,
   );
-  final session = await api.sendMessageSession(
-    messages: requestMessages,
-    model: effectiveModelId,
-    conversationId: owner.chatId,
-    terminalId: terminalId,
-    toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
-    filterIds: filterIds.isNotEmpty ? filterIds : null,
-    enableWebSearch: enableWebSearch,
-    enableImageGeneration: enableImageGeneration,
-    enableCodeInterpreter: enableCodeInterpreter,
-    isVoiceMode: isVoiceMode,
-    modelItem: modelItem,
-    sessionIdOverride: socketSessionId,
-    toolServers: toolServers,
-    backgroundTasks: bgTasks,
-    responseMessageId: assistantMessageId,
-    userSettings: userSettingsData,
-    globalParams: turnSettings.baseline?.globalParams,
-    chatParams: turnSettings.chatParams,
-    reasoningEffort: turnSettings.reasoningEffort,
-    parentId: parentMsgMap?['parentId']?.toString(),
-    userMessage: parentMsgMap,
-    variables: promptVars,
-    files: _extractTopLevelRequestFiles(parentMsgMap),
-  );
+  if (api.sendStopped(assistantMessageId)) {
+    await settleStoppedOpenWebUiCompletion(
+      ref,
+      api: api,
+      owner: owner,
+      assistantMessageIds: [assistantMessageId],
+    );
+    return;
+  }
+  final ChatCompletionSession session;
+  try {
+    session = await api.sendMessageSession(
+      messages: requestMessages,
+      model: effectiveModelId,
+      conversationId: owner.chatId,
+      terminalId: terminalId,
+      toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
+      filterIds: filterIds.isNotEmpty ? filterIds : null,
+      enableWebSearch: enableWebSearch,
+      enableImageGeneration: enableImageGeneration,
+      enableCodeInterpreter: enableCodeInterpreter,
+      isVoiceMode: isVoiceMode,
+      modelItem: modelItem,
+      sessionIdOverride: socketSessionId,
+      toolServers: toolServers,
+      backgroundTasks: bgTasks,
+      responseMessageId: assistantMessageId,
+      userSettings: userSettingsData,
+      globalParams: turnSettings.baseline?.globalParams,
+      chatParams: turnSettings.chatParams,
+      reasoningEffort: turnSettings.reasoningEffort,
+      parentId: parentMsgMap?['parentId']?.toString(),
+      userMessage: parentMsgMap,
+      variables: promptVars,
+      files: _extractTopLevelRequestFiles(parentMsgMap),
+      viaTether: viaTether,
+      authSnapshot: owner.authSnapshot,
+    );
+  } on ChatCompletionStopped {
+    await settleStoppedOpenWebUiCompletion(
+      ref,
+      api: api,
+      owner: owner,
+      assistantMessageIds: [assistantMessageId],
+    );
+    return;
+  } on ChatCompletionHeld {
+    await settleHeldOpenWebUiCompletion(
+      ref,
+      api: api,
+      owner: owner,
+      questionId: parentMsgMap?['id']?.toString() ?? lastUserMessageId,
+      assistantMessageIds: [assistantMessageId],
+    );
+    return;
+  } on ChatCompletionHttpException catch (refusal) {
+    if (refusal.mayPassLater) rethrow;
+    await _settleRefusedOpenWebUiCompletion(
+      ref,
+      owner: owner,
+      assistantMessageId: assistantMessageId,
+      refusal: refusal,
+      live: false,
+    );
+  }
   await _markAcceptedOpenWebUiCompletionOrAbort(
     ref,
     session: session,
@@ -543,6 +669,294 @@ Future<void> runHeadlessCompletion(
     owner: owner,
     assistantMessageId: assistantMessageId,
     submissionAlreadyMarked: true,
+    viaTether: viaTether,
+  );
+}
+
+/// The answers whose request the server held ([ChatCompletionHeld]), as
+/// [settleHeldOpenWebUiCompletion] records them before settling them. What
+/// follows a turn reads its outcome here: a pull can answer the held question
+/// or replace it meanwhile, and the settle then leaves it unmarked.
+final heldCompletionsProvider = Provider<HeldCompletions>(
+  (_) => HeldCompletions(),
+);
+
+/// The newest held answer ids ([heldCompletionsProvider]).
+final class HeldCompletions {
+  static const int _limit = 512;
+  final Set<String> _held = <String>{};
+
+  void _record(Iterable<String> answerIds) {
+    for (final id in answerIds) {
+      _held
+        ..remove(id)
+        ..add(id);
+    }
+    while (_held.length > _limit) {
+      _held.remove(_held.first);
+    }
+  }
+
+  /// Whether the server held the request that was to write answer [answerId].
+  bool contains(String answerId) => _held.contains(answerId);
+}
+
+/// Settles a turn the server holds ([ChatCompletionHeld]) until a reply
+/// running in its chat ends: it answers question [questionId] then, under new
+/// ids, and `chat:reload` brings that answer to a chat on screen.
+///
+/// The empty answers [assistantMessageIds] go, from the server first: the
+/// outbox pushed them with the question before the request, and Open WebUI
+/// answers a held question only while nothing answers it. A delete that fails
+/// stays in the outbox, retried until it lands ([ChatsDao.settleHeldTurn]).
+/// The question stays, held, and the request is never sent again: the hold
+/// is recorded in the outbox before anything else ([ChatsDao.recordHeldTurn]),
+/// where no pull reaches it, so a retry of the turn after a failed settle
+/// only settles it again. A question the server answered meanwhile is not
+/// shown waiting; its answers are recorded held all the same, first of all
+/// ([heldCompletionsProvider]).
+///
+/// [earlierHoldIds] are the empty answers an earlier hold of the question
+/// left, which a regeneration of it hid. Those, any others the stored chat
+/// knows as a hold's, and [assistantMessageIds] are the only answers the
+/// settle takes the question to have ([ChatsDao.settleHeldTurn]), and they
+/// all leave the transcript.
+Future<void> settleHeldOpenWebUiCompletion(
+  dynamic ref, {
+  required Object? api,
+  required OpenWebUiCompletionOwner owner,
+  required String? questionId,
+  required Iterable<String> assistantMessageIds,
+  Iterable<String> earlierHoldIds = const <String>[],
+}) async {
+  final answerIds = assistantMessageIds.toList(growable: false);
+  final earlierHolds = earlierHoldIds.toSet();
+  (ref.read(heldCompletionsProvider) as HeldCompletions)._record(answerIds);
+  DebugLogger.log(
+    'queued-completion-held',
+    scope: 'chat/completion',
+    data: {'chatId': owner.chatId, 'assistantMessageIds': answerIds},
+  );
+  final database = owner.database;
+  final locks = ref.read(chatLocksProvider) as ChatLocks;
+  var heldRecorded = true;
+  try {
+    await locks.runExclusive(owner.chatId, () async {
+      await database?.chatsDao.recordHeldTurn(
+        owner.chatId,
+        questionId: questionId,
+        assistantMessageIds: answerIds,
+        earlierHoldIds: earlierHolds,
+      );
+    });
+  } catch (error, stackTrace) {
+    heldRecorded = false;
+    DebugLogger.error(
+      'held-answer-marker-failed',
+      scope: 'chat/completion',
+      error: error,
+      stackTrace: stackTrace,
+      data: {'chatId': owner.chatId},
+    );
+  }
+  final unsent = <String>[];
+  var answeredMeanwhile = false;
+  var removed = <String>{...answerIds, ...earlierHolds};
+  try {
+    for (final id in answerIds) {
+      if (api is! ApiService) {
+        unsent.add(id);
+        continue;
+      }
+      api.endSend(id);
+      try {
+        // As the owner's session: one that replaced it meanwhile refuses it
+        // unsent, and the delete waits in the outbox as one that failed.
+        await api.deleteConversationMessage(
+          owner.chatId,
+          id,
+          authSnapshot: owner.authSnapshot,
+        );
+      } catch (error) {
+        // Already gone, with its chat.
+        if (error is! DioException || error.response?.statusCode != 404) {
+          DebugLogger.warning(
+            'held-answer-delete-failed',
+            scope: 'chat/completion',
+            data: {'chatId': owner.chatId, 'error': error.toString()},
+          );
+          unsent.add(id);
+          continue;
+        }
+      }
+      // Landed as a push does: a copy of the chat read before it still has
+      // the empty answer, and a pull stores nothing of it.
+      database?.chatsDao.noteMessageDeletesLanded(owner.chatId, [id]);
+    }
+    await locks.runExclusive(owner.chatId, () async {
+      final settled = await database?.chatsDao.settleHeldTurn(
+        owner.chatId,
+        questionId: questionId,
+        assistantMessageIds: answerIds,
+        earlierHoldIds: earlierHolds,
+        unsentServerDeletes: unsent,
+      );
+      if (settled == null) return;
+      answeredMeanwhile = settled.answeredMeanwhile;
+      removed = settled.removed;
+    });
+  } catch (error) {
+    if (heldRecorded) rethrow;
+    // Nothing tells a retry that the request went out: it would send the
+    // question again.
+    throw SyncTerminalException(
+      statusCode: 500,
+      message:
+          'The server holds this message until its chat\'s running reply '
+          'ends, but settling it here failed: $error',
+    );
+  }
+  if (unsent.isNotEmpty &&
+      database != null &&
+      openWebUiCompletionContextIsCurrent(ref, owner)) {
+    final engine = ref.read(syncEngineProvider.notifier) as SyncEngine;
+    unawaited(
+      engine.drainNowForDatabase(database).catchError((Object error) {
+        DebugLogger.error(
+          'held-answer-delete-drain-failed',
+          scope: 'chat/completion',
+          error: error,
+        );
+      }),
+    );
+  }
+  if (activeOpenWebUiChatIdForMutation(ref, owner) == null) return;
+  final notifier =
+      ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier;
+  for (final id in answerIds) {
+    notifier.removeMessageById(id);
+  }
+  if (questionId != null) {
+    // Another hold's empty answer, such as a regenerated answer's earlier one
+    // kept hidden while the new one ran: the held question ends the chat now,
+    // as it does in the stored copy.
+    final shown = ref.read(chatMessagesProvider) as List<ChatMessage>;
+    final at = shown.indexWhere((m) => m.id == questionId);
+    if (at >= 0) {
+      for (final later in shown.skip(at + 1).toList()) {
+        if (removed.contains(later.id)) notifier.removeMessageById(later.id);
+      }
+    }
+    if (answeredMeanwhile) return;
+    notifier.updateMessageById(
+      questionId,
+      (question) => question.copyWith(
+        metadata: <String, dynamic>{
+          ...?question.metadata,
+          kMessageHeldByServerMetadataKey: true,
+        },
+      ),
+    );
+  }
+}
+
+/// Settles a queued Open WebUI turn whose completion request the server
+/// refused with an error status, as the inline send settles the chat on
+/// screen: the answer shows the server's words, its stored row is marked
+/// refused, and [SyncTerminalException] parks the op.
+///
+/// Ends the answers whose request a Stop kept from going out: stored as
+/// done, as the Stop left them on screen. The Stop is let go only once that
+/// is written: a write that fails throws, the operation is not counted done,
+/// and its retry still finds the Stop and still does not send.
+Future<void> settleStoppedOpenWebUiCompletion(
+  dynamic ref, {
+  required Object? api,
+  required OpenWebUiCompletionOwner owner,
+  required Iterable<String> assistantMessageIds,
+}) async {
+  DebugLogger.log(
+    'queued-completion-stopped',
+    scope: 'chat/completion',
+    data: {
+      'chatId': owner.chatId,
+      'assistantMessageIds': assistantMessageIds.toList(),
+    },
+  );
+  final locks = ref.read(chatLocksProvider) as ChatLocks;
+  await locks.runExclusive(owner.chatId, () async {
+    for (final id in assistantMessageIds) {
+      // False only when the answer's row is gone: nothing is left that
+      // could show it streaming.
+      await owner.database?.messagesDao.markAssistantStopped(
+        chatId: owner.chatId,
+        messageId: id,
+      );
+    }
+  });
+  if (api is ApiService) {
+    for (final id in assistantMessageIds) {
+      api.endSend(id);
+    }
+  }
+}
+
+/// Without this a refusal went back to the outbox as a transient failure:
+/// the answer streamed on with nothing behind it while the drainer sent the
+/// same refused request four more times, then parked it with the answer
+/// still open. Nothing reached a model, so there is nothing to pull; a saved
+/// answer the server finished despite the status was already recovered by
+/// the API before the refusal was thrown. A status a later attempt may pass
+/// ([ChatCompletionHttpException.mayPassLater]) still goes back to the outbox
+/// to be sent again.
+Future<Never> _settleRefusedOpenWebUiCompletion(
+  dynamic ref, {
+  required OpenWebUiCompletionOwner owner,
+  required String assistantMessageId,
+  required ChatCompletionHttpException refusal,
+  required bool live,
+}) async {
+  DebugLogger.log(
+    'queued-completion-refused',
+    scope: 'chat/completion',
+    data: {
+      'chatId': owner.chatId,
+      'assistantMessageId': assistantMessageId,
+      'status': refusal.statusCode,
+    },
+  );
+  // Only while the chat is still the one this scope shows: the user may
+  // have opened another while the request was out.
+  if (live && activeOpenWebUiChatIdForMutation(ref, owner) != null) {
+    (ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier)
+        .failLastStreamingAssistant(
+          refusal,
+          assistantMessageId: assistantMessageId,
+        );
+  }
+  try {
+    // Under the chat lock, queued behind the live failure's own echo write,
+    // so that echo cannot replace the marker.
+    final locks = ref.read(chatLocksProvider) as ChatLocks;
+    await locks.runExclusive(owner.chatId, () async {
+      await owner.database?.messagesDao.markAssistantCompletionRefused(
+        chatId: owner.chatId,
+        messageId: assistantMessageId,
+        error: chatMessageErrorFor(refusal),
+      );
+    });
+  } catch (cause, stackTrace) {
+    DebugLogger.error(
+      'refused-completion-marker-failed',
+      scope: 'chat/completion',
+      error: cause,
+      stackTrace: stackTrace,
+    );
+  }
+  _checkSessionAfterRefusedCompletion(ref, refusal);
+  throw SyncTerminalException(
+    statusCode: refusal.statusCode,
+    message: refusal.toString(),
   );
 }
 
@@ -563,6 +977,11 @@ Future<void> _finishSubmittedOpenWebUiCompletionHeadlessly(
   Duration recoveryDelay = const Duration(seconds: 2),
   bool requireDurableSubmittedMarker = true,
   bool submissionAlreadyMarked = false,
+
+  /// Whether the answer recorded, when its request was made, that it went
+  /// to a model one of the user's devices offers. An answer that had no row
+  /// then has the record written on the row its pull lands.
+  required bool viaTether,
 }) async {
   final chatId = owner.chatId;
   final markerPersisted =
@@ -610,6 +1029,15 @@ Future<void> _finishSubmittedOpenWebUiCompletionHeadlessly(
         data: {'chatId': chatId},
       );
       await _abortQuietly(session);
+      // The client closed under the wait (the host shutting down): nothing
+      // can be read now, and the reply may still finish. The turn stays
+      // queued, and its retry reads the reply (it is marked submitted).
+      if (error is HeldReplyAbandoned) {
+        throw const _QueuedCompletionDeferred(
+          'The wait for a held reply ended with its client; it is read again '
+          'on the next drain.',
+        );
+      }
       drainFailure = error;
     }
   }
@@ -618,6 +1046,7 @@ Future<void> _finishSubmittedOpenWebUiCompletionHeadlessly(
     ref,
     owner: owner,
     assistantMessageId: assistantMessageId,
+    viaTether: viaTether,
     attempts: recoveryAttempts,
     delay: recoveryDelay,
   );
@@ -667,6 +1096,7 @@ Future<bool?> _pullSubmittedOpenWebUiCompletion(
   dynamic ref, {
   required OpenWebUiCompletionOwner owner,
   required String assistantMessageId,
+  bool viaTether = false,
   int attempts = 6,
   Duration delay = const Duration(seconds: 2),
 }) async {
@@ -714,6 +1144,9 @@ Future<bool?> _pullSubmittedOpenWebUiCompletion(
         .where((m) => m.id == assistantMessageId)
         .firstOrNull;
     if (asst != null && _headlessAssistantLanded(asst)) {
+      if (viaTether && !answerViaTether(asst)) {
+        await _recordLandedTetherAnswer(ref, owner: owner, answerId: asst.id);
+      }
       DebugLogger.log(
         'headless-completion-landed',
         scope: 'chat/completion',
@@ -730,6 +1163,63 @@ Future<bool?> _pullSubmittedOpenWebUiCompletion(
   return false;
 }
 
+/// Whether the answer [answerId] among [messages] records that its request
+/// goes to a model one of the user's devices offers.
+bool _answerRecordsViaTether(List<ChatMessage> messages, String answerId) =>
+    messages.any(
+      (message) => message.id == answerId && answerViaTether(message),
+    );
+
+/// Whether the stored row of a queued turn's answer records, as its
+/// admission wrote it, that its request goes to a model one of the user's
+/// devices offers. A row that cannot be read records nothing.
+Future<bool> _storedAnswerViaTether(
+  OpenWebUiCompletionOwner owner,
+  String answerId,
+) async {
+  try {
+    final row = await owner.database?.messagesDao.getMessage(
+      owner.chatId,
+      answerId,
+    );
+    final payload = row == null ? null : jsonDecode(row.payload);
+    final metadata = payload is Map ? payload['metadata'] : null;
+    return metadata is Map && metadata[kCompletionViaTetherKey] == true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// An answer asked of one of the user's devices before it had a row, as an
+/// inline send's or a regeneration's, gets its record on the row its pull
+/// wrote, which reads the server's saved error with it. An answer admitted
+/// with a row has kept its record through the pull.
+Future<void> _recordLandedTetherAnswer(
+  dynamic ref, {
+  required OpenWebUiCompletionOwner owner,
+  required String answerId,
+}) async {
+  try {
+    final locks = ref.read(chatLocksProvider) as ChatLocks;
+    await locks.runExclusive(owner.chatId, () async {
+      await owner.database?.messagesDao.recordAnswerViaTether(
+        chatId: owner.chatId,
+        messageId: answerId,
+      );
+    });
+  } catch (cause, stackTrace) {
+    DebugLogger.error(
+      'tether-answer-record-failed',
+      scope: 'chat/completion',
+      error: cause,
+      stackTrace: stackTrace,
+    );
+  }
+  if (activeOpenWebUiChatIdForMutation(ref, owner) == null) return;
+  (ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier)
+      .updateMessageById(answerId, withTetherRecord);
+}
+
 @visibleForTesting
 Future<void> finishSubmittedOpenWebUiCompletionHeadlesslyForTest(
   dynamic ref, {
@@ -740,6 +1230,7 @@ Future<void> finishSubmittedOpenWebUiCompletionHeadlesslyForTest(
   Duration recoveryDelay = Duration.zero,
   bool requireDurableSubmittedMarker = true,
   bool submissionAlreadyMarked = false,
+  bool viaTether = false,
 }) {
   final owner = captureOpenWebUiCompletionOwner(ref, chatId: chatId);
   return _finishSubmittedOpenWebUiCompletionHeadlessly(
@@ -751,6 +1242,7 @@ Future<void> finishSubmittedOpenWebUiCompletionHeadlesslyForTest(
     recoveryDelay: recoveryDelay,
     requireDurableSubmittedMarker: requireDurableSubmittedMarker,
     submissionAlreadyMarked: submissionAlreadyMarked,
+    viaTether: viaTether,
   );
 }
 
@@ -829,7 +1321,7 @@ Future<bool> _markHeadlessCompletionSubmitted(
   final db = owner.database;
   if (db == null) return false;
   try {
-    return await db.messagesDao.markAssistantCompletionSubmitted(
+    return await db.chatsDao.recordCompletionSubmitted(
       chatId: chatId,
       messageId: assistantMessageId,
     );

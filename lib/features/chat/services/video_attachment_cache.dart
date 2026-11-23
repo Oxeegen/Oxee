@@ -120,6 +120,11 @@ class VideoAttachmentCache {
   /// [releaseCachePath]. [cacheIdentity] scopes the cache name (Open WebUI
   /// file URLs are the same for every account on a server). [isCurrent]
   /// reports whether the caller still wants this attempt.
+  ///
+  /// The file takes [extension], or with [extensionForReply], the one the
+  /// reply names by its media type or its `Content-Disposition` file name: a
+  /// server's file address often names no format, and a player may read it
+  /// from the file's name.
   Future<File> fetchForPlayback({
     required VideoDownloadClaim claim,
     required String url,
@@ -127,18 +132,27 @@ class VideoAttachmentCache {
     required String extension,
     required VideoTransport Function(String url) transport,
     required bool Function() isCurrent,
+    String Function(String? mediaType, {String? contentDisposition})?
+    extensionForReply,
   }) async {
     final dir = await _cacheDirectory();
-    final target = File(
-      '${dir.path}/video_${_cacheNameFor(url, cacheIdentity)}.$extension',
-    );
-    if (await target.exists() && await target.length() > 0) {
+    // Earlier releases named a reply by its media type alone, and cached an
+    // untyped one as `.audio`, which iOS cannot open. Files named by their
+    // reply now have a key of their own, so none of those is ever found.
+    final identity = extensionForReply == null
+        ? cacheIdentity
+        : 'named-by-reply-v2:$cacheIdentity';
+    final stem = '${dir.path}/video_${_cacheNameFor(url, identity)}';
+    final cached = extensionForReply == null
+        ? File('$stem.$extension')
+        : await _namedFromReply(dir, stem);
+    if (cached != null && await cached.exists() && await cached.length() > 0) {
       // Reserve before returning: player initialization awaits afterwards,
       // and a prune from another player must not evict this file mid-open.
-      retainCachePath(target.path);
-      return target;
+      retainCachePath(cached.path);
+      return cached;
     }
-    await target.parent.create(recursive: true);
+    await dir.create(recursive: true);
 
     // If the player was disposed during the awaits above, it could not have
     // released anything (no download was tracked yet). Stop before joining
@@ -155,7 +169,8 @@ class VideoAttachmentCache {
     // A player can only be interested in one playback transfer at a time;
     // drop interest in any earlier attempt before joining a new one.
     releaseDownload(claim);
-    final key = target.path;
+    // A file named from its reply is known only by its stem until it lands.
+    final key = extensionForReply == null ? '$stem.$extension' : stem;
     var entry = _sharedDownloads[key];
     if (entry != null && entry.token.isCancelled) {
       // A canceled transfer is never reusable: a player reopening the video
@@ -167,8 +182,19 @@ class VideoAttachmentCache {
       entry = _SharedVideoDownload(dio.CancelToken(), key);
       entry.refs = 1;
       final created = entry;
-      created.future = _runVideoDownload(url, target, created.token, transport)
-          .whenComplete(() {
+      created.future =
+          _runVideoDownload(
+            url,
+            stem,
+            (reply) =>
+                extensionForReply?.call(
+                  reply.value(dio.Headers.contentTypeHeader),
+                  contentDisposition: reply['content-disposition']?.first,
+                ) ??
+                extension,
+            created.token,
+            transport,
+          ).whenComplete(() {
             if (_sharedDownloads[key] == created) {
               _sharedDownloads.remove(key);
             }
@@ -285,15 +311,16 @@ class VideoAttachmentCache {
 
   Future<File> _runVideoDownload(
     String url,
-    File target,
+    String stem,
+    String Function(dio.Headers reply) extension,
     dio.CancelToken token,
     VideoTransport Function(String url) transport,
   ) async {
-    final part = File('${target.path}.${_scratchSeq++}.part');
+    final part = File('$stem.${_scratchSeq++}.part');
     final (:client, :headers, :ownsClient) = transport(url);
     try {
-      await _streamToFile(client, url, part.path, headers, token);
-      await part.rename(target.path);
+      final reply = await _streamToFile(client, url, part.path, headers, token);
+      final target = await part.rename('$stem.${extension(reply)}');
       unawaited(prune());
       return target;
     } finally {
@@ -312,8 +339,9 @@ class VideoAttachmentCache {
   /// Downloads [url] to [path] with a stalled-transfer watchdog instead of a
   /// fixed total-transfer deadline: the request is aborted only when no data
   /// arrives for [_downloadStallTimeout] (45s) or the headers never arrive
-  /// (60s), not because the file is large. Cancelable via [token].
-  Future<void> _streamToFile(
+  /// (60s), not because the file is large. Cancelable via [token]. Returns
+  /// the reply's headers.
+  Future<dio.Headers> _streamToFile(
     dio.Dio client,
     String url,
     String path,
@@ -327,7 +355,7 @@ class VideoAttachmentCache {
       }
     });
     try {
-      await client.download(
+      final response = await client.download(
         url,
         path,
         cancelToken: token,
@@ -344,9 +372,30 @@ class VideoAttachmentCache {
           receiveTimeout: const Duration(seconds: 60),
         ),
       );
+      return response.headers;
     } finally {
       watchdog.cancel();
     }
+  }
+
+  /// The complete file named [stem] with any extension, or null.
+  Future<File?> _namedFromReply(Directory dir, String stem) async {
+    if (!await dir.exists()) return null;
+    final prefix = '${File(stem).uri.pathSegments.last}.';
+    await for (final entity in dir.list()) {
+      if (entity is! File) continue;
+      final name = entity.uri.pathSegments.last;
+      if (name.startsWith(prefix) && !name.endsWith('.part')) return entity;
+    }
+    return null;
+  }
+
+  bool _inUse(String path) {
+    final dot = path.lastIndexOf('.');
+    return _cacheRefs.containsKey(path) ||
+        _sharedDownloads.containsKey(path) ||
+        // A transfer naming its file from the reply is keyed by the stem.
+        (dot > 0 && _sharedDownloads.containsKey(path.substring(0, dot)));
   }
 
   /// Evicts the oldest completed playback files once the video cache passes
@@ -368,10 +417,7 @@ class VideoAttachmentCache {
         // _sharedDownloads keys the FINAL path, so the reference check below
         // cannot protect it. Scratch owners delete their own partials.
         if (name.endsWith('.part')) continue;
-        if (_cacheRefs.containsKey(entity.path) ||
-            _sharedDownloads.containsKey(entity.path)) {
-          continue;
-        }
+        if (_inUse(entity.path)) continue;
         final stat = await entity.stat();
         if (stat.size <= 0) continue;
         candidates.add((
@@ -387,10 +433,7 @@ class VideoAttachmentCache {
         if (total <= maxCacheBytes) break;
         // A player may have opened (or a transfer may have finished into)
         // this file after the scan; re-verify before deleting it.
-        if (_cacheRefs.containsKey(candidate.file.path) ||
-            _sharedDownloads.containsKey(candidate.file.path)) {
-          continue;
-        }
+        if (_inUse(candidate.file.path)) continue;
         try {
           await candidate.file.delete();
           total -= candidate.size;

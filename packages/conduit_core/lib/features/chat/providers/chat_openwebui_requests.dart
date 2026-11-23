@@ -1,8 +1,12 @@
 part of 'chat_providers.dart';
 
 bool _shouldIncludeConversationHistoryMessage(ChatMessage message) {
-  if (message.role.isEmpty || message.content.isEmpty) {
-    return false;
+  if (message.role.isEmpty) return false;
+  if (message.content.isEmpty) {
+    // A user turn of files alone is still a turn.
+    return message.role == 'user' &&
+        ((message.attachmentIds?.isNotEmpty ?? false) ||
+            (message.files?.isNotEmpty ?? false));
   }
   if (message.role != 'assistant') {
     return true;
@@ -258,10 +262,74 @@ Map<String, dynamic> buildOpenWebUiBackgroundTasksForTest({
   );
 }
 
+/// The texts Open WebUI fills `{{USER_LOCATION}}` into for a request: the
+/// system text it sends ([messages]' system messages) and each of [models]'
+/// own system prompt, as far as the model list shows it.
+List<String?> _openWebUiRequestPrompts(
+  Iterable<Map<String, dynamic>> messages, {
+  Iterable<Model?> models = const <Model?>[],
+}) {
+  String? textOf(Object? content) => switch (content) {
+    final String text => text,
+    final List<dynamic> parts =>
+      parts
+          .map((part) => part is Map ? part['text']?.toString() ?? '' : '')
+          .join('\n'),
+    _ => null,
+  };
+  String? modelSystem(Model? model) {
+    final info = model?.metadata?['info'];
+    final params = info is Map ? info['params'] : null;
+    final system = params is Map ? params['system'] : null;
+    return system is String ? system : null;
+  }
+
+  return <String?>[
+    for (final message in messages)
+      if ((message['role']?.toString().toLowerCase() ?? '') == 'system')
+        textOf(message['content']),
+    for (final model in models) modelSystem(model),
+  ];
+}
+
+/// The model a request for [modelId] goes to: [selected] when it is that
+/// model, else the account's model list's, as loaded. Null when neither has
+/// it.
+Model? _openWebUiRequestModel(dynamic ref, String modelId, {Model? selected}) {
+  if (selected != null && selected.id == modelId) return selected;
+  try {
+    final loaded = ref.read(modelsProvider) as AsyncValue<List<Model>>;
+    return loaded.asData?.value
+        .where((model) => model.id == modelId)
+        .firstOrNull;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Exposes [_openWebUiRequestModel] for focused unit tests.
+@visibleForTesting
+Model? openWebUiRequestModelForTest(
+  dynamic ref,
+  String modelId, {
+  Model? selected,
+}) => _openWebUiRequestModel(ref, modelId, selected: selected);
+
+/// Exposes [_openWebUiRequestPrompts] for focused unit tests.
+@visibleForTesting
+List<String?> openWebUiRequestPromptsForTest(
+  Iterable<Map<String, dynamic>> messages, {
+  Iterable<Model?> models = const <Model?>[],
+}) => _openWebUiRequestPrompts(messages, models: models);
+
+/// [prompts]: the request's texts that may name `{{USER_LOCATION}}`
+/// ([_openWebUiRequestPrompts]); a host whose [LocationService.policy] asks
+/// the device only when one does reads them.
 Future<Map<String, dynamic>> _buildOpenWebUiPromptVariablesForRequest(
   dynamic ref, {
   required DateTime now,
   required Map<String, dynamic>? userSettings,
+  Iterable<String?> prompts = const <String?>[],
 }) async {
   String userName = 'User';
   String userEmail = 'Unknown';
@@ -291,9 +359,10 @@ Future<Map<String, dynamic>> _buildOpenWebUiPromptVariablesForRequest(
   try {
     final locationService = ref.read(locationServiceProvider);
     final api = ref.read(apiServiceProvider);
-    userLocation = await locationService.resolveLocationForUserSettings(
+    userLocation = await locationService.resolveLocationForRequest(
       userSettings,
       api: api,
+      prompts: prompts,
     );
   } catch (error, stackTrace) {
     DebugLogger.error(
@@ -503,28 +572,10 @@ void _clearUnresolvedPersonalToolSelections(
 }
 
 /// Whether the account's personal tool servers and terminals may join a
-/// request: the same check that lets Conduit run their tools. Open WebUI
-/// 0.12.4 ignores them while Direct Integrations is off, as its web client
-/// no longer sends them then.
-///
-/// That check refuses while the server's config or the account's permissions
-/// are still loading, as when a queued turn is replayed at launch. A refusal
-/// nothing has decided yet leaves them in, as before.
-bool _personalConnectionsAvailable(dynamic ref) {
-  final access = ref.read(personalConnectionsAccessProvider);
-  if (access is! PersonalConnectionsAccess) return true;
-  bool loading(Object? value) => value is AsyncValue && value.isLoading;
-  return switch (access.block) {
-    null => true,
-    PersonalConnectionsBlock.serverDisabled => loading(
-      ref.read(backendConfigProvider),
-    ),
-    PersonalConnectionsBlock.noPermission => loading(
-      ref.read(userPermissionsProvider),
-    ),
-    PersonalConnectionsBlock.noAccount => false,
-  };
-}
+/// request. Open WebUI 0.12.4 ignores them while Direct Integrations is off,
+/// as its web client no longer sends them then.
+bool _personalConnectionsAvailable(dynamic ref) =>
+    ref.read(personalConnectionsOfferedProvider) as bool;
 
 Future<List<Map<String, dynamic>>?> _resolveToolServersForRequest({
   required dynamic api,
@@ -588,6 +639,9 @@ Future<List<Map<String, dynamic>>?> _resolveToolServersForRequest({
 /// effective system message (chat `params.system`, then the legacy
 /// conversation prompt, then the user prompt) when one is absent, then apply
 /// [_buildChatCompletionMessages].
+///
+/// Only a temporary chat's history keeps its attachments, so only there are
+/// they fetched: a saved chat's request carries its system message alone.
 Future<List<Map<String, dynamic>>> _buildCompletionRequestMessages({
   required dynamic api,
   required List<ChatMessage> messages,
@@ -603,7 +657,7 @@ Future<List<Map<String, dynamic>>> _buildCompletionRequestMessages({
     if (!_shouldIncludeConversationHistoryMessage(msg)) continue;
     final cleaned = outboundProviderReplayText(msg);
     final attachments = msg.attachmentIds ?? const <String>[];
-    if (attachments.isNotEmpty) {
+    if (attachments.isNotEmpty && isTemporary) {
       final messageMap = await _buildMessagePayloadWithAttachments(
         api: api,
         role: msg.role,
@@ -649,13 +703,15 @@ Future<List<Map<String, dynamic>>> _buildCompletionRequestMessages({
 Future<List<Map<String, dynamic>>>
 buildOpenWebUiCompletionRequestMessagesForTest({
   required List<ChatMessage> messages,
+  dynamic api,
+  bool isTemporary = true,
 }) => _buildCompletionRequestMessages(
-  api: null,
+  api: api,
   messages: messages,
   chatParams: const <String, dynamic>{},
   conversationSystemPrompt: null,
   userSystemPrompt: null,
-  isTemporary: true,
+  isTemporary: isTemporary,
 );
 
 /// Last `user`-role message id in [messages], scanning newest-first; `null`

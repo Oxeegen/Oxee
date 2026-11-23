@@ -118,14 +118,17 @@ class NativeSheetRoutes {
   static const aiMemory = 'ai-memory';
   static const dataConnection = 'data-connection';
   static const hermes = 'hermes';
-  static const directConnections = 'open-direct-connections';
+  /// The Direct Connections page, Settings's own.
+  static const directConnections = 'direct-connections';
   static const personalConnections = 'open-personal-connections';
   static const scheduledTasks = 'open-scheduled-tasks';
   static const calendar = 'open-calendar';
-  static const chatDataControls = 'open-chat-data-controls';
+  /// The Chat Data Controls page, Settings's own.
+  static const chatDataControls = 'chat-data-controls';
   static const helpAbout = 'help-about';
   static const about = 'about';
   static const notificationSettings = 'notification-settings';
+  static const pushTargets = 'push-targets';
   static const workspace = 'workspace-entry';
   static const releaseNotesManual = 'release-notes-manual';
   static const openSourceLicenses = 'open-source-licenses';
@@ -183,10 +186,17 @@ class NativeSheetBridge implements NativeSheetFlutterApi {
     _lastTheme = null;
   }
 
+  /// Whether the Settings sheet is up, so a question from one of its pages
+  /// is asked over it.
+  bool get settingsSheetOpen => _settingsSheetOpen;
+  bool _settingsSheetOpen = false;
+
   Future<bool> presentProfileMenu(NativeProfileSheetConfig config) async {
     if (!_isIOS) return false;
     try {
-      return await _api.presentProfileMenu(config.toPlatform());
+      final presented = await _api.presentProfileMenu(config.toPlatform());
+      if (presented) _settingsSheetOpen = true;
+      return presented;
     } on PlatformException catch (error, stackTrace) {
       _logNativeSheetBridgeError('presentProfileMenu', error, stackTrace);
       return false;
@@ -208,6 +218,47 @@ class NativeSheetBridge implements NativeSheetFlutterApi {
       return false;
     }
   }
+
+  /// Closes the Settings sheet and waits until it has gone, so whatever is
+  /// shown next is not presented over a sheet still leaving. Returns
+  /// whether Settings is closed: true when it was not open, false when it
+  /// had not gone within [patience].
+  Future<bool> dismissSettings({
+    Duration patience = const Duration(seconds: 2),
+  }) async {
+    if (!_isIOS || !_settingsSheetOpen) return true;
+    var waitedOut = false;
+    final gone = _events.stream
+        .firstWhere((event) => event is NativeSheetDismissed)
+        .timeout(
+          patience,
+          onTimeout: () {
+            waitedOut = true;
+            return const NativeSheetDismissed();
+          },
+        );
+    if (!await dismiss()) {
+      unawaited(gone.then((_) {}, onError: (_) {}));
+      return false;
+    }
+    _settingsLeaving = true;
+    await gone;
+    return !waitedOut;
+  }
+
+  bool _settingsLeaving = false;
+
+  /// Whether Settings was asked to close, agreed, and has not gone yet:
+  /// [dismissSettings] stopped waiting for a sheet still leaving.
+  bool get settingsLeaving => _settingsLeaving && _settingsSheetOpen;
+
+  /// Completes once Settings has closed, at once when it is not open.
+  Future<void> untilSettingsClosed() => _settingsSheetOpen
+      ? _events.stream.firstWhere((event) => event is NativeSheetDismissed)
+      : Future<void>.value();
+
+  @visibleForTesting
+  set debugSettingsSheetOpen(bool open) => _settingsSheetOpen = open;
 
   Future<bool> requestAppStoreReview() async {
     if (!_isIOS) return false;
@@ -657,6 +708,7 @@ class NativeSheetBridge implements NativeSheetFlutterApi {
     String? subtitle,
     bool clearSubtitle = false,
     List<NativeSheetDetailConfig> detailSheets = const [],
+    NativeSheetDetailConfig? whole,
   }) async {
     if (items.isNotEmpty && sections.isNotEmpty) {
       throw ArgumentError(
@@ -676,6 +728,7 @@ class NativeSheetBridge implements NativeSheetFlutterApi {
           detailSheets: detailSheets.isEmpty
               ? null
               : detailSheets.map((detail) => detail.toPlatform()).toList(),
+          whole: whole?.toPlatform(),
         ),
       );
     } on PlatformException catch (error, stackTrace) {
@@ -715,8 +768,142 @@ class NativeSheetBridge implements NativeSheetFlutterApi {
     }
   }
 
+  /// Closes page [detailId] of the open Settings sheet, back to the page
+  /// that opened it. Returns false when it was not open.
+  /// Asks [title] over whatever is on screen, the Settings sheet included,
+  /// without closing it. Returns the id of the action chosen, or null when
+  /// nothing could be shown.
+  Future<String?> presentAlert({
+    required String title,
+    String? message,
+    required List<NativeSheetAlertAction> actions,
+  }) async {
+    if (!_isIOS) return null;
+    try {
+      return await _api.presentAlert(
+        PlatformNativeSheetAlertRequest(
+          title: title,
+          message: message,
+          actions: [
+            for (final action in actions)
+              PlatformNativeSheetAlertAction(
+                id: action.id,
+                label: action.label,
+                style: action.style.platformName,
+              ),
+          ],
+        ),
+      );
+    } catch (error, stackTrace) {
+      _logNativeSheetBridgeError('presentAlert', error, stackTrace);
+      return null;
+    }
+  }
+
+  /// The web sign-ins open over Settings, by session id: what each asks
+  /// before it loads a page or checks one.
+  final Map<
+    String,
+    ({
+      bool Function(String url) allowsNavigation,
+      bool Function(String url) checksPage,
+    })
+  >
+  _webSignIns = {};
+  int _webSignInCount = 0;
+
+  /// Opens [url] in a web view over Settings for the user to sign in.
+  /// [allowsNavigation] decides each page its main frame may load; on a page
+  /// [checksPage] names, the web view runs [checkScript] (with [checkUrl] as
+  /// its `url`). Answers true once that says the user is signed in, false
+  /// when the web view is closed first, or cannot open.
+  Future<bool> presentWebSignIn({
+    required String title,
+    required String url,
+    required String checkScript,
+    required String checkUrl,
+    required String loadFailedMessage,
+    required bool Function(String url) allowsNavigation,
+    required bool Function(String url) checksPage,
+    String cancelLabel = 'Cancel',
+    String reloadLabel = 'Reload',
+  }) async {
+    if (!_isIOS) return false;
+    final sessionId = 'web-sign-in-${++_webSignInCount}';
+    _webSignIns[sessionId] = (
+      allowsNavigation: allowsNavigation,
+      checksPage: checksPage,
+    );
+    try {
+      return await _api.presentWebSignIn(
+        PlatformWebSignInRequest(
+          sessionId: sessionId,
+          title: title,
+          url: url,
+          checkScript: checkScript,
+          checkUrl: checkUrl,
+          cancelLabel: cancelLabel,
+          reloadLabel: reloadLabel,
+          loadFailedMessage: loadFailedMessage,
+        ),
+      );
+    } catch (error, stackTrace) {
+      _logNativeSheetBridgeError('presentWebSignIn', error, stackTrace);
+      return false;
+    } finally {
+      _webSignIns.remove(sessionId);
+    }
+  }
+
+  @override
+  Future<bool> webSignInAllowsNavigation(String sessionId, String url) async {
+    // A sign-in no longer waited for loads nothing more.
+    final session = _webSignIns[sessionId];
+    if (session == null) return false;
+    try {
+      return session.allowsNavigation(url);
+    } catch (error, stackTrace) {
+      // Refused: a navigation that cannot be judged is not loaded.
+      _logNativeSheetBridgeError(
+        'webSignInAllowsNavigation',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> webSignInChecksPage(String sessionId, String url) async {
+    final session = _webSignIns[sessionId];
+    if (session == null) return false;
+    try {
+      return session.checksPage(url);
+    } catch (error, stackTrace) {
+      _logNativeSheetBridgeError('webSignInChecksPage', error, stackTrace);
+      return false;
+    }
+  }
+
+  Future<bool> closeDetail(String detailId) async {
+    if (!_isIOS) return false;
+    try {
+      return await _api.closeDetail(detailId);
+    } catch (error, stackTrace) {
+      _logNativeSheetBridgeError(
+        'closeDetail',
+        error,
+        stackTrace,
+        data: {'detailId': detailId},
+      );
+      return false;
+    }
+  }
+
   @override
   void onDismissed() {
+    _settingsSheetOpen = false;
+    _settingsLeaving = false;
     _events.add(const NativeSheetDismissed());
   }
 
@@ -735,6 +922,12 @@ class NativeSheetBridge implements NativeSheetFlutterApi {
   void onDetailAppeared(PlatformNativeSheetDetailAppearedEvent event) {
     if (event.detailId.isEmpty) return;
     _events.add(NativeSheetDetailAppeared(detailId: event.detailId));
+  }
+
+  @override
+  void onDetailLeft(PlatformNativeSheetDetailAppearedEvent event) {
+    if (event.detailId.isEmpty) return;
+    _events.add(NativeSheetDetailLeft(detailId: event.detailId));
   }
 
   @override
@@ -1012,6 +1205,119 @@ class NativeProfileSheetUser {
   }
 }
 
+/// A search field a page keeps above its rows, as a long list's filter.
+///
+/// What the person types goes back as a change of [id] a moment after
+/// typing pauses, and as the empty text when they cancel. Described again,
+/// the page keeps the text being typed unless [value] says otherwise.
+class NativeSheetSearchConfig {
+  const NativeSheetSearchConfig({
+    required this.id,
+    this.placeholder,
+    this.value = '',
+  });
+
+  final String id;
+  final String? placeholder;
+
+  /// The query the page's rows answer.
+  final String value;
+
+  Map<String, Object?> toMap() => {
+    'id': id,
+    if (placeholder != null) 'placeholder': placeholder,
+    'value': value,
+  };
+}
+
+/// A day of a [NativeSheetMonthCalendarConfig] that holds something: a dot
+/// under it in each of [colors] (ARGB), up to three.
+@immutable
+class NativeSheetCalendarMark {
+  const NativeSheetCalendarMark({required this.day, required this.colors});
+
+  /// `yyyy-MM-dd`.
+  final String day;
+  final List<int> colors;
+
+  Map<String, Object?> toMap() => {'day': day, 'colors': colors};
+
+  @override
+  bool operator ==(Object other) =>
+      other is NativeSheetCalendarMark &&
+      other.day == day &&
+      listEquals(other.colors, colors);
+
+  @override
+  int get hashCode => Object.hash(day, Object.hashAll(colors));
+}
+
+/// A month calendar a page keeps above its rows, the rows being the chosen
+/// day's. On iOS it is the system's month grid (`UICalendarView`).
+///
+/// Paging to another month goes back as a change of [monthChangedId] with
+/// that month's first day, and choosing a day as a change of
+/// [daySelectedId] with the day, each as `yyyy-MM-dd`. Described again, the
+/// grid keeps the month the person paged to unless [month] changes.
+@immutable
+class NativeSheetMonthCalendarConfig {
+  const NativeSheetMonthCalendarConfig({
+    required this.id,
+    required this.month,
+    required this.selectedDay,
+    this.marks = const [],
+    this.locale,
+  });
+
+  final String id;
+
+  /// The language of the grid's month and weekday names, as a BCP 47 tag:
+  /// the app's own. Null for the device's.
+  final String? locale;
+
+  /// The first day of the month to show, `yyyy-MM-dd`.
+  final String month;
+
+  /// The chosen day, `yyyy-MM-dd`.
+  final String selectedDay;
+
+  /// The days that hold something.
+  final List<NativeSheetCalendarMark> marks;
+
+  String get monthChangedId => '$id:month';
+  String get daySelectedId => '$id:day';
+
+  Map<String, Object?> toMap() => {
+    'id': id,
+    'month': month,
+    'selectedDay': selectedDay,
+    'marks': [for (final mark in marks) mark.toMap()],
+    if (locale != null) 'locale': locale,
+  };
+}
+
+/// [day] as a month calendar names it: `yyyy-MM-dd`.
+String nativeSheetCalendarDay(DateTime day) =>
+    '${day.year.toString().padLeft(4, '0')}-'
+    '${day.month.toString().padLeft(2, '0')}-'
+    '${day.day.toString().padLeft(2, '0')}';
+
+/// The day a month calendar sent, or null for anything else.
+DateTime? parseNativeSheetCalendarDay(Object? value) {
+  if (value is! String) return null;
+  final match = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(value);
+  if (match == null) return null;
+  final year = int.parse(match.group(1)!);
+  final month = int.parse(match.group(2)!);
+  final day = int.parse(match.group(3)!);
+  final date = DateTime(year, month, day);
+  // 2026-02-30 is no day.
+  if (date.year != year || date.month != month || date.day != day) {
+    return null;
+  }
+  return date;
+}
+
 class NativeSheetDetailConfig {
   const NativeSheetDetailConfig({
     required this.id,
@@ -1028,6 +1334,13 @@ class NativeSheetDetailConfig {
     this.maxHeightFraction,
     this.trailingActionId,
     this.trailingActionSfSymbol,
+    this.trailingActionDetailId,
+    this.discardPrompt,
+    this.busy = false,
+    this.announcement,
+    this.edited = false,
+    this.search,
+    this.calendar,
   }) : assert(
          items.length == 0 || sections.length == 0,
          'A native detail must use either items or sections, not both.',
@@ -1049,6 +1362,36 @@ class NativeSheetDetailConfig {
   final String? trailingActionId;
   final String? trailingActionSfSymbol;
 
+  /// A bar button, drawn as [trailingActionSfSymbol], that pushes this page
+  /// inside Settings, as a row leading to it would: the "+" of a list that
+  /// adds to it. The page must be known, as a row's page must.
+  final String? trailingActionDetailId;
+
+  /// What the page asks before its unsaved changes are dropped -- by Back,
+  /// a swipe back, or the sheet swiped away. Null drops them without asking.
+  /// Changes are text not yet done, or, on a page with a confirm action,
+  /// anything changed since it appeared.
+  final NativeSheetDiscardPrompt? discardPrompt;
+
+  /// Working on what Done sent: Done waits, and the rows take no taps.
+  final bool busy;
+
+  /// Read out by assistive technology as the page is described with it: an
+  /// action's outcome, shown on the page as well.
+  final String? announcement;
+
+  /// Holds changes not yet saved, made on this page or on the pages it
+  /// leads to, as the page's owner counts them: leaving asks
+  /// [discardPrompt] whatever was changed here since it appeared.
+  final bool edited;
+
+  /// A search field above the rows, filtering them as the person types.
+  final NativeSheetSearchConfig? search;
+
+  /// A month calendar above the rows, the rows being the chosen day's. Only
+  /// the native iOS sheet draws it.
+  final NativeSheetMonthCalendarConfig? calendar;
+
   Map<String, Object?> toMap() {
     return {
       'id': id,
@@ -1063,8 +1406,70 @@ class NativeSheetDetailConfig {
       if (trailingActionId != null) 'trailingActionId': trailingActionId,
       if (trailingActionSfSymbol != null)
         'trailingActionSfSymbol': trailingActionSfSymbol,
+      if (trailingActionDetailId != null)
+        'trailingActionDetailId': trailingActionDetailId,
+      if (discardPrompt case final prompt?) ...{
+        'discardTitle': prompt.title,
+        'discardMessage': prompt.message,
+        'discardConfirmLabel': prompt.discardLabel,
+        'discardCancelLabel': prompt.keepLabel,
+      },
+      if (busy) 'busy': busy,
+      if (announcement != null) 'announcement': announcement,
+      if (edited) 'edited': edited,
+      if (search case final search?) 'search': search.toMap(),
+      if (calendar case final calendar?) 'calendar': calendar.toMap(),
     };
   }
+}
+
+/// How an answer to a question over Settings is drawn.
+enum NativeSheetAlertStyle {
+  /// An ordinary answer.
+  normal,
+
+  /// The answer that leaves things as they are.
+  cancel,
+
+  /// An answer that loses something.
+  destructive;
+
+  /// The name the native side reads.
+  String get platformName => switch (this) {
+    normal => 'default',
+    cancel => 'cancel',
+    destructive => 'destructive',
+  };
+}
+
+/// One answer to a question asked over Settings.
+@immutable
+class NativeSheetAlertAction {
+  const NativeSheetAlertAction(
+    this.id,
+    this.label, {
+    this.style = NativeSheetAlertStyle.normal,
+  });
+
+  final String id;
+  final String label;
+  final NativeSheetAlertStyle style;
+}
+
+/// The question a page asks before its unsaved changes are dropped.
+@immutable
+class NativeSheetDiscardPrompt {
+  const NativeSheetDiscardPrompt({
+    required this.title,
+    required this.message,
+    required this.discardLabel,
+    required this.keepLabel,
+  });
+
+  final String title;
+  final String message;
+  final String discardLabel;
+  final String keepLabel;
 }
 
 class NativeSheetLinkConfig {
@@ -1114,6 +1519,12 @@ class NativeSheetItemConfig {
     this.accent = false,
     this.usesProfileAvatar = false,
     this.filterAllLabel,
+    this.confirmMessage,
+    this.disabled = false,
+    this.keyboard,
+    this.passwordRole,
+    this.rowActions = const [],
+    this.symbolColor,
   });
 
   final String id;
@@ -1141,7 +1552,9 @@ class NativeSheetItemConfig {
   final List<NativeSheetLinkConfig> links;
   final bool? pending;
 
-  /// Inclusive bounds for [NativeSheetItemKind.slider] (e.g. STT silence ms, TTS rate).
+  /// Inclusive bounds for [NativeSheetItemKind.slider] (e.g. STT silence ms, TTS rate),
+  /// or the first and last days of a [NativeSheetItemKind.date] row, as
+  /// milliseconds since the epoch.
   final double? min;
   final double? max;
 
@@ -1166,9 +1579,41 @@ class NativeSheetItemConfig {
   /// Enables the picker filter pill; this is its unfiltered label.
   final String? filterAllLabel;
 
+  /// Asked before the row acts, with the row's title as the answer that
+  /// goes ahead: Delete, Sign Out. Null acts at once.
+  final String? confirmMessage;
+
+  /// Shown dimmed, taking no taps: while another row's action runs, say.
+  final bool disabled;
+
+  /// The keyboard a text row brings up; null keeps the default.
+  final NativeSheetKeyboard? keyboard;
+
+  /// What a secure row holds when it is the account's own password. Null,
+  /// for any other secret, keeps the system from offering to save it as a
+  /// password.
+  final NativeSheetPasswordRole? passwordRole;
+
+  /// What else the row can do, besides what a tap does. On iOS a long press
+  /// lists them, and a swipe offers them where the page is not reordering;
+  /// the Flutter pages list them in the row's menu. Each is sent as its own
+  /// control id.
+  final List<NativeSheetRowAction> rowActions;
+
+  /// The colour the row's symbol is drawn in, as ARGB, in place of the
+  /// page's tint: a calendar's own colour, say.
+  final int? symbolColor;
+
   Map<String, Object?> toMap() {
     return {
+      if (symbolColor != null) 'symbolColor': symbolColor,
       if (filterAllLabel != null) 'filterAllLabel': filterAllLabel,
+      if (confirmMessage != null) 'confirmMessage': confirmMessage,
+      if (disabled) 'disabled': disabled,
+      if (keyboard != null) 'keyboard': keyboard!.name,
+      if (passwordRole != null) 'passwordRole': passwordRole!.name,
+      if (rowActions.isNotEmpty)
+        'rowActions': [for (final action in rowActions) action.toMap()],
       'id': id,
       'title': title,
       'subtitle': subtitle,
@@ -1205,6 +1650,68 @@ class NativeSheetItemConfig {
   }
 }
 
+/// The keyboard a text row brings up.
+enum NativeSheetKeyboard {
+  url,
+  email,
+
+  /// Digits only: a whole number of zero or more.
+  number,
+
+  /// Digits with a sign and a decimal point.
+  decimal,
+}
+
+/// Which of the account's passwords a secure row holds: the one in use, or
+/// one being set.
+enum NativeSheetPasswordRole { current, newPassword }
+
+/// One more thing a row can do, sent as its own control id.
+@immutable
+class NativeSheetRowAction {
+  const NativeSheetRowAction({
+    required this.id,
+    required this.label,
+    this.sfSymbol,
+    this.destructive = false,
+    this.confirmMessage,
+    this.detailId,
+  });
+
+  final String id;
+  final String label;
+  final String? sfSymbol;
+  final bool destructive;
+
+  /// Asked before it acts, with [label] as the answer that goes ahead.
+  final String? confirmMessage;
+
+  /// The page it opens, as a row leading to that page does, instead of
+  /// sending [id].
+  final String? detailId;
+
+  Map<String, Object?> toMap() => {
+    'id': id,
+    'label': label,
+    if (sfSymbol != null) 'sfSymbol': sfSymbol,
+    'destructive': destructive,
+    if (confirmMessage != null) 'confirmMessage': confirmMessage,
+    if (detailId != null) 'detailId': detailId,
+  };
+
+  PlatformNativeSheetRowAction toPlatform() => PlatformNativeSheetRowAction(
+    id: id,
+    label: label,
+    sfSymbol: sfSymbol,
+    destructive: destructive,
+    confirmMessage: confirmMessage,
+    detailId: detailId,
+  );
+}
+
+/// What a [NativeSheetItemKind.diffLine] row's line is, as its value.
+enum NativeSheetDiffLine { added, removed, context }
+
 enum NativeSheetItemKind {
   navigation,
   textField,
@@ -1227,7 +1734,44 @@ enum NativeSheetItemKind {
   /// Preview tiles for a few looks (System, Light, Dark), each painted from
   /// its option's swatches, with a label and a selection mark under it.
   appearanceTiles,
+
+  /// A day, as a compact date control at the row's trailing edge: the
+  /// system's date pill on iOS, and on Android the day, which opens the
+  /// date picker. [NativeSheetItemConfig.value] is the local date and time
+  /// as ISO 8601 without a zone (see [nativeSheetDateValue]); a change sends
+  /// one back the same way. [NativeSheetItemConfig.min] and
+  /// [NativeSheetItemConfig.max], when given, are the first and last days
+  /// allowed, as milliseconds since the epoch.
+  date,
+
+  /// A time of day, drawn and sent as [date] is; only its hour and minute
+  /// count.
+  time,
+
+  /// One line of a comparison between two texts, read only: [title] is the
+  /// line, and [NativeSheetItemConfig.value] says what happened to it,
+  /// `added`, `removed` or `context` (unchanged); see [NativeSheetDiffLine].
+  /// [NativeSheetItemConfig.subtitle] is what assistive technology reads for
+  /// it ("Removed: …"), so the change is said, not only shown.
+  diffLine,
+
+  /// Source code to edit as is, in a monospaced font, filling the page it
+  /// is the only row of: no autocorrection, smart quotes or dashes, and on
+  /// iOS a Tab key above the keyboard. Long lines wrap. [title] names it for
+  /// assistive technology; [value] is the code, and what is typed goes back
+  /// as a text row's does. A [disabled] row reads without editing.
+  code,
 }
+
+/// [value] as a [NativeSheetItemKind.date] or [NativeSheetItemKind.time]
+/// row holds it: local wall-clock time, ISO 8601 without a zone.
+String nativeSheetDateValue(DateTime value) => DateTime(
+  value.year,
+  value.month,
+  value.day,
+  value.hour,
+  value.minute,
+).toIso8601String();
 
 class NativeSheetOptionConfig {
   const NativeSheetOptionConfig({
@@ -1339,6 +1883,14 @@ final class NativeSheetControlChanged extends NativeSheetEvent {
 /// A native detail screen became visible (push). Used to lazy-load heavy payloads.
 final class NativeSheetDetailAppeared extends NativeSheetEvent {
   const NativeSheetDetailAppeared({required this.detailId});
+
+  final String detailId;
+}
+
+/// A page is gone: popped, or its sheet closed. A page covered by one it
+/// opened has not left.
+final class NativeSheetDetailLeft extends NativeSheetEvent {
+  const NativeSheetDetailLeft({required this.detailId});
 
   final String detailId;
 }
@@ -1499,6 +2051,38 @@ extension on NativeSheetDetailConfig {
       maxHeightFraction: maxHeightFraction,
       trailingActionId: trailingActionId,
       trailingActionSfSymbol: trailingActionSfSymbol,
+      trailingActionDetailId: trailingActionDetailId,
+      discardTitle: discardPrompt?.title,
+      discardMessage: discardPrompt?.message,
+      discardConfirmLabel: discardPrompt?.discardLabel,
+      discardCancelLabel: discardPrompt?.keepLabel,
+      busy: busy ? true : null,
+      announcement: announcement,
+      edited: edited ? true : null,
+      search: switch (search) {
+        null => null,
+        final search => PlatformNativeSheetSearch(
+          id: search.id,
+          placeholder: search.placeholder,
+          value: search.value,
+        ),
+      },
+      calendar: switch (calendar) {
+        null => null,
+        final calendar => PlatformNativeSheetMonthCalendar(
+          id: calendar.id,
+          locale: calendar.locale,
+          month: calendar.month,
+          selectedDay: calendar.selectedDay,
+          marks: [
+            for (final mark in calendar.marks)
+              PlatformNativeSheetCalendarMark(
+                day: mark.day,
+                colors: mark.colors,
+              ),
+          ],
+        ),
+      },
     );
   }
 }
@@ -1549,6 +2133,14 @@ extension on NativeSheetItemConfig {
       accent: accent,
       usesProfileAvatar: usesProfileAvatar,
       filterAllLabel: filterAllLabel,
+      confirmMessage: confirmMessage,
+      disabled: disabled ? true : null,
+      keyboard: keyboard?.name,
+      passwordRole: passwordRole?.name,
+      rowActions: rowActions.isEmpty
+          ? null
+          : [for (final action in rowActions) action.toPlatform()],
+      symbolColor: symbolColor,
     );
   }
 }
@@ -1576,6 +2168,10 @@ extension on NativeSheetItemKind {
         PlatformNativeSheetItemKind.statusUpdate,
       NativeSheetItemKind.appearanceTiles =>
         PlatformNativeSheetItemKind.appearanceTiles,
+      NativeSheetItemKind.date => PlatformNativeSheetItemKind.date,
+      NativeSheetItemKind.time => PlatformNativeSheetItemKind.time,
+      NativeSheetItemKind.diffLine => PlatformNativeSheetItemKind.diffLine,
+      NativeSheetItemKind.code => PlatformNativeSheetItemKind.code,
     };
   }
 }

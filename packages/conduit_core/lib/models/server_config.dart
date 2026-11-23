@@ -1,6 +1,7 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 import 'backend_config.dart';
+import 'browser_sign_in_config.dart';
 
 part 'server_config.freezed.dart';
 part 'server_config.g.dart';
@@ -8,7 +9,11 @@ part 'server_config.g.dart';
 /// Container for passing server and backend config during authentication flow.
 @immutable
 class AuthFlowConfig {
-  const AuthFlowConfig({required this.serverConfig, this.backendConfig});
+  const AuthFlowConfig({
+    required this.serverConfig,
+    this.backendConfig,
+    this.browserSignIn,
+  });
 
   /// The server configuration (URL, headers, etc.).
   final ServerConfig serverConfig;
@@ -16,6 +21,10 @@ class AuthFlowConfig {
   /// The backend configuration (auth methods, features, etc.).
   /// May be null if not yet fetched.
   final BackendConfig? backendConfig;
+
+  /// Browser sign-in settings chosen while adding the server, saved on it by
+  /// its first sign-in. Null to keep whatever the server has.
+  final BrowserSignInConfig? browserSignIn;
 }
 
 @freezed
@@ -66,4 +75,13 @@ extension ServerConfigTls on ServerConfig {
   /// Whether the configuration requires a custom `dart:io` TLS client.
   bool get needsCustomTlsClient =>
       allowSelfSignedCertificates || hasMutualTlsCredentials;
+
+  /// Whether [other] reaches its server the same way: everything but the
+  /// name and the bookkeeping of which account is active and when it last
+  /// connected. A client built for one serves the other.
+  bool sameConnectionAs(ServerConfig other) =>
+      _connectionOnly(this) == _connectionOnly(other);
 }
+
+ServerConfig _connectionOnly(ServerConfig config) =>
+    config.copyWith(name: '', isActive: false, lastConnected: null);

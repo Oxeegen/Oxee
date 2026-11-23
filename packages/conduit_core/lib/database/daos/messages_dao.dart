@@ -2,6 +2,12 @@ import 'dart:convert';
 
 import 'package:drift/drift.dart';
 
+import '../../features/tether/tether_relay_failure.dart'
+    show payloadWithTetherRecord, withStoredTetherRecord;
+import '../../models/chat_comparison.dart' show kCompletionHeldMetadataKey;
+import '../../models/chat_message.dart'
+    show ChatMessageError, kCompletionViaTetherKey;
+
 import '../app_database.dart';
 import '../mappers/chat_blob_mapper.dart';
 import '../models/chat_transcript_window.dart';
@@ -43,6 +49,17 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
 
   Future<MessageRow?> getMessage(String chatId, String messageId) {
     return _messageById(chatId, messageId);
+  }
+
+  /// The stored answers under question [questionId] of [chatId].
+  Future<List<MessageRow>> getAnswersTo(String chatId, String questionId) {
+    return (select(messages)..where(
+          (t) =>
+              t.chatId.equals(chatId) &
+              t.parentId.equals(questionId) &
+              t.role.equals('assistant'),
+        ))
+        .get();
   }
 
   /// Loads one page from the active branch, newest-first at the SQL boundary
@@ -154,6 +171,23 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
     );
   }
 
+  /// Ends an assistant placeholder whose request a Stop kept from being sent:
+  /// not streaming, done, its content as it is.
+  Future<bool> markAssistantStopped({
+    required String chatId,
+    required String messageId,
+  }) {
+    return _updateAssistantPayload(
+      chatId: chatId,
+      messageId: messageId,
+      mutate: (payload) {
+        payload
+          ..['isStreaming'] = false
+          ..['done'] = true;
+      },
+    );
+  }
+
   /// Durability barrier written immediately before the completion POST.
   ///
   /// The marker means submission may have started; it deliberately does not
@@ -178,6 +212,26 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
             ...metadata,
             'completionSubmitted': true,
           };
+      },
+    );
+  }
+
+  /// Marks a placeholder whose question the server held instead of answering
+  /// ([kCompletionHeldMetadataKey]), as part of the hold's record
+  /// ([ChatsDao.recordHeldTurn]).
+  Future<bool> markAssistantCompletionHeld({
+    required String chatId,
+    required String messageId,
+  }) {
+    return _updateAssistantPayload(
+      chatId: chatId,
+      messageId: messageId,
+      mutate: (payload) {
+        payload['metadata'] = <String, dynamic>{
+          ..._asJsonMap(payload['metadata']),
+          'completionSubmitted': true,
+          kCompletionHeldMetadataKey: true,
+        };
       },
     );
   }
@@ -218,7 +272,7 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
   Future<bool> markAssistantCompletionRefused({
     required String chatId,
     required String messageId,
-    required String error,
+    required ChatMessageError error,
   }) {
     return _updateAssistantPayload(
       chatId: chatId,
@@ -228,11 +282,29 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
         payload
           ..['isStreaming'] = false
           ..['done'] = true
-          ..['error'] = <String, dynamic>{'content': error}
+          ..['error'] = error.toJson()
           ..['metadata'] = <String, dynamic>{
             ...metadata,
             'completionRefused': true,
           };
+      },
+    );
+  }
+
+  /// Records on an answer's row that its request went to a model one of the
+  /// user's devices offers ([kCompletionViaTetherKey]), for an answer whose
+  /// row a pull wrote after the request, and reads its stored error with it.
+  Future<bool> recordAnswerViaTether({
+    required String chatId,
+    required String messageId,
+  }) {
+    return _updateAssistantPayload(
+      chatId: chatId,
+      messageId: messageId,
+      mutate: (payload) {
+        final recorded = payloadWithTetherRecord(payload);
+        payload['metadata'] = recorded['metadata'];
+        if (recorded['error'] != null) payload['error'] = recorded['error'];
       },
     );
   }
@@ -274,14 +346,17 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
   /// happens through the legacy API path, so no dirty rows may exist
   /// (RFC §7.4 line 2 — `upsertServerChat` fast-forward-replaces on that
   /// assumption). The outbox/dirty discipline arrives in Phase 2.
-  Future<bool> upsertLocalEcho(MessageRowData row) {
+  ///
+  /// With [keepDirty], an existing row keeps its `dirty` flag: an edit still
+  /// to be pushed keeps it from a pull.
+  Future<bool> upsertLocalEcho(MessageRowData row, {bool keepDirty = false}) {
     return transaction(() async {
       final chatExists = await (select(
         chats,
       )..where((t) => t.id.equals(row.chatId))).getSingleOrNull();
       if (chatExists == null) return false;
 
-      await _upsertLocalEchoRow(row);
+      await _upsertLocalEchoRow(row, keepDirty: keepDirty);
       return true;
     });
   }
@@ -318,6 +393,7 @@ class MessagesDao extends DatabaseAccessor<AppDatabase>
       await (update(chats)..where((t) => t.id.equals(chatId))).write(
         ChatsCompanion(currentMessageId: Value(assistant.id)),
       );
+      attachedDatabase.chatsDao.noteLocalTurn(chatId);
       return true;
     });
   }
@@ -556,7 +632,10 @@ LIMIT ?
     return tip;
   }
 
-  Future<void> _upsertLocalEchoRow(MessageRowData row) async {
+  Future<void> _upsertLocalEchoRow(
+    MessageRowData row, {
+    bool keepDirty = false,
+  }) async {
     final existing = await _messageById(row.chatId, row.id);
 
     final int orderIndex;
@@ -582,9 +661,12 @@ LIMIT ?
         createdAt: row.createdAt,
         orderIndex: orderIndex,
         payload: jsonEncode(
-          withStoredMessageMeta(row.payload, existing?.payload),
+          withStoredTetherRecord(
+            withStoredMessageMeta(row.payload, existing?.payload),
+            existing?.payload,
+          ),
         ),
-        dirty: const Value(false),
+        dirty: keepDirty ? const Value.absent() : const Value(false),
       ),
     );
   }

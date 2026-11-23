@@ -1,0 +1,32 @@
+{
+  "models": [
+    {
+      "id": "gpt-4o",
+      "name": "GPT-4o",
+      "pinned": false,
+      "capabilities": []
+    },
+    {
+      "id": "direct:home:bGxhbWEz",
+      "name": "llama3",
+      "pinned": false,
+      "capabilities": [],
+      "connection": "Home Ollama",
+      "logo": "meta"
+    },
+    {
+      "id": "qwen3:8b",
+      "name": "qwen3:8b",
+      "pinned": false,
+      "capabilities": [],
+      "device": "Studio Mac · Garage lab"
+    }
+  ],
+  "selectedId": "gpt-4o",
+  "featuredIds": [],
+  "moreSections": [],
+  "canPin": false,
+  "agents": [],
+  "agentNames": {},
+  "revision": 0
+}

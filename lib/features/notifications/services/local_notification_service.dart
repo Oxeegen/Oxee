@@ -2,23 +2,57 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:timezone/timezone.dart' as tz;
 
 import '../../../core/utils/current_localizations.dart';
+import '../../../l10n/app_localizations.dart';
 
 import 'package:conduit_core/utils/debug_logger.dart';
 
+import 'package:conduit_core/features/calendar/calendar_reminder_scheduler.dart';
+import 'package:conduit_core/features/calendar/calendar_reminders.dart';
 import 'package:conduit_core/features/notifications/models/app_notification.dart';
+import 'package:conduit_core/features/notifications/models/notification_scope.dart';
 
 part 'local_notification_service.g.dart';
 
 /// A tap on a system notification, decoded back into the target it points at.
+///
+/// The payload is JSON. Version 2, which this app writes:
+/// `{"v": 2, "kind": "chat_completion", "sourceId": "…", "scope": "owui:…",
+/// "group": "chat:…"}`, with `kind` a [NotificationKindWireName.wireName] and
+/// `group` optional. Version 1, written before notifications knew their
+/// account, is `{"kind": "chatCompletion", "sourceId": "…"}`; it has no
+/// [scope] and points into the active account.
 class NotificationTap {
-  const NotificationTap({required this.kind, required this.sourceId});
+  const NotificationTap({
+    required this.kind,
+    required this.sourceId,
+    this.scope,
+    this.group,
+  });
+
+  NotificationTap.fromNotification(AppNotification notification)
+    : this(
+        kind: notification.kind,
+        sourceId: notification.sourceId,
+        scope: notification.scope,
+        group: notification.group,
+      );
+
+  static const int version = 2;
 
   final NotificationKind kind;
   final String sourceId;
+
+  /// The account or connection it belongs to; null for a version 1 tap, which
+  /// means the active account.
+  final String? scope;
+
+  final String? group;
 
   static NotificationTap? tryDecode(String? payload) {
     if (payload == null || payload.isEmpty) return null;
@@ -30,19 +64,34 @@ class NotificationTap {
       if (kindName is! String || sourceId is! String || sourceId.isEmpty) {
         return null;
       }
-      final kind = NotificationKind.values
-          .where((k) => k.name == kindName)
-          .firstOrNull;
+      final kind = NotificationKindWireName.parse(kindName);
       if (kind == null) return null;
-      return NotificationTap(kind: kind, sourceId: sourceId);
+      final scope = map['scope'];
+      final group = map['group'];
+      // A version 2 tap names its account; without one it can't be opened
+      // in the right place.
+      if (map['v'] is int && (map['v'] as int) >= 2) {
+        if (scope is! String || NotificationScope.tryParse(scope) == null) {
+          return null;
+        }
+      }
+      return NotificationTap(
+        kind: kind,
+        sourceId: sourceId,
+        scope: scope is String ? scope : null,
+        group: group is String && group.isNotEmpty ? group : null,
+      );
     } catch (_) {
       return null;
     }
   }
 
   static String encode(AppNotification notification) => jsonEncode({
-    'kind': notification.kind.name,
+    'v': version,
+    'kind': notification.kind.wireName,
     'sourceId': notification.sourceId,
+    'scope': notification.scope,
+    'group': ?notification.group,
   });
 }
 
@@ -51,22 +100,35 @@ class NotificationTap {
 /// `VoiceCallNotificationService` for now (that refactor is a follow-up); this
 /// owns its own `conduit_messages` channel and never requests permission at
 /// init — permission is requested only when the user opts in.
-class LocalNotificationService {
-  LocalNotificationService();
+class LocalNotificationService implements CalendarReminderPort {
+  LocalNotificationService({DateTime Function() now = DateTime.now})
+    : _idCounter = now().millisecondsSinceEpoch & 0x7fffffff;
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
 
   static const String _channelId = 'conduit_messages';
 
+  /// Calendar reminders get their own channel, so they can be silenced or
+  /// given another sound in the system settings without touching messages.
+  static const String _calendarChannelId = 'conduit_calendar';
+
   bool _initialized = false;
 
   /// Monotonic OS-notification id. Using a counter (rather than a hash of the
   /// dedup key) avoids 31-bit hash collisions silently replacing a notification
   /// in the drawer. De-duplication is handled upstream by the router.
-  int _idCounter = 0;
+  ///
+  /// It starts at the launch time in milliseconds (31 bits, so it wraps about
+  /// every 24.8 days), not at 0, so ids stay unique across launches: the iOS
+  /// push extension removes the app's notification by the id the shared
+  /// ledger keeps for 3 days, and on iOS a reused id replaces the older
+  /// notification under it.
+  int _idCounter;
 
-  int _nextNotificationId() => _idCounter = (_idCounter + 1) & 0x7fffffff;
+  /// The id the next notification posts with, handed out ahead of [show] so
+  /// it can be claimed under (see `NotificationClaim`).
+  int nextNotificationId() => _idCounter = (_idCounter + 1) & 0x7fffffff;
 
   final StreamController<NotificationTap> _taps =
       StreamController<NotificationTap>.broadcast();
@@ -127,17 +189,26 @@ class LocalNotificationService {
 
   Future<void> _createAndroidChannel() async {
     final l10n = currentAppLocalizations();
-    final channel = AndroidNotificationChannel(
-      _channelId,
-      l10n.notificationChannelMessagesName,
-      description: l10n.notificationChannelMessagesDescription,
-      importance: Importance.high,
-    );
-    await _plugin
+    final android = _plugin
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.createNotificationChannel(channel);
+        >();
+    await android?.createNotificationChannel(
+      AndroidNotificationChannel(
+        _channelId,
+        l10n.notificationChannelMessagesName,
+        description: l10n.notificationChannelMessagesDescription,
+        importance: Importance.high,
+      ),
+    );
+    await android?.createNotificationChannel(
+      AndroidNotificationChannel(
+        _calendarChannelId,
+        l10n.notificationChannelCalendarName,
+        description: l10n.notificationChannelCalendarDescription,
+        importance: Importance.high,
+      ),
+    );
   }
 
   void _onResponse(NotificationResponse response) {
@@ -204,9 +275,14 @@ class LocalNotificationService {
   /// [playSound] honors the user's notification-sound preference. Note Android
   /// 8+ governs sound at the channel level, so the per-notification flag is
   /// best-effort there; it is authoritative on iOS.
+  ///
+  /// [id] is one [nextNotificationId] handed out; a fresh one by default. On
+  /// Android the notification is tagged with its dedup key, which push posts
+  /// under too.
   Future<void> show(
     AppNotification notification, {
     required bool playSound,
+    int? id,
   }) async {
     if (!Platform.isAndroid && !Platform.isIOS) return;
     if (!_initialized) await initialize();
@@ -215,6 +291,7 @@ class LocalNotificationService {
     final title = notification.title.isNotEmpty
         ? notification.title
         : l10n.notificationDefaultTitle;
+    final body = notificationDisplayBody(notification, l10n);
 
     final androidDetails = AndroidNotificationDetails(
       _channelId,
@@ -224,18 +301,20 @@ class LocalNotificationService {
       priority: Priority.high,
       icon: '@mipmap/ic_launcher',
       playSound: playSound,
+      tag: notification.dedupKey,
     );
     final iosDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentBadge: true,
       presentSound: playSound,
+      threadIdentifier: notificationThreadIdentifier(notification),
     );
 
     try {
       await _plugin.show(
-        id: _nextNotificationId(),
+        id: id ?? nextNotificationId(),
         title: title,
-        body: notification.body,
+        body: body,
         notificationDetails: NotificationDetails(
           android: androidDetails,
           iOS: iosDetails,
@@ -252,11 +331,257 @@ class LocalNotificationService {
     }
   }
 
-  /// Clears all posted message notifications — used on logout / server switch
-  /// to avoid cross-server deep links.
+  /// Whether calendar reminders can fire on the minute, as last checked by
+  /// [canScheduleExactReminders]: on Android only with the "Alarms &
+  /// reminders" permission, always elsewhere. Null until checked.
+  bool? get exactRemindersAllowed => _exactRemindersAllowed;
+  bool? _exactRemindersAllowed;
+
+  /// Checks, and remembers, whether calendar reminders can fire on the
+  /// minute ([exactRemindersAllowed]).
+  @override
+  Future<bool> canScheduleExactReminders() async {
+    if (!Platform.isAndroid) return _exactRemindersAllowed = true;
+    if (!_initialized) await initialize();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    try {
+      return _exactRemindersAllowed =
+          await android?.canScheduleExactNotifications() ?? false;
+    } catch (_) {
+      return _exactRemindersAllowed = false;
+    }
+  }
+
+  /// Opens Android's "Alarms & reminders" screen for this app, where the user
+  /// can let calendar reminders fire on the minute. Returns whether it is
+  /// allowed afterwards.
+  Future<bool> requestExactReminders() async {
+    if (!Platform.isAndroid) return true;
+    if (!_initialized) await initialize();
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    try {
+      await android?.requestExactAlarmsPermission();
+    } catch (error) {
+      DebugLogger.warning(
+        'request-exact-alarms-failed',
+        scope: 'notifications/calendar',
+        data: {'error': error.toString()},
+      );
+    }
+    return canScheduleExactReminders();
+  }
+
+  /// Schedules [reminder] for [scope] to be posted at its
+  /// [CalendarReminder.fireAt], also while the app is not running. Returns
+  /// false when it could not be scheduled.
+  ///
+  /// [exact] is whether it may fire on the minute
+  /// ([canScheduleExactReminders]); otherwise Android posts it at roughly that
+  /// time. The app never prompts for the permission on its own.
+  @override
+  Future<bool> scheduleCalendarReminder(
+    CalendarReminder reminder, {
+    required String scope,
+    required String title,
+    required String body,
+    required bool playSound,
+    required bool exact,
+  }) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return false;
+    if (!_initialized) await initialize();
+
+    try {
+      await _plugin.zonedSchedule(
+        id: nextNotificationId(),
+        title: title,
+        body: body,
+        scheduledDate: tz.TZDateTime.from(reminder.fireAt, tz.UTC),
+        notificationDetails: _calendarDetails(
+          scope,
+          reminder,
+          playSound: playSound,
+        ),
+        androidScheduleMode: exact
+            ? AndroidScheduleMode.exactAllowWhileIdle
+            : AndroidScheduleMode.inexactAllowWhileIdle,
+        payload: ScheduledCalendarReminder.encode(
+          key: reminder.key,
+          scope: scope,
+          fireAt: reminder.fireAt,
+          fingerprint: calendarReminderFingerprint(
+            reminder,
+            title: title,
+            body: body,
+            exact: exact,
+            playSound: playSound,
+          ),
+        ),
+      );
+      return true;
+    } catch (e, st) {
+      DebugLogger.error(
+        'failed to schedule calendar reminder',
+        error: e,
+        stackTrace: st,
+        scope: 'notifications/calendar',
+      );
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> postCalendarReminder(
+    CalendarReminder reminder, {
+    required String scope,
+    required String title,
+    required String body,
+    required bool playSound,
+  }) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return false;
+    if (!_initialized) await initialize();
+    try {
+      await _plugin.show(
+        id: nextNotificationId(),
+        title: title,
+        body: body,
+        notificationDetails: _calendarDetails(
+          scope,
+          reminder,
+          playSound: playSound,
+        ),
+        payload: ScheduledCalendarReminder.encode(
+          key: reminder.key,
+          scope: scope,
+          fireAt: reminder.fireAt,
+          fingerprint: '',
+        ),
+      );
+      return true;
+    } catch (e, st) {
+      DebugLogger.error(
+        'failed to post calendar reminder',
+        error: e,
+        stackTrace: st,
+        scope: 'notifications/calendar',
+      );
+      return false;
+    }
+  }
+
+  NotificationDetails _calendarDetails(
+    String scope,
+    CalendarReminder reminder, {
+    required bool playSound,
+  }) {
+    final l10n = currentAppLocalizations();
+    return NotificationDetails(
+      android: AndroidNotificationDetails(
+        _calendarChannelId,
+        l10n.notificationChannelCalendarName,
+        channelDescription: l10n.notificationChannelCalendarDescription,
+        importance: Importance.high,
+        priority: Priority.high,
+        category: AndroidNotificationCategory.reminder,
+        icon: '@mipmap/ic_launcher',
+        playSound: playSound,
+        // Android lists posted notifications without their payload; the tag
+        // is what [cancelScope] finds them by.
+        tag: '$scope|calendar|${reminder.key}',
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: playSound,
+        threadIdentifier: '$scope|calendar',
+      ),
+    );
+  }
+
+  /// The calendar reminders scheduled and not yet posted, for every account.
+  @override
+  Future<List<ScheduledCalendarReminder>> scheduledCalendarReminders() async {
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      return const <ScheduledCalendarReminder>[];
+    }
+    if (!_initialized) await initialize();
+    final pending = await _plugin.pendingNotificationRequests();
+    return [
+      for (final request in pending)
+        ?ScheduledCalendarReminder.tryDecode(request.id, request.payload),
+    ];
+  }
+
+  /// Unschedules the reminder scheduled under [id].
+  @override
+  Future<void> cancelScheduled(int id) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (!_initialized) await initialize();
+    await _plugin.cancel(id: id);
+  }
+
+  /// Clears all posted message notifications — used when signing out of
+  /// everything, so nothing deep-links into data that is gone.
   Future<void> cancelAll() async {
     if (!Platform.isAndroid && !Platform.isIOS) return;
+    // Behind a [show] still waiting for the plugin, which would otherwise
+    // post after this cleared everything.
+    if (!_initialized) await initialize();
     await _plugin.cancelAll();
+  }
+
+  /// Clears the posted notifications of one account or connection ([scope],
+  /// see [NotificationScope]), leaving every other one in place. Notifications
+  /// posted before they carried a scope go too, where they can still be told
+  /// apart (iOS): which account they belong to is no longer known.
+  @override
+  Future<void> cancelScope(String scope) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (!_initialized) await initialize();
+    try {
+      final active = await _plugin.getActiveNotifications();
+      for (final notification in notificationsInScope(active, scope)) {
+        await _plugin.cancel(id: notification.id!, tag: notification.tag);
+      }
+    } catch (e, st) {
+      DebugLogger.error(
+        'failed to clear scoped notifications',
+        error: e,
+        stackTrace: st,
+        scope: 'notifications/system',
+      );
+    }
+  }
+
+  /// Which of the posted [active] notifications [cancelScope] clears for
+  /// [scope]: this app's message notifications of that scope, and those
+  /// without one. Others (a voice call's, say) are left alone.
+  @visibleForTesting
+  static List<ActiveNotification> notificationsInScope(
+    List<ActiveNotification> active,
+    String scope,
+  ) => [
+    for (final notification in active)
+      if (notification.id != null && _isInScope(notification, scope))
+        notification,
+  ];
+
+  static bool _isInScope(ActiveNotification notification, String scope) {
+    final tap = NotificationTap.tryDecode(notification.payload);
+    if (tap != null) return tap.scope == null || tap.scope == scope;
+    final reminder = ScheduledCalendarReminder.tryDecode(
+      notification.id ?? 0,
+      notification.payload,
+    );
+    if (reminder != null) return reminder.scope == scope;
+    // Android lists posted notifications without their payload. Their tag,
+    // the dedup key [show] posts with, starts with the scope.
+    return notification.tag?.startsWith('$scope|') ?? false;
   }
 
   void dispose() {
@@ -269,4 +594,28 @@ LocalNotificationService localNotificationService(Ref ref) {
   final service = LocalNotificationService();
   ref.onDispose(service.dispose);
   return service;
+}
+
+/// The text a notification is shown with: its body, or for a failed reply
+/// without one, that the reply failed. The system notification and the
+/// in-app banner both say it.
+String notificationDisplayBody(
+  AppNotification notification,
+  AppLocalizations l10n,
+) =>
+    notification.body.isEmpty &&
+        notification.kind == NotificationKind.replyFailed
+    ? l10n.notificationReplyFailedBody
+    : notification.body;
+
+/// The iOS thread a notification is listed under: its group, scoped to the
+/// account that posted it, the same way the push extension builds it, so a
+/// local notification and a push for the same chat share one thread and two
+/// accounts never share one.
+@visibleForTesting
+String notificationThreadIdentifier(AppNotification notification) {
+  final group = notification.group;
+  return group == null || group.isEmpty
+      ? notification.scope
+      : '${notification.scope}|$group';
 }

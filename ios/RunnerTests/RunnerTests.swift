@@ -4,13 +4,318 @@ import Flutter
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
+import UserNotifications
+import WebKit
 import XCTest
 @testable import Runner
 
 class RunnerTests: XCTestCase {
+  /// Runs the main loop for [seconds], however often it returns early.
+  private func spin(_ seconds: TimeInterval) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline { RunLoop.main.run(until: deadline) }
+  }
+
+  private func searchPage(_ sent: @escaping (Any?) -> Void) throws -> UITableViewController {
+    try XCTUnwrap(
+      makeNativeDetailPageForTesting(
+        [
+          "id": "test-tasks", "title": "Tasks", "items": [],
+          "search": ["id": "test-search", "placeholder": "Search", "value": ""],
+        ],
+        onControlChanged: { _, value in sent(value) }))
+  }
+
+  @MainActor
+  func testNativeSheetSearchEchoesAnsweredOutOfOrderKeepTheField() throws {
+    var sent: [Any?] = []
+    let page = try searchPage { sent.append($0) }
+    let search = try XCTUnwrap(page.navigationItem.searchController)
+    let delegate = try XCTUnwrap(search.searchBar.delegate)
+    // "a" then "ab" are sent (Search tapped after each).
+    search.searchBar.text = "a"
+    delegate.searchBarSearchButtonClicked?(search.searchBar)
+    search.searchBar.text = "ab"
+    delegate.searchBarSearchButtonClicked?(search.searchBar)
+    XCTAssertEqual(sent.compactMap { $0 as? String }, ["a", "ab"])
+
+    // The page answers "ab" first, then "a", late.
+    func answering(_ value: String) -> [String: Any] {
+      [
+        "id": "test-tasks", "title": "Tasks", "items": [],
+        "search": ["id": "test-search", "placeholder": "Search", "value": value],
+      ]
+    }
+    applyNativeDetailPageForTesting(page, answering("ab"))
+    applyNativeDetailPageForTesting(page, answering("a"))
+
+    XCTAssertEqual(search.searchBar.text, "ab")
+  }
+
+  @MainActor
+  func testNativeSheetSearchWaitingWhenALeaveIsLetGoOfIsSent() throws {
+    var sent: [Any?] = []
+    let page = try searchPage { sent.append($0) }
+    let search = try XCTUnwrap(page.navigationItem.searchController)
+    let delegate = try XCTUnwrap(search.searchBar.delegate)
+    search.searchBar.text = "lamp"
+    delegate.searchBar?(search.searchBar, textDidChange: "lamp")
+
+    // A back swipe starts, dropping the wait, and is let go of.
+    leaveNativeDetailPageForTesting(page)
+    spin(0.35)
+    XCTAssertTrue(sent.isEmpty)
+    resumeNativeDetailPageForTesting(page)
+
+    XCTAssertEqual(sent.compactMap { $0 as? String }, ["lamp"])
+  }
+
+  private func searchAnswer(_ value: String) -> [String: Any] {
+    [
+      "id": "test-tasks", "title": "Tasks", "items": [],
+      "search": ["id": "test-search", "placeholder": "Search", "value": value],
+    ]
+  }
+
+  @MainActor
+  func testNativeSheetSearchShowAllAfterAClearedDraftEmptiesTheField() throws {
+    var sent: [Any?] = []
+    let page = try searchPage { sent.append($0) }
+    let search = try XCTUnwrap(page.navigationItem.searchController)
+    let delegate = try XCTUnwrap(search.searchBar.delegate)
+    // Typed and cleared before it searched: "" goes, which the unfiltered
+    // page was already asked for, so it draws nothing.
+    search.searchBar.text = "q"
+    delegate.searchBar?(search.searchBar, textDidChange: "q")
+    search.searchBar.text = ""
+    delegate.searchBar?(search.searchBar, textDidChange: "")
+    // A search that matches nothing, answered.
+    search.searchBar.text = "zz-no-match"
+    delegate.searchBarSearchButtonClicked?(search.searchBar)
+    applyNativeDetailPageForTesting(page, searchAnswer("zz-no-match"))
+    XCTAssertEqual(sent.compactMap { $0 as? String }, ["", "zz-no-match"])
+
+    // Show All: the page's own empty query, not an echo of the cleared draft.
+    applyNativeDetailPageForTesting(page, searchAnswer(""))
+
+    XCTAssertEqual(search.searchBar.text, "")
+  }
+
+  @MainActor
+  func testNativeSheetSearchShowAllDropsTheDraftWaitingToBeSent() throws {
+    var sent: [Any?] = []
+    let page = try searchPage { sent.append($0) }
+    let search = try XCTUnwrap(page.navigationItem.searchController)
+    let delegate = try XCTUnwrap(search.searchBar.delegate)
+    search.searchBar.text = "zz-no-match"
+    delegate.searchBarSearchButtonClicked?(search.searchBar)
+    applyNativeDetailPageForTesting(page, searchAnswer("zz-no-match"))
+    // A new draft, then Show All before typing pauses.
+    search.searchBar.text = "lamp"
+    delegate.searchBar?(search.searchBar, textDidChange: "lamp")
+    applyNativeDetailPageForTesting(page, searchAnswer(""))
+    XCTAssertEqual(search.searchBar.text, "")
+
+    // A back swipe let go of brings the page back: the draft stays dropped.
+    leaveNativeDetailPageForTesting(page)
+    resumeNativeDetailPageForTesting(page)
+    spin(0.35)
+
+    XCTAssertEqual(sent.compactMap { $0 as? String }, ["zz-no-match"])
+  }
+
+  @MainActor
+  func testNativeSheetSearchCancelEmptiesTheField() throws {
+    var sent: [Any?] = []
+    let controller = try XCTUnwrap(
+      makeNativeDetailPageForTesting(
+        [
+          "id": "test-tasks", "title": "Tasks", "items": [],
+          "search": ["id": "test-search", "placeholder": "Search", "value": "lamp"],
+        ],
+        onControlChanged: { _, value in sent.append(value) }))
+    let search = try XCTUnwrap(controller.navigationItem.searchController)
+    search.searchBar.text = "lamp"
+    let delegate = try XCTUnwrap(search.searchBar.delegate)
+
+    delegate.searchBarCancelButtonClicked?(search.searchBar)
+
+    XCTAssertEqual(search.searchBar.text, "")
+    XCTAssertEqual(sent.count, 1)
+    XCTAssertEqual(sent.first as? String, "")
+  }
+
+  @MainActor
+  func testWebSignInRetryLoadsThePageThatFailed() throws {
+    let start = try XCTUnwrap(URL(string: "https://hermes.example/login"))
+    let provider = try XCTUnwrap(URL(string: "https://id.example/authorize"))
+    let controller = NativeWebSignInViewController(
+      request: PlatformWebSignInRequest(
+        sessionId: "test-sign-in", title: "Sign In", url: start.absoluteString,
+        checkScript: "return false;", checkUrl: start.absoluteString,
+        cancelLabel: "Cancel", reloadLabel: "Retry", loadFailedMessage: "Failed"),
+      startURL: start,
+      allowsNavigation: { _, answer in answer(true) },
+      checksPage: { _, answer in answer(false) },
+      onFinish: { _ in })
+    XCTAssertEqual(controller.retryURL, start)
+
+    // A load the page replaced is no failure: Retry still starts over.
+    controller.webView(
+      WKWebView(), didFailProvisionalNavigation: nil,
+      withError: NSError(
+        domain: NSURLErrorDomain, code: NSURLErrorCancelled,
+        userInfo: [NSURLErrorFailingURLErrorKey: provider]))
+    XCTAssertEqual(controller.retryURL, start)
+
+    // The identity provider's page failed: Retry loads it again, not the
+    // dashboard's sign-in, which would end the trip to the provider.
+    controller.webView(
+      WKWebView(), didFailProvisionalNavigation: nil,
+      withError: NSError(
+        domain: NSURLErrorDomain, code: NSURLErrorTimedOut,
+        userInfo: [NSURLErrorFailingURLErrorKey: provider]))
+    XCTAssertEqual(controller.retryURL, provider)
+  }
+
+  @MainActor
+  func testNativeSheetDateRowKeepsTheDateSetWhenDrawnAgain() throws {
+    let controller = try XCTUnwrap(
+      makeNativeDetailPageForTesting([
+        "id": "test-dates", "title": "Dates",
+        "items": [
+          ["id": "test-day", "title": "Day", "kind": "date", "value": "2026-01-02T00:00:00"]
+        ],
+      ]))
+    let table = try XCTUnwrap(controller.tableView)
+    let source = try XCTUnwrap(table.dataSource)
+    func picker() throws -> UIDatePicker {
+      let cell = source.tableView(table, cellForRowAt: IndexPath(row: 0, section: 0))
+      return try XCTUnwrap(cell.accessoryView as? UIDatePicker)
+    }
+    let chosen = try XCTUnwrap(
+      Calendar(identifier: .gregorian).date(
+        from: DateComponents(year: 2026, month: 3, day: 4)))
+    let first = try picker()
+    first.date = chosen
+    first.sendActions(for: .valueChanged)
+
+    // Scrolled away and back: the row is drawn again with the date set.
+    XCTAssertEqual(try picker().date, chosen)
+  }
+
+  @MainActor
+  func testIconBarButtonsSayWhatTheyDo() {
+    let action = UIAction { _ in }
+    // Given a label, VoiceOver reads it, not the symbol.
+    XCTAssertEqual(
+      iconBarButton(systemName: "checkmark", label: "Save Password", action: action)
+        .accessibilityLabel,
+      "Save Password")
+    // Without one, by what the symbol does: a checkmark is Done, never
+    // "selected".
+    XCTAssertEqual(
+      iconBarButton(systemName: "checkmark", label: "", action: action).accessibilityLabel,
+      nativeBarButtonLabel("checkmark"))
+    XCTAssertEqual(nativeBarButtonLabel("checkmark"), "Done")
+    XCTAssertEqual(
+      iconBarButton(systemName: "xmark", action: action).accessibilityLabel, "Close")
+    XCTAssertEqual(
+      iconBarButton(systemName: "plus", action: action).accessibilityLabel, "Add")
+    // The system's own Close button too, not its symbol's name "close".
+    XCTAssertEqual(systemCloseBarButton(action: action).accessibilityLabel, "Close")
+  }
+
+  @MainActor
+  func testSettingsColumnsKeepARootPickerAsTheyNarrowAndWiden() throws {
+    let root = UIViewController()
+    let columns = NativeSettingsColumnsController(root: root)
+    columns.defaultRootId = { "test-page" }
+    columns.makePage = { id in
+      makeNativeDetailPageForTesting(["id": id, "title": "Test Page", "items": []])
+    }
+    columns.loadViewIfNeeded()
+    func resize(_ width: CGFloat) {
+      columns.view.frame = CGRect(x: 0, y: 0, width: width, height: 800)
+      columns.view.setNeedsLayout()
+      columns.view.layoutIfNeeded()
+    }
+    resize(1000)
+    XCTAssertTrue(columns.isExpanded)
+    let page = try XCTUnwrap(columns.pages.viewControllers.first)
+    // A root row's picker, opened over the list beside the page.
+    let picker = UIViewController()
+    columns.sidebar.pushViewController(picker, animated: false)
+
+    resize(500)
+    XCTAssertFalse(columns.isExpanded)
+    XCTAssertEqual(columns.sidebar.viewControllers.count, 3)
+    XCTAssertTrue(columns.sidebar.viewControllers.last === picker)
+
+    // Widened again from there: the picker goes back over the list, the
+    // page beside it.
+    resize(1000)
+    XCTAssertTrue(columns.isExpanded)
+    XCTAssertEqual(columns.sidebar.viewControllers.count, 2)
+    XCTAssertTrue(columns.sidebar.viewControllers.last === picker)
+    XCTAssertTrue(columns.pages.viewControllers.first === page)
+
+    // One column with only the picker over the list: widening keeps it
+    // there, and opens a page beside it.
+    resize(500)
+    columns.sidebar.setViewControllers([root, picker], animated: false)
+    resize(1000)
+    XCTAssertTrue(columns.isExpanded)
+    XCTAssertEqual(columns.sidebar.viewControllers.count, 2)
+    XCTAssertTrue(columns.sidebar.viewControllers.last === picker)
+    XCTAssertEqual(columns.pages.viewControllers.count, 1)
+  }
+
+  @MainActor
+  func testSettingsColumnsCloseTheFirstPageEvenWhenItIsTheFirstRowsPage() throws {
+    let columns = NativeSettingsColumnsController(root: UIViewController())
+    columns.defaultRootId = { "test-page" }
+    columns.makePage = { id in
+      makeNativeDetailPageForTesting(["id": id, "title": "Test Page", "items": []])
+    }
+    var left: [UIViewController] = []
+    columns.onPageLeft = { left.append($0) }
+    columns.loadViewIfNeeded()
+    columns.view.frame = CGRect(x: 0, y: 0, width: 1000, height: 800)
+    columns.view.setNeedsLayout()
+    columns.view.layoutIfNeeded()
+    XCTAssertTrue(columns.isExpanded)
+    let page = try XCTUnwrap(columns.pages.viewControllers.first)
+    let above = try XCTUnwrap(
+      makeNativeDetailPageForTesting(["id": "above", "title": "Above", "items": []])
+    )
+    columns.pages.pushViewController(above, animated: false)
+
+    // The first row's own page closes itself: a new one takes its place,
+    // and the page above it goes with it.
+    XCTAssertTrue(columns.closeRootPage(where: { $0 === page }))
+    XCTAssertEqual(columns.pages.viewControllers.count, 1)
+    XCTAssertFalse(columns.pages.viewControllers.first === page)
+    XCTAssertTrue(left.contains { $0 === page })
+  }
+
   @MainActor
   func testNativeProfilePresentationIsSingleUntilDismissed() throws {
+    // In a window, so UIKit takes the presentation: the bridge checks that it
+    // did before it counts Settings as open.
+    let scene = try XCTUnwrap(
+      UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+    let previousKeyWindow = scene.windows.first(where: \.isKeyWindow)
+    let window = UIWindow(windowScene: scene)
+    window.frame = scene.coordinateSpace.bounds
     let presenter = ProfilePresentationTestController()
+    window.rootViewController = presenter
+    window.makeKeyAndVisible()
+    window.layoutIfNeeded()
+    defer {
+      window.isHidden = true
+      previousKeyWindow?.makeKey()
+    }
     let host = SelectionMenuTestHost(
       messenger: SelectionMenuTestMessenger(), controller: presenter)
     let bridge = NativeSheetBridge.shared
@@ -238,6 +543,15 @@ class RunnerTests: XCTestCase {
     XCTAssertNotNil(delegate as? NativeSttCallKitAppDelegate)
   }
 
+  func testAForegroundPushDartDoesNotTakeKeepsTheExtensionsSound() {
+    let silent = UNMutableNotificationContent()
+    XCTAssertEqual(PushBridge.fallbackPresentation(for: silent), [.banner, .list])
+
+    let sounding = UNMutableNotificationContent()
+    sounding.sound = .default
+    XCTAssertEqual(PushBridge.fallbackPresentation(for: sounding), [.banner, .list, .sound])
+  }
+
   func testPccSnapshotDeltaEmitsOnlyNewContent() throws {
     XCTAssertEqual(
       try pccSnapshotDelta(previous: "Hello", snapshot: "Hello world"),
@@ -450,10 +764,15 @@ class RunnerTests: XCTestCase {
     let selectedColor = try XCTUnwrap(
       control.titleTextAttributes(for: .selected)?[.foregroundColor] as? UIColor
     )
-    XCTAssertEqual(control.backgroundColor, NativeSheetTheme.shared.elevatedSurface)
-    XCTAssertEqual(control.selectedSegmentTintColor, NativeSheetTheme.shared.accent)
+    // The system's own track and raised pill, as everywhere else in iOS;
+    // only the titles take the palette's ink, so a custom palette still reads.
+    XCTAssertNil(control.backgroundColor)
+    XCTAssertNil(control.selectedSegmentTintColor)
     XCTAssertEqual(normalColor, NativeSheetTheme.shared.foreground)
-    XCTAssertEqual(selectedColor, NativeSheetTheme.shared.onAccent)
+    XCTAssertEqual(selectedColor, NativeSheetTheme.shared.foreground)
+    XCTAssertEqual(
+      control.titleTextAttributes(for: .disabled)?[.foregroundColor] as? UIColor,
+      NativeSheetTheme.shared.secondaryForeground)
   }
 
   func testNativeModelSelectorKeepsCurrentSelectionWithPinnedModels() {
@@ -905,22 +1224,15 @@ class RunnerTests: XCTestCase {
     }
   }
 
-  func testNativeSheetMemoryEditorWaitsForTheSheetToLeave() {
-    // The memory editor takes keyboard focus, so it opens only once the
-    // sheet has gone.
-    XCTAssertTrue(nativeSheetSelectionWaitsForDismiss(actionId: "memory-editor-new"))
-    XCTAssertTrue(
-      nativeSheetSelectionWaitsForDismiss(actionId: "memory-editor:abc%20123")
-    )
-  }
-
   func testNativeSheetAccountQuestionsWaitForTheSheetToLeave() {
     // Switching, adding or signing out of an account may ask in a sheet of
     // its own, and editing a Direct provider opens one; a server's page only
     // opens under the sheet.
     for actionId in [
-      "account-switch", "account-add", "account-sign-out", "account-direct-edit",
+      "account-switch", "account-add", "account-sign-out",
+      "account-sign-out-of", "account-direct-edit",
       "account-librechat-use", "account-librechat-sign-out",
+      "push-target-sign-in",
     ] {
       XCTAssertTrue(
         nativeSheetSelectionWaitsForDismiss(actionId: actionId),
@@ -4537,7 +4849,9 @@ private final class ProfilePresentationTestController: UIViewController {
     completion: (() -> Void)? = nil
   ) {
     presentations.append(viewControllerToPresent)
-    completion?()
+    // Presented for real, at once, so the sheet's presenting controller is
+    // set as the bridge checks it.
+    super.present(viewControllerToPresent, animated: false, completion: completion)
   }
 }
 

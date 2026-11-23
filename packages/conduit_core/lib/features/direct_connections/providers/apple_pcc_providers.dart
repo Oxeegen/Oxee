@@ -22,8 +22,9 @@ final applePccAdapterProvider = Provider<ApplePccAdapter>(
   ),
 );
 
-/// Apple Intelligence never exists off iOS, so status probes must not reach
-/// the platform channel there. Returning [PlatformPccAvailability.unsupported]
+/// Apple Intelligence never exists off iOS (or, for Private Cloud Compute,
+/// in a build without its entitlement), so status probes must not reach the
+/// platform channel there. Returning [PlatformPccAvailability.unsupported]
 /// keeps every consumer on the same "not on this device" path.
 PlatformPccStatus _unsupportedApplePlatformStatus() => PlatformPccStatus(
   availability: PlatformPccAvailability.unsupported,
@@ -33,7 +34,7 @@ PlatformPccStatus _unsupportedApplePlatformStatus() => PlatformPccStatus(
 );
 
 final applePccStatusProvider = FutureProvider<PlatformPccStatus>((ref) {
-  if (!ref.watch(applePccPlatformSupportedProvider)) {
+  if (!ref.watch(applePrivateCloudComputeSupportedProvider)) {
     return _unsupportedApplePlatformStatus();
   }
   return ref
@@ -46,4 +47,25 @@ final appleOnDeviceStatusProvider = FutureProvider<PlatformPccStatus>((ref) {
     return _unsupportedApplePlatformStatus();
   }
   return ref.watch(applePccAdapterProvider).status(PlatformAppleModel.onDevice);
+});
+
+/// Whether Apple On-Device is offered as a Direct connection: turned on,
+/// where Apple's models can exist, and its model said it can answer when
+/// last asked. Null while the first answer is awaited.
+///
+/// A device whose model is not ready (still downloading, Apple Intelligence
+/// off, an ineligible device) is not offered it: the default-on connection
+/// would otherwise count as a usable Direct connection, so signing out of
+/// the last account would land on a Direct app whose only model cannot
+/// answer. Asking again keeps the last answer until the new one comes.
+final appleOnDeviceOfferedProvider = Provider<bool?>((ref) {
+  if (!ref.watch(applePccPlatformSupportedProvider) ||
+      !ref.watch(appleOnDeviceEnabledProvider)) {
+    return false;
+  }
+  final status = ref.watch(appleOnDeviceStatusProvider);
+  if (status.hasError && !status.isLoading) return false;
+  final current = status.value;
+  if (current == null) return status.isLoading ? null : false;
+  return current.availability == PlatformPccAvailability.available;
 });

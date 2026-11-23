@@ -10,6 +10,12 @@ final class PreferenceKeys {
   static const String highContrast = 'high_contrast';
   static const String computerEnabled = 'computer_enabled';
   static const String showComposerNotesButton = 'show_composer_notes_button';
+  static const String showModelNameInComposer = 'show_model_name_in_composer';
+
+  /// Device-wide: whether the Hermes chat list shows scheduled job runs.
+  static const String hermesShowScheduledSessions =
+      'hermes_show_scheduled_sessions_v1';
+
   static const String darkMode = 'dark_mode';
   static const String slidingSidebarEnabled = 'sliding_sidebar_enabled';
   static const String defaultModel = 'default_model';
@@ -118,6 +124,44 @@ final class PreferenceKeys {
   static const String notificationChatEnabled = 'notification_chat_enabled';
   static const String notificationChannelEnabled =
       'notification_channel_enabled';
+  /// Device-wide, not per account: scheduled tasks come from Hermes.
+  static const String notificationScheduledEnabled =
+      'notification_scheduled_enabled';
+  /// Device-wide: reminders of the Open WebUI calendar events.
+  static const String notificationCalendarEnabled =
+      'notification_calendar_enabled';
+  /// Device-wide: the calendar reminders handed to the OS, per account, so
+  /// one that already fired is not posted again.
+  static const String calendarRemindersDelivered =
+      'calendar_reminders_delivered';
+
+  // Push notifications. Device-wide, never account-scoped: one toggle covers
+  // every account and connection, and no key or token is stored here.
+  /// The master push toggle.
+  static const String pushEnabled = 'push_enabled_v1';
+
+  /// A random id for this install, sent as each subscription's `did`.
+  static const String pushDeviceId = 'push_device_id_v1';
+
+  /// `fcm` or `unifiedPush`; absent means automatic.
+  static const String pushAndroidTransport = 'push_android_transport_v1';
+
+  /// The UnifiedPush distributor package; absent means the first installed.
+  static const String pushAndroidDistributor = 'push_android_distributor_v1';
+
+  /// Per-scope subscription records (`PushSubscriptionRecord`), as JSON.
+  static const String pushTargets = 'push_targets_v1';
+
+  /// Deleted subscriptions a server may still hold (`PushTombstone`), as JSON.
+  static const String pushTombstones = 'push_tombstones_v1';
+
+  /// When every target was last checked against its server, in epoch ms.
+  static const String pushLastFullReconcile = 'push_last_full_reconcile_v1';
+
+  /// Channel messages alert only when they mention the user or arrive in a
+  /// direct message. Local only; the desktop offers it.
+  static const String notificationChannelMentionsOnly =
+      'notification_channel_mentions_only';
 
   // Hermes Agent (direct second backend) — non-secret config. The API key and
   // long-term memory session key are secrets and live in SecureCredentialStorage.

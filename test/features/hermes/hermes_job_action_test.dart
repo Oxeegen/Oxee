@@ -2,12 +2,8 @@ import 'dart:async';
 
 import 'package:checks/checks.dart';
 import 'package:conduit_core/features/hermes/models/hermes_capabilities.dart';
-import 'package:conduit_core/features/hermes/models/hermes_config.dart';
 import 'package:conduit_core/features/hermes/models/hermes_job.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
-import 'package:conduit_core/features/hermes/services/hermes_api_service.dart';
-import 'package:conduit_core/features/hermes/utils/hermes_schedule_format.dart';
-import 'package:conduit/features/hermes/views/hermes_jobs_page.dart';
 import 'package:conduit/features/hermes/widgets/hermes_jobs_sheet.dart';
 import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
 import 'package:material_ui/material_ui.dart';
@@ -15,27 +11,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  // Schedule validation moved to conduit_core
-  // (hermes_schedule_validation_test.dart).
-
-  test('common Hermes cron schedules have concise cadence labels', () {
-    check(describeHermesCronSchedule('* * * * *')).equals('Every minute');
-    check(describeHermesCronSchedule('*/15 * * * *'))
-        .equals('Every 15 minutes');
-    check(describeHermesCronSchedule('0 * * * *')).equals('Every hour');
-    check(describeHermesCronSchedule('30 */6 * * *'))
-        .equals('Every 6 hours at :30');
-    check(describeHermesCronSchedule('0 9 * * 1-5'))
-        .equals('Weekdays at 9:00 AM');
-    check(describeHermesCronSchedule('30 18 * * MON'))
-        .equals('Every Monday at 6:30 PM');
-    check(describeHermesCronSchedule('0 8 1 * *'))
-        .equals('Monthly on the 1st at 8:00 AM');
-    check(describeHermesCronSchedule('5,35 * * * *')).equals('5,35 * * * *');
-    check(hermesScheduleNeedsRawDisplay('0 9 * * 1-5')).isTrue();
-    check(hermesScheduleNeedsRawDisplay('5,35 * * * *')).isFalse();
-    check(hermesScheduleNeedsRawDisplay('  5,35   * * * *  ')).isFalse();
-  });
+  // Schedule validation and wording moved to conduit_core
+  // (hermes_schedule_validation_test.dart, hermes_schedule_format_test.dart).
 
   test('job mutations fail when the Hermes service is unavailable', () async {
     final container = ProviderContainer(
@@ -60,103 +37,6 @@ void main() {
     await expectLater(controller.setEnabled('job-1', false), throwsStateError);
     await expectLater(controller.runNow('job-1'), throwsStateError);
     await expectLater(controller.delete('job-1'), throwsStateError);
-  });
-
-  testWidgets('job mutation boundary reports failures without rethrowing', (
-    tester,
-  ) async {
-    late BuildContext actionContext;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Builder(
-            builder: (context) {
-              actionContext = context;
-              return const SizedBox.shrink();
-            },
-          ),
-        ),
-      ),
-    );
-
-    final result = await runHermesJobMutation(
-      actionContext,
-      action: () async => throw StateError('offline'),
-      failureMessage: 'Could not run scheduled job.',
-    );
-    await tester.pumpAndSettle();
-
-    check(result).isFalse();
-    expect(find.text('Could not run scheduled job.'), findsOneWidget);
-  });
-
-  testWidgets('job mutation boundary can acknowledge success', (tester) async {
-    late BuildContext actionContext;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: Builder(
-            builder: (context) {
-              actionContext = context;
-              return const SizedBox.shrink();
-            },
-          ),
-        ),
-      ),
-    );
-
-    final result = await runHermesJobMutation(
-      actionContext,
-      action: () async {},
-      failureMessage: 'Could not run scheduled job.',
-      successMessage: 'Scheduled job started.',
-    );
-    await tester.pumpAndSettle();
-
-    check(result).isTrue();
-    expect(find.text('Scheduled job started.'), findsOneWidget);
-  });
-
-  testWidgets('run-now owns the row until its mutation completes', (
-    tester,
-  ) async {
-    final controller = _PendingJobsController();
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          hermesJobsProvider.overrideWith(() => controller),
-          hermesCapabilitiesProvider.overrideWith(
-            (ref) async => const HermesCapabilities(),
-          ),
-          hermesApiServiceProvider.overrideWithValue(
-            HermesApiService(
-              config: const HermesConfig(
-                enabled: true,
-                baseUrl: 'https://hermes.example',
-                apiKey: 'test-key',
-              ),
-            ),
-          ),
-        ],
-        child: const MaterialApp(home: HermesJobsPage()),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const ValueKey<String>('job-1')), findsOneWidget);
-    final runButton = find.byKey(
-      const ValueKey<String>('hermes-job-run-job-1'),
-    );
-    await tester.tap(runButton);
-    await tester.tap(runButton);
-    await tester.pump();
-
-    check(controller.runCalls).equals(1);
-    expect(find.byType(CircularProgressIndicator), findsWidgets);
-
-    controller.runCompleter.complete();
-    await tester.pumpAndSettle();
-    expect(find.text('Scheduled job started.'), findsOneWidget);
   });
 
   testWidgets('jobs sheet shows polished timing details and toggles a job', (

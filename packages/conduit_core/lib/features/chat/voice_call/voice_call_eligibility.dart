@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:riverpod/misc.dart' show Override;
 import 'package:riverpod/riverpod.dart';
 import 'package:meta/meta.dart';
 
@@ -15,6 +16,8 @@ import 'package:conduit_core/features/direct_connections/providers/direct_connec
 import 'package:conduit_core/features/direct_connections/services/direct_model_registry.dart';
 import 'package:conduit_core/features/hermes/models/hermes_model.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
+import 'package:conduit_core/features/librechat/models/librechat_model.dart';
+import 'package:conduit_core/voice/voice_session.dart';
 
 enum VoiceCallEligibilityReason {
   eligible,
@@ -22,7 +25,15 @@ enum VoiceCallEligibilityReason {
   backendInitializing,
   authenticationRequired,
   backendUnavailable,
+
+  /// The model's backend has no voice calls (LibreChat's chats).
+  backendUnsupported,
 }
+
+/// Why a LibreChat model's call is refused, in English. A host that words
+/// refusals itself can recognise it by this text.
+const String voiceCallLibreChatRefusal =
+    "Voice calls aren't available in LibreChat chats.";
 
 @immutable
 class VoiceCallEligibility {
@@ -30,6 +41,7 @@ class VoiceCallEligibility {
     required this.reason,
     required this.model,
     this.errorMessage,
+    this.refusal,
   });
 
   const VoiceCallEligibility.eligible(Model model)
@@ -38,12 +50,23 @@ class VoiceCallEligibility {
   const VoiceCallEligibility.blocked({
     required VoiceCallEligibilityReason reason,
     required String errorMessage,
+    required VoiceCallRefusal refusal,
     Model? model,
-  }) : this._(reason: reason, model: model, errorMessage: errorMessage);
+  }) : this._(
+         reason: reason,
+         model: model,
+         errorMessage: errorMessage,
+         refusal: refusal,
+       );
 
   final VoiceCallEligibilityReason reason;
   final Model? model;
+
+  /// Why the call can't start, in English (the phone shows it as it is).
   final String? errorMessage;
+
+  /// [errorMessage] as a code, for a client that words it itself.
+  final VoiceCallRefusal? refusal;
 
   bool get canStart => reason == VoiceCallEligibilityReason.eligible;
 }
@@ -57,11 +80,22 @@ final class VoiceCallEligibilityResolutionCancelled implements Exception {
 /// OpenWebUI models still require an authenticated session. Hermes and
 /// device-owned Direct models use app-owned transports and are admitted from
 /// their concrete runtime provenance instead of OpenWebUI navigation state.
-final voiceCallEligibilityProvider = Provider<VoiceCallEligibility>((ref) {
+final voiceCallEligibilityProvider = Provider<VoiceCallEligibility>(
+  _voiceCallEligibility,
+);
+
+/// The overrides that give a chat session scope its own admission: it reads
+/// the scope's selected model, not the root's.
+List<Override> chatSessionScopedVoiceCallEligibilityOverrides() => <Override>[
+  voiceCallEligibilityProvider.overrideWith(_voiceCallEligibility),
+];
+
+VoiceCallEligibility _voiceCallEligibility(Ref ref) {
   final model = ref.watch(selectedModelProvider);
   if (model == null) {
     return const VoiceCallEligibility.blocked(
       reason: VoiceCallEligibilityReason.modelRequired,
+      refusal: VoiceCallRefusal.modelRequired,
       errorMessage: 'Choose a model before starting a voice call.',
     );
   }
@@ -75,6 +109,7 @@ final voiceCallEligibilityProvider = Provider<VoiceCallEligibility>((ref) {
       return VoiceCallEligibility.blocked(
         reason: VoiceCallEligibilityReason.backendInitializing,
         model: model,
+        refusal: VoiceCallRefusal.hermesLoading,
         errorMessage: 'Hermes is still loading. Try again in a moment.',
       );
     }
@@ -84,6 +119,7 @@ final voiceCallEligibilityProvider = Provider<VoiceCallEligibility>((ref) {
     return VoiceCallEligibility.blocked(
       reason: VoiceCallEligibilityReason.backendUnavailable,
       model: model,
+      refusal: VoiceCallRefusal.hermesUnavailable,
       errorMessage: 'Hermes is unavailable. Check its server URL and API key.',
     );
   }
@@ -97,12 +133,25 @@ final voiceCallEligibilityProvider = Provider<VoiceCallEligibility>((ref) {
       return VoiceCallEligibility.blocked(
         reason: VoiceCallEligibilityReason.backendUnavailable,
         model: model,
+        refusal: VoiceCallRefusal.directUnavailable,
         errorMessage: 'The selected direct connection is unavailable.',
       );
     }
     if (binding.source == DirectModelSource.device) {
       return VoiceCallEligibility.eligible(model);
     }
+  }
+
+  // Calls run with Open WebUI, Hermes and Direct models; LibreChat's chats
+  // offer none. Say that, rather than ask for an Open WebUI sign-in, which
+  // a LibreChat chat does not use.
+  if (isLibreChatModel(model)) {
+    return VoiceCallEligibility.blocked(
+      reason: VoiceCallEligibilityReason.backendUnsupported,
+      model: model,
+      refusal: VoiceCallRefusal.backendUnsupported,
+      errorMessage: voiceCallLibreChatRefusal,
+    );
   }
 
   if (ref.watch(authNavigationStateProvider) ==
@@ -113,9 +162,10 @@ final voiceCallEligibilityProvider = Provider<VoiceCallEligibility>((ref) {
   return VoiceCallEligibility.blocked(
     reason: VoiceCallEligibilityReason.authenticationRequired,
     model: model,
+    refusal: VoiceCallRefusal.signInRequired,
     errorMessage: 'Sign in to start a voice call.',
   );
-});
+}
 
 /// Resolves transient startup state before returning the current admission
 /// decision. Native entry points can arrive before secure storage, auth, or
@@ -144,6 +194,7 @@ Future<VoiceCallEligibility> resolveVoiceCallEligibility(
       if (!changed && _voiceCallNeedsHermesHydration(ref)) {
         return const VoiceCallEligibility.blocked(
           reason: VoiceCallEligibilityReason.backendInitializing,
+          refusal: VoiceCallRefusal.hermesLoading,
           errorMessage: 'Hermes is still loading. Try again in a moment.',
         );
       }
@@ -158,6 +209,7 @@ Future<VoiceCallEligibility> resolveVoiceCallEligibility(
       if (!ref.read(hermesConfigProvider).isUsable) {
         return const VoiceCallEligibility.blocked(
           reason: VoiceCallEligibilityReason.backendUnavailable,
+          refusal: VoiceCallRefusal.hermesUnavailable,
           errorMessage:
               'Hermes is unavailable. Check its server URL and API key.',
         );

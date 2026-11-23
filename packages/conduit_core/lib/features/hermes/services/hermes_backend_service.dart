@@ -5,10 +5,18 @@ import 'package:conduit_core/features/hermes/models/hermes_chat_input.dart';
 import 'package:conduit_core/features/hermes/models/hermes_run_event.dart';
 
 final class HermesResponseStream {
-  const HermesResponseStream({required this.events, this.sessionId});
+  const HermesResponseStream({
+    required this.events,
+    this.sessionId,
+    this.promptAccepted,
+  });
 
   final Stream<HermesRunEvent> events;
   final String? sessionId;
+
+  /// Whether Hermes took the turn's prompt into its session; null when the
+  /// transport does not say, and then it counts as taken.
+  final bool Function()? promptAccepted;
 }
 
 final class HermesDesktopSessionOptions {
@@ -36,7 +44,13 @@ abstract interface class HermesBackendService {
   Future<bool> health();
   Future<List<Map<String, dynamic>>> listSkills();
   Future<String> createSession({String? title, CancelToken? cancelToken});
-  Future<List<Map<String, dynamic>>> listSessions();
+  /// Lists sessions. With [excludeScheduledRuns], asks the server to leave
+  /// out the sessions scheduled jobs start (source `cron`) where it can, so
+  /// they do not crowd chats out of the page it returns. A server that
+  /// cannot still lists them; callers filter as well.
+  Future<List<Map<String, dynamic>>> listSessions({
+    bool excludeScheduledRuns = false,
+  });
   Future<List<Map<String, dynamic>>> getSessionMessages(
     String id, {
     CancelToken? cancelToken,
@@ -68,12 +82,15 @@ abstract interface class HermesBackendService {
     required String prompt,
     required String schedule,
   });
+  /// [deliver] replaces the job's delivery targets, a comma-separated list
+  /// such as `local,conduit`.
   Future<void> updateJob(
     String id, {
     String? name,
     String? prompt,
     String? schedule,
     bool? enabled,
+    String? deliver,
   });
   Future<void> deleteJob(String id);
   Future<void> pauseJob(String id);
@@ -162,6 +179,8 @@ final class HermesHeldModelSwitch {
     required this.model,
     this.provider,
     this.reason,
+    this.sessionId,
+    this.stopped,
   });
 
   final String model;
@@ -169,6 +188,15 @@ final class HermesHeldModelSwitch {
 
   /// Hermes' explanation, bounded; null when it gave none.
   final String? reason;
+
+  /// The Hermes session whose send waits on the answer: a host that asks
+  /// elsewhere than its chat (another window) shows the question only with
+  /// that chat.
+  final String? sessionId;
+
+  /// Completes when that send is stopped: the question is withdrawn then,
+  /// with no answer.
+  final Future<void>? stopped;
 }
 
 /// Asks the user whether to switch the chat to a model Hermes holds for
@@ -231,4 +259,16 @@ final class HermesDesktopGatewayStartingException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// The gateway no longer accepts this connection's native sign-in: it has no
+/// tokens, or Hermes refused to renew them. Only signing in again helps.
+///
+/// A [StateError], as a missing sign-in always was, so callers that treat
+/// one as "sign in needed" keep doing so.
+final class HermesGatewaySignInRequired extends StateError {
+  HermesGatewaySignInRequired() : super(_text);
+
+  static const String _text =
+      'Hermes signed Oxee out of this gateway. Sign in again to continue.';
 }

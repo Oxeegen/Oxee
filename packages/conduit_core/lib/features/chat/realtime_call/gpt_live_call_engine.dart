@@ -141,6 +141,18 @@ final class GptLiveCallEngine implements RealtimeCallEngine {
               unawaited(_fail('Voice connection closed.'));
             }
           }),
+        )
+        ..add(
+          _media.levels.listen((levels) {
+            if (_ended) return;
+            // A muted microphone sends nothing, whatever it hears.
+            _update(
+              _state.copyWith(
+                inputLevel: _state.muted ? 0 : levels.input,
+                outputLevel: levels.output,
+              ),
+            );
+          }),
         );
       final answer = await _open(offer, history);
       if (_ended) return;
@@ -432,7 +444,14 @@ final class GptLiveCallEngine implements RealtimeCallEngine {
       muted ? 'session.input_audio.mute' : 'session.input_audio.unmute',
       const {},
     );
-    _update(_state.copyWith(muted: muted, userSpeaking: muted ? false : null));
+    _update(
+      _state.copyWith(
+        muted: muted,
+        userSpeaking: muted ? false : null,
+        // A muted microphone sends nothing from now on.
+        inputLevel: muted ? 0 : null,
+      ),
+    );
   }
 
   @override
@@ -500,7 +519,19 @@ final class GptLiveCallEngine implements RealtimeCallEngine {
         approval: false,
       ),
     );
-    await _media.close();
+    // Ending is started from listeners and timers that drop its future, so
+    // a host port that fails to close is logged here, and the call still
+    // ends.
+    try {
+      await _media.close();
+    } catch (error, stackTrace) {
+      DebugLogger.error(
+        'media-close-failed',
+        scope: 'realtime/gpt-live',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     await _states.close();
   }
 }

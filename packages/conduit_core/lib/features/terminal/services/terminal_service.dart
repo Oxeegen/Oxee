@@ -16,7 +16,8 @@ import '../models/terminal_models.dart';
 import 'terminal_port_preview.dart';
 
 /// The first frame on a terminal's socket: the credential, and for Open
-/// WebUI's own terminals the saved chat the session belongs to.
+/// WebUI's own terminals the saved chat the session belongs to and the model
+/// a terminal made per model is used for.
 Map<String, dynamic> buildTerminalWebSocketAuthPayload(
   TerminalServerInfo server, {
   required String token,
@@ -26,6 +27,7 @@ Map<String, dynamic> buildTerminalWebSocketAuthPayload(
   'token': token,
   if (server.isSystem && isSavedTerminalChatScopeId(sessionScopeId))
     'chat_id': sessionScopeId,
+  if (server.isSystem) 'model_id': ?server.modelId,
 };
 
 /// What a client sends on a terminal's events socket after the auth frame:
@@ -172,15 +174,20 @@ bool _isConfigEnabled(Map<String, dynamic> server) {
   return true;
 }
 
+/// [value] is a terminal's `contexts` (Open WebUI 0.13.3 and older), and
+/// [scope] the scope of a terminal template (0.13.4 and later), where a
+/// `chat` scope gives each saved chat its own machine.
 ({bool available, bool requiresSavedChat}) parseTerminalChatContextForTest(
-  Object? value,
-) {
+  Object? value, {
+  Object? scope,
+}) {
   final contexts = _coerceStringKeyedMap(value);
   final chatContext = contexts['chat'];
   final chatConfig = _coerceStringKeyedMap(chatContext);
   return (
     available: chatContext != false,
-    requiresSavedChat: chatConfig['context_id']?.toString() == 'chat_id',
+    requiresSavedChat:
+        chatConfig['context_id']?.toString() == 'chat_id' || scope == 'chat',
   );
 }
 
@@ -355,6 +362,7 @@ class TerminalService {
         : null;
     return server.isSystem
         ? _requestSystem(
+            server,
             '/api/v1/terminals/${Uri.encodeComponent(server.systemServerId!)}/$path',
             method: method,
             data: data,
@@ -436,7 +444,10 @@ class TerminalService {
       if (systemId.isEmpty) {
         continue;
       }
-      final chatContext = parseTerminalChatContextForTest(server['contexts']);
+      final chatContext = parseTerminalChatContextForTest(
+        server['contexts'],
+        scope: server['scope'],
+      );
 
       parsed.add(
         TerminalServerInfo(
@@ -450,6 +461,7 @@ class TerminalService {
           raw: server,
           chatContextAvailable: chatContext.available,
           requiresSavedChatContext: chatContext.requiresSavedChat,
+          requiresModelContext: server['scope'] == 'model',
         ),
       );
     }
@@ -493,6 +505,7 @@ class TerminalService {
     try {
       final response = server.isSystem
           ? await _requestSystem(
+              server,
               '/api/v1/terminals/${server.systemServerId}/api/config',
               sessionScopeId: sessionScopeId,
             )
@@ -521,6 +534,7 @@ class TerminalService {
   }) async {
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/api/terminals',
             method: 'POST',
             sessionScopeId: sessionScopeId,
@@ -620,6 +634,7 @@ class TerminalService {
   }) async {
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/files/cwd',
             sessionScopeId: sessionScopeId,
           )
@@ -641,6 +656,7 @@ class TerminalService {
     final body = <String, dynamic>{'path': normalizeTerminalPath(path)};
     if (server.isSystem) {
       await _requestSystem(
+        server,
         '/api/v1/terminals/${server.systemServerId}/files/cwd',
         method: 'POST',
         data: body,
@@ -666,6 +682,7 @@ class TerminalService {
     final normalizedDirectory = ensureTerminalDirectoryPath(directory);
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/files/list',
             queryParameters: <String, dynamic>{
               'directory': normalizedDirectory,
@@ -728,6 +745,7 @@ class TerminalService {
     final normalizedPath = normalizeTerminalPath(path);
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/files/read',
             queryParameters: <String, dynamic>{'path': normalizedPath},
             responseType: ResponseType.bytes,
@@ -770,6 +788,7 @@ class TerminalService {
     final normalizedPath = normalizeTerminalPath(path);
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/files/view',
             queryParameters: <String, dynamic>{'path': normalizedPath},
             responseType: ResponseType.bytes,
@@ -838,6 +857,7 @@ class TerminalService {
 
     if (server.isSystem) {
       await _requestSystem(
+        server,
         '/api/v1/terminals/${server.systemServerId}/files/upload',
         method: 'POST',
         queryParameters: <String, dynamic>{'directory': normalizedDirectory},
@@ -865,6 +885,7 @@ class TerminalService {
     final body = <String, dynamic>{'path': normalizeTerminalPath(path)};
     if (server.isSystem) {
       await _requestSystem(
+        server,
         '/api/v1/terminals/${server.systemServerId}/files/mkdir',
         method: 'POST',
         data: body,
@@ -890,6 +911,7 @@ class TerminalService {
     final normalizedPath = normalizeTerminalPath(path);
     if (server.isSystem) {
       await _requestSystem(
+        server,
         '/api/v1/terminals/${server.systemServerId}/files/delete',
         method: 'DELETE',
         queryParameters: <String, dynamic>{'path': normalizedPath},
@@ -919,6 +941,7 @@ class TerminalService {
     };
     if (server.isSystem) {
       await _requestSystem(
+        server,
         '/api/v1/terminals/${server.systemServerId}/files/move',
         method: 'POST',
         data: body,
@@ -942,6 +965,7 @@ class TerminalService {
   }) async {
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/ports',
             sessionScopeId: sessionScopeId,
           )
@@ -967,6 +991,7 @@ class TerminalService {
     final body = <String, dynamic>{'url': url};
     final response = server.isSystem
         ? await _requestSystem(
+            server,
             '/api/v1/terminals/${server.systemServerId}/browser/sessions',
             method: 'POST',
             data: body,
@@ -1005,6 +1030,7 @@ class TerminalService {
     final path = 'browser/sessions/${Uri.encodeComponent(sessionId)}';
     if (server.isSystem) {
       await _requestSystem(
+        server,
         '/api/v1/terminals/${server.systemServerId}/$path',
         method: 'DELETE',
         sessionScopeId: sessionScopeId,
@@ -1020,6 +1046,7 @@ class TerminalService {
   }
 
   Future<Response<dynamic>> _requestSystem(
+    TerminalServerInfo server,
     String path, {
     String method = 'GET',
     Map<String, dynamic>? queryParameters,
@@ -1034,7 +1061,15 @@ class TerminalService {
       options: Options(
         method: method,
         responseType: responseType,
-        headers: _sessionScopeHeaders(sessionScopeId),
+        headers: {
+          ..._sessionScopeHeaders(
+            sessionScopeId == null
+                ? null
+                : terminalProxySessionId(sessionScopeId),
+          ),
+          // Open WebUI answers 409 without it for a terminal made per model.
+          'X-Terminal-Model-Id': ?server.modelId,
+        },
       ),
     );
   }

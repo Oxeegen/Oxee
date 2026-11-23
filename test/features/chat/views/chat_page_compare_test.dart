@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:conduit/features/chat/views/chat_page.dart';
@@ -11,6 +12,7 @@ import 'package:conduit_core/database/app_database.dart';
 import 'package:conduit_core/database/chat_database_repository.dart';
 import 'package:conduit_core/database/database_provider.dart';
 import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart';
+import 'package:conduit_core/features/chat/providers/attached_files_provider.dart';
 import 'package:conduit_core/features/chat/providers/chat_providers.dart';
 import 'package:conduit_core/features/direct_connections/models/direct_connection_profile.dart';
 import 'package:conduit_core/features/direct_connections/models/direct_remote_model.dart';
@@ -77,6 +79,21 @@ void main() {
     }
   }
 
+  /// Closes the page [compareOnPage] opened; a second call does nothing.
+  Future<void> Function() closePage = () async {};
+
+  /// A test of the page from [compareOnPage], which it closes before
+  /// returning. A tear-down would be too late: flutter_test checks for pending
+  /// timers as soon as a test returns, and a send can leave the page's
+  /// Markdown service starting a worker isolate, whose timers end only when
+  /// the container disposes the service.
+  void testPage(String description, WidgetTesterCallback body) {
+    testWidgets(description, (tester) async {
+      await body(tester);
+      await closePage();
+    });
+  }
+
   /// Opens the page on a stored chat and runs the real command to its start
   /// button: overflow menu, "Compare models", a second slot, Compare. [db] is
   /// the database a turn is admitted into; without one admission is refused.
@@ -84,16 +101,25 @@ void main() {
     WidgetTester tester, {
     AppDatabase? db,
     bool ordinarySend = false,
+    bool modelPicked = true,
+    Future<List<Model>>? modelList,
     bool holdDrain = false,
     bool newChat = false,
     bool reviewer = false,
     Model? model,
+    List<ChatMessage> transcript = const <ChatMessage>[],
+    String? followUp,
     List<Override> overrides = const <Override>[],
+    void Function(ProviderContainer container)? whileSending,
   }) async {
     final originalErrorWidgetBuilder = ErrorWidget.builder;
     final originalFlutterErrorOnError = FlutterError.onError;
     late final ProviderContainer container;
-    addTearDown(() async {
+    var closed = false;
+    closePage = () async {
+      if (closed) return;
+      closed = true;
+      // Dropping the streaming placeholders ends the task poll they started.
       container.read(chatMessagesProvider.notifier)
         ..clearMessages()
         ..finishStreaming();
@@ -103,7 +129,9 @@ void main() {
       if (db != null) await pumpDatabaseOperation(tester, db.close);
       ErrorWidget.builder = originalErrorWidgetBuilder;
       FlutterError.onError = originalFlutterErrorOnError;
-    });
+    };
+    // A test that fails before the end still closes the page.
+    addTearDown(closePage);
     final chat = withChatStorageProvenance(
       Conversation(
         id: 'stored-chat',
@@ -132,16 +160,18 @@ void main() {
         syncEngineProvider.overrideWith(() => _NoDrainEngine(hold: holdDrain)),
         isAuthenticatedProvider2.overrideWithValue(true),
         reviewerModeProvider.overrideWithValue(reviewer),
-        selectedModelProvider.overrideWith(() => _Selected(model)),
+        selectedModelProvider.overrideWith(
+          () => _Selected(modelPicked ? model : null, picked: modelPicked),
+        ),
         activeConversationProvider.overrideWith(
           () => _Active(newChat ? null : chat),
         ),
-        chatMessagesProvider.overrideWith(_Messages.new),
+        chatMessagesProvider.overrideWith(() => _Messages(transcript)),
         optimizedStorageServiceProvider.overrideWithValue(_Storage()),
         isChatStreamingProvider.overrideWith((ref) => false),
         isOnlineProvider.overrideWithValue(true),
         conversationsProvider.overrideWith(_Conversations.new),
-        modelsProvider.overrideWith(_Models.new),
+        modelsProvider.overrideWith(() => _Models(modelList)),
         foldersProvider.overrideWith(_Folders.new),
         toolsListProvider.overrideWith(_Tools.new),
         comparisonCommandAvailableProvider.overrideWithValue(true),
@@ -171,10 +201,16 @@ void main() {
     );
     await settle(tester);
 
+    if (followUp != null) {
+      await tester.tap(find.text(followUp));
+      await settle(tester);
+      return container;
+    }
     await tester.enterText(find.byType(TextField), 'compare this');
     if (ordinarySend) {
       await tester.pump();
       await tester.tap(find.byKey(const ValueKey('primary-btn-send')));
+      whileSending?.call(container);
       await settle(tester);
       return container;
     }
@@ -200,7 +236,7 @@ void main() {
   String composerText(WidgetTester tester) =>
       tester.widget<TextField>(find.byType(TextField)).controller!.text;
 
-  testWidgets('a refused comparison explains itself and keeps the draft', (
+  testPage('a refused comparison explains itself and keeps the draft', (
     tester,
   ) async {
     final container = await compareOnPage(tester);
@@ -211,7 +247,7 @@ void main() {
     expect(container.read(chatMessagesProvider), isEmpty);
   });
 
-  testWidgets('an admitted comparison puts both answers in the chat and '
+  testPage('an admitted comparison puts both answers in the chat and '
       'clears the draft', (tester) async {
     final db = AppDatabase(NativeDatabase.memory());
     await tester.runAsync(
@@ -235,13 +271,9 @@ void main() {
       [for (final message in turn) message.role],
       ['user', 'assistant', 'assistant'],
     );
-    // Dropping the streaming placeholders ends the task poll they started.
-    container.read(chatMessagesProvider.notifier)
-      ..clearMessages()
-      ..finishStreaming();
   });
 
-  testWidgets(
+  testPage(
     'ordinary admission clears its draft before the network drain completes',
     (tester) async {
       final db = AppDatabase(NativeDatabase.memory());
@@ -285,18 +317,160 @@ void main() {
       } finally {
         engine.gate.complete();
         await settle(tester);
-        container.read(chatMessagesProvider.notifier)
-          ..clearMessages()
-          ..finishStreaming();
       }
     },
   );
+
+  // Send waits until every file in the tray is uploaded. A file attached
+  // after that, while the send reads the draft's recordings, is not one it
+  // checked: the message goes without it, and it stays for the next one.
+  testPage('a file attached while a send is admitted stays in the tray', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    await tester.runAsync(
+      () => db
+          .into(db.chats)
+          .insert(
+            ChatsCompanion.insert(
+              id: 'stored-chat',
+              title: 'A chat',
+              createdAt: 1,
+              updatedAt: 1,
+              bodySynced: const Value(true),
+            ),
+          ),
+    );
+    final checked = _upload(
+      'checked.txt',
+      status: FileUploadStatus.completed,
+      fileId: 'file-checked',
+    );
+    final later = _upload('later.txt', status: FileUploadStatus.uploading);
+    final container = await compareOnPage(
+      tester,
+      db: db,
+      ordinarySend: true,
+      overrides: [
+        attachedFilesProvider.overrideWith(() => _Tray([checked])),
+      ],
+      whileSending: (container) =>
+          (container.read(attachedFilesProvider.notifier) as _Tray).put(later),
+    );
+
+    final sent = container
+        .read(chatMessagesProvider)
+        .firstWhere((message) => message.role == 'user');
+    expect(sent.attachmentIds, ['file-checked']);
+    expect(container.read(attachedFilesProvider), [same(later)]);
+  });
+
+  // With no model picked, the send waits for the model list. Another account
+  // signing in meanwhile gets neither the message nor its files.
+  testPage('a send waiting for a model sends nothing once another account '
+      'signs in', (tester) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    await tester.runAsync(
+      () => db
+          .into(db.chats)
+          .insert(
+            ChatsCompanion.insert(
+              id: 'stored-chat',
+              title: 'A chat',
+              createdAt: 1,
+              updatedAt: 1,
+              bodySynced: const Value(true),
+            ),
+          ),
+    );
+    final listed = Completer<List<Model>>();
+    final checked = _upload(
+      'checked.txt',
+      status: FileUploadStatus.completed,
+      fileId: 'file-checked',
+    );
+    final container = await compareOnPage(
+      tester,
+      db: db,
+      ordinarySend: true,
+      modelPicked: false,
+      modelList: listed.future,
+      overrides: [
+        attachedFilesProvider.overrideWith(() => _Tray([checked])),
+        openWebUiAuthSessionEpochProvider.overrideWith(
+          (ref) => ref.watch(_signIn),
+        ),
+      ],
+    );
+
+    container.read(_signIn.notifier).another();
+    listed.complete(const [Model(id: 'alpha', name: 'Alpha')]);
+    await settle(tester);
+
+    expect(container.read(chatMessagesProvider), isEmpty);
+    expect(await tester.runAsync(() => db.select(db.outboxOps).get()), isEmpty);
+    expect(container.read(attachedFilesProvider), [same(checked)]);
+  });
+
+  testPage('a tapped follow-up is sent with the tools picked for the chat', (
+    tester,
+  ) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    await tester.runAsync(
+      () => db
+          .into(db.chats)
+          .insert(
+            ChatsCompanion.insert(
+              id: 'stored-chat',
+              title: 'A chat',
+              createdAt: 1,
+              updatedAt: 1,
+              bodySynced: const Value(true),
+            ),
+          ),
+    );
+    await compareOnPage(
+      tester,
+      db: db,
+      followUp: 'Is the water hot yet?',
+      transcript: [
+        ChatMessage(
+          id: 'user-1',
+          role: 'user',
+          content: 'Is the kettle on?',
+          timestamp: DateTime.utc(2026, 11, 3),
+        ),
+        ChatMessage(
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'It is.',
+          timestamp: DateTime.utc(2026, 11, 3),
+          model: 'alpha',
+          followUps: const ['Is the water hot yet?'],
+        ),
+      ],
+      overrides: [
+        selectedToolIdsProvider.overrideWith(
+          () => _PickedTools(const ['kettle-tools']),
+        ),
+      ],
+    );
+
+    final ops = await tester.runAsync(() => db.select(db.outboxOps).get());
+    final completions = [
+      for (final op in ops!)
+        if (op.kind == 'requestCompletion')
+          jsonDecode(op.payload) as Map<String, dynamic>,
+    ];
+    expect(completions, hasLength(1));
+    expect(completions.single['toolIds'], ['kettle-tools']);
+  });
 
   // An Open WebUI Direct turn goes through the server, which never says
   // when it reached its run: its draft is let go once the send is accepted,
   // as for any server model. Treated like a device Direct turn, it stayed
   // in the composer to be sent again.
-  testWidgets('an Open WebUI Direct send clears its draft', (tester) async {
+  testPage('an Open WebUI Direct send clears its draft', (tester) async {
     final registry = DirectModelRegistry();
     final direct = registry
         .replaceProfileModels(
@@ -333,7 +507,7 @@ void main() {
 
   // A Hermes turn gives up its words once it goes to its run. One whose new
   // session could not be made never did, and the page cleared them anyway.
-  testWidgets('a Hermes send whose session cannot be made keeps its draft', (
+  testPage('a Hermes send whose session cannot be made keeps its draft', (
     tester,
   ) async {
     final db = AppDatabase(NativeDatabase.memory());
@@ -356,16 +530,45 @@ void main() {
   });
 }
 
+FileUploadState _upload(
+  String name, {
+  required FileUploadStatus status,
+  String? fileId,
+}) => FileUploadState(
+  file: File('${Directory.systemTemp.path}/sendpath-$name'),
+  fileName: name,
+  fileSize: 1,
+  progress: status == FileUploadStatus.completed ? 1 : 0.5,
+  status: status,
+  fileId: fileId,
+);
+
+/// The composer's tray, starting with [initial].
+class _Tray extends AttachedFilesNotifier {
+  _Tray(this.initial);
+
+  final List<FileUploadState> initial;
+
+  @override
+  List<FileUploadState> build() => initial;
+
+  void put(FileUploadState file) => state = [...state, file];
+}
+
 class _Conversations extends Conversations {
   @override
   Future<List<Conversation>> build() async => const <Conversation>[];
 }
 
 class _Models extends Models {
+  _Models([this.list]);
+
+  /// The list as the server gives it, once it does; Alpha alone when unset.
+  final Future<List<Model>>? list;
+
   @override
-  Future<List<Model>> build() async => const [
-    Model(id: 'alpha', name: 'Alpha'),
-  ];
+  Future<List<Model>> build() async =>
+      list ?? const [Model(id: 'alpha', name: 'Alpha')];
 }
 
 class _Folders extends Folders {
@@ -379,12 +582,26 @@ class _Tools extends ToolsList {
 }
 
 class _Selected extends SelectedModel {
-  _Selected(this.model);
+  _Selected(this.model, {this.picked = true});
 
   final Model? model;
 
+  /// False for a chat with no model picked yet.
+  final bool picked;
+
   @override
-  Model? build() => model ?? const Model(id: 'alpha', name: 'Alpha');
+  Model? build() =>
+      picked ? model ?? const Model(id: 'alpha', name: 'Alpha') : null;
+}
+
+/// The sign-in session, which a test replaces as another account signs in.
+final _signIn = NotifierProvider<_SignIn, Object>(_SignIn.new);
+
+class _SignIn extends Notifier<Object> {
+  @override
+  Object build() => Object();
+
+  void another() => state = Object();
 }
 
 class _DesktopHermesConfig extends HermesConfigController {
@@ -453,8 +670,21 @@ class _Active extends ActiveConversationNotifier {
 }
 
 class _Messages extends ChatMessagesNotifier {
+  _Messages([this.initial = const <ChatMessage>[]]);
+
+  final List<ChatMessage> initial;
+
   @override
-  List<ChatMessage> build() => const <ChatMessage>[];
+  List<ChatMessage> build() => initial;
+}
+
+class _PickedTools extends SelectedToolIds {
+  _PickedTools(this.ids);
+
+  final List<String> ids;
+
+  @override
+  List<String> build() => ids;
 }
 
 class _Storage extends Fake implements OptimizedStorageService {

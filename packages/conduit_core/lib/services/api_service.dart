@@ -15,12 +15,16 @@ import 'package:conduit_core/features/integrations/personal_connection_edits.dar
 import 'package:conduit_core/features/integrations/personal_connection_settings.dart';
 
 import 'package:conduit_core/services/chat_completion_transport.dart';
+import 'package:conduit_core/features/tether/tether_relay_failure.dart'
+    show tetherRelayFailureOf;
 import 'package:conduit_core/services/moa_completion.dart';
 import 'package:conduit_core/services/openwebui_stream_parser.dart';
 
 import 'package:conduit_core/network/io/public_health_probe.dart';
 import 'package:conduit_core/models/account_metadata.dart';
 import 'package:conduit_core/models/backend_config.dart';
+import 'package:conduit_core/models/browser_sign_in_config.dart'
+    show browserSignInProviderPattern;
 import 'package:conduit_core/models/chat_message.dart';
 import 'package:conduit_core/models/conversation.dart';
 import 'package:conduit_core/models/file_info.dart';
@@ -29,6 +33,7 @@ import 'package:conduit_core/models/knowledge_base_file.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:conduit_core/models/model_controls.dart';
 import 'package:conduit_core/features/terminal/models/terminal_agent_model.dart';
+import 'package:conduit_core/models/oauth_login_probe.dart';
 import 'package:conduit_core/models/openwebui_chat_prompt.dart';
 import 'package:conduit_core/models/openwebui_chat_settings.dart';
 import 'package:conduit_core/models/prompt.dart';
@@ -52,6 +57,9 @@ export 'package:conduit_core/network/same_origin_redirect_interceptor.dart'
 import 'package:conduit_core/features/workspace/models/workspace_common.dart';
 import 'package:conduit_core/features/workspace/models/workspace_knowledge.dart';
 import 'package:conduit_core/features/workspace/models/workspace_resources.dart';
+import 'package:conduit_core/features/push/services/openwebui_push_backend.dart'
+    show kConduitPushFunctionId;
+import 'package:conduit_core/features/workspace/services/workspace_model_avatar_source.dart';
 
 import 'package:conduit_core/auth/api_auth_interceptor.dart';
 import 'package:conduit_core/auth/openwebui_two_step.dart';
@@ -69,6 +77,7 @@ import 'package:conduit_markdown/conduit_markdown.dart';
 
 import 'package:conduit_core/utils/openwebui_message_payload.dart';
 import 'package:conduit_core/utils/json_normalization.dart';
+import 'package:conduit_core/utils/server_version_compat.dart';
 
 import 'package:conduit_core/utils/message_tree_utils.dart' as message_tree;
 import 'package:conduit_core/services/conversation_parsing.dart';
@@ -359,6 +368,30 @@ class ApiService extends _ApiServiceBase
     super.publicHealthRequestTimeout,
     super.reportsRouteRefusals,
   });
+
+  /// How long a chat completion request that is answered only once its reply
+  /// has finished may wait for that answer. Open WebUI 0.9+ answers so for a
+  /// saved chat sent without a socket session.
+  static const Duration heldCompletionReceiveTimeout = Duration(minutes: 10);
+
+  /// How long, after such a request ran out of time, the saved reply is
+  /// waited for before the turn ends with what the server has saved so far.
+  static const Duration heldReplyWaitLimit = Duration(minutes: 20);
+
+  /// Clients a rebuild retired ([dispose]) that something may still hold: a
+  /// sync keeps the client it was built with, and its request runs on.
+  static final Set<WeakReference<ApiService>> _retiredClients =
+      <WeakReference<ApiService>>{};
+
+  /// Closes now ([closeNow]) each client a rebuild retired, so a request still
+  /// out on one fails at once: for a host shutting down, which must not wait
+  /// on the server.
+  static void closeRetiredNow() {
+    for (final client in List.of(_retiredClients)) {
+      client.target?.closeNow();
+    }
+    _retiredClients.clear();
+  }
 }
 
 List<Map<String, dynamic>> _normalizeMapListWorker(

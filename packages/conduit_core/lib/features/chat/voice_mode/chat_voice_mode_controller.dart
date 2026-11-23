@@ -9,8 +9,11 @@ library;
 
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math' as math;
 
+import 'package:clock/clock.dart';
 import 'package:meta/meta.dart';
+import 'package:riverpod/misc.dart' show Override;
 import 'package:riverpod/riverpod.dart';
 
 import 'package:conduit_core/voice/voice_session.dart';
@@ -40,6 +43,7 @@ import 'package:conduit_core/features/chat/realtime_call/realtime_bridge_transpo
 import 'package:conduit_core/features/chat/realtime_call/realtime_call_availability.dart';
 import 'package:conduit_core/features/chat/realtime_call/realtime_call_state.dart';
 import 'package:conduit_core/features/chat/voice_call/voice_call_eligibility.dart';
+import 'package:conduit_core/features/chat/voice_mode/chat_voice_send.dart';
 import 'package:conduit_core/features/chat/voice_mode/voice_mode_ports.dart';
 
 import 'package:conduit_core/features/tools/providers/tools_providers.dart';
@@ -85,10 +89,32 @@ ChatVoiceModeError _errorKindOf(Object error) =>
   return (ends: true, chatId: callChatId);
 }
 
+/// Which controller's call holds the call audio every chat shares (see
+/// [ChatVoiceModeController._sharedAudio]); null when none does.
+final class _SharedCallAudio {
+  Object? owner;
+}
+
+/// Never overridden in a chat session scope: one for every chat.
+final _sharedCallAudioProvider = Provider<_SharedCallAudio>(
+  (_) => _SharedCallAudio(),
+);
+
 final chatVoiceModeControllerProvider =
     NotifierProvider<ChatVoiceModeController, ChatVoiceModeSnapshot>(
       ChatVoiceModeController.new,
     );
+
+/// What a chat session scope makes afresh for a call in its chat: the
+/// controller, and the admission and realtime voice it reads, which follow
+/// the scope's selected model and conversation rather than the root's. A
+/// host with several chats live (the desktop daemon) runs a call in the
+/// scope of the chat it is in; mobile never opens a scope.
+List<Override> chatSessionScopedVoiceOverrides() => <Override>[
+  chatVoiceModeControllerProvider.overrideWith(ChatVoiceModeController.new),
+  ...chatSessionScopedVoiceCallEligibilityOverrides(),
+  ...chatSessionScopedRealtimeCallOverrides(),
+];
 
 @visibleForTesting
 final chatVoiceModeServiceLifecycleTimeoutProvider = Provider<Duration>((ref) {
@@ -163,11 +189,32 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
   static const int _emptyTranscriptMaxDelayMs = 2000;
   static const Duration _backgroundKeepAliveInterval = Duration(minutes: 5);
 
+  /// How long the end of a reply still counts as echo once it has played. A
+  /// recognizer finalizes an utterance after a pause: iOS 1.2 s after the
+  /// last word, Android after its own end-of-speech silence of up to about
+  /// 2 s, and the result then has to arrive.
+  static const Duration _finishedReplyEchoWindow = Duration(seconds: 3);
+
   Future<void> _serial = Future<void>.value();
   int _token = 0;
   int _stopRequestGeneration = 0;
   int _emptyTranscriptRestarts = 0;
   bool _disposed = false;
+
+  /// Who holds the call audio every chat shares: the microphone input, the
+  /// audio session, the background lease and the speech engine's call
+  /// route. The root's, never a scope's.
+  _SharedCallAudio? _sharedAudio;
+
+  /// Whether a call of this controller took the shared call audio and has
+  /// not given it back. Another chat's call, or read aloud, may hold it
+  /// otherwise: a controller that never had it leaves it alone.
+  bool get _holdsSharedAudio => identical(_sharedAudio?.owner, this);
+
+  void _releaseSharedAudio() {
+    if (_holdsSharedAudio) _sharedAudio!.owner = null;
+  }
+
   Completer<void>? _pendingStartReadinessCancellation;
 
   StreamSubscription<VoiceTranscriptEvent>? _transcriptSub;
@@ -222,9 +269,28 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
   List<String> _assistantSpeechChunks = const <String>[];
   int _activeAssistantSpeechChunkIndex = -1;
 
+  /// The last chunks of a reply the recognizer heard play out, and when they
+  /// stop counting as its echo.
+  List<String> _finishedReplyChunks = const <String>[];
+  DateTime? _finishedReplyEchoUntil;
+  RealtimeCallBlock? _realtimeBlock;
+  bool _realtimeAudioMissing = false;
+
+  /// Whether the call under way talks to a realtime voice.
+  bool get isRealtimeCall => _realtime != null;
+
+  /// Why the call under way is turn by turn, when the core said: what the
+  /// user, the chat or the backend left it ([RealtimeCallBlock]).
+  RealtimeCallBlock? get realtimeBlock => _realtimeBlock;
+
+  /// Whether the call is turn by turn because this host has no realtime
+  /// audio or WebRTC, although the backend offers a realtime voice.
+  bool get realtimeAudioMissing => _realtimeAudioMissing;
+
   @override
   ChatVoiceModeSnapshot build() {
     _disposed = false;
+    _sharedAudio = ref.read(_sharedCallAudioProvider);
     _backgroundCoordinator = ref.read(
       chatVoiceModeBackgroundCoordinatorProvider,
     );
@@ -271,6 +337,8 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       final audioSessionCoordinator = _audioSessionCoordinator;
       final callKit = _callKit;
       final callId = _activeCallId;
+      final holdsSharedAudio = _holdsSharedAudio;
+      final sharedAudio = _sharedAudio;
       final socketBackgroundLease = _socketBackgroundLease;
       final realtime = _realtime;
       final realtimeSub = _realtimeSub;
@@ -283,7 +351,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       // The voice's microphone and connection end with the provider; the
       // host skips the chat writes a disposed provider can no longer make.
       unawaited(realtimeSub?.cancel());
-      unawaited(realtime?.end());
+      _inBackground(realtime?.end(), 'realtime-end');
       _activeCallId = null;
       _usesOpenWebUiTransport = false;
       selectedModelSub?.close();
@@ -300,21 +368,25 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
                 audioResponseCaptureFailureSub,
               );
               await _stopVoiceInputAfterDispose(input);
-              await _endResponseWaitCaptureAfterDispose(
-                audioSessionCoordinator,
-              );
+              if (holdsSharedAudio) {
+                await _endResponseWaitCaptureAfterDispose(
+                  audioSessionCoordinator,
+                );
+              }
               await _cancelSubscriptionAfterDispose(ttsSub);
-              await _stopTtsAfterDispose(tts);
-              // The engine is shared with read-aloud, which belongs on the
-              // media stream. Nothing survives provider disposal to hand it
-              // back, so it happens here.
-              tts?.setVoiceCallActive(false);
-              await _stopBackgroundVoiceLeaseAfterDispose(
-                backgroundCoordinator,
-              );
-              await _deactivateAudioSessionAfterDispose(
-                audioSessionCoordinator,
-              );
+              if (holdsSharedAudio) {
+                await _stopTtsAfterDispose(tts);
+                // The engine is shared with read-aloud, which belongs on the
+                // media stream. Nothing survives provider disposal to hand
+                // it back, so it happens here.
+                tts?.setVoiceCallActive(false);
+                await _stopBackgroundVoiceLeaseAfterDispose(
+                  backgroundCoordinator,
+                );
+                await _deactivateAudioSessionAfterDispose(
+                  audioSessionCoordinator,
+                );
+              }
               await _cancelSubscriptionAfterDispose(callKitSub);
               await _cancelSubscriptionAfterDispose(speakerphoneRouteSub);
               if (callId != null) {
@@ -328,6 +400,13 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
                 error: error,
                 stackTrace: stackTrace,
               );
+            })
+            // Given back once its own teardown is over, so another chat's
+            // call never starts under it.
+            .whenComplete(() {
+              if (holdsSharedAudio && identical(sharedAudio?.owner, this)) {
+                sharedAudio!.owner = null;
+              }
             }),
       );
     });
@@ -388,7 +467,11 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
             return;
           }
           if (!eligibility.canStart) {
-            _setError(eligibility.errorMessage!, ChatVoiceModeError.message);
+            _setError(
+              eligibility.errorMessage!,
+              ChatVoiceModeError.message,
+              eligibility.refusal,
+            );
             return;
           }
           if (shouldStart != null && !shouldStart()) {
@@ -400,6 +483,14 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
 
           final startToken = ++_token;
           token = startToken;
+          // Admitted: the call takes the shared call audio, unless a call in
+          // another chat holds it (they share one microphone input).
+          final shared = _sharedAudio!;
+          if (shared.owner != null && !identical(shared.owner, this)) {
+            result = ChatVoiceModeStartResult.alreadyActive;
+            return;
+          }
+          shared.owner = this;
           _resetRuntime();
 
           void cancelIfRequested() {
@@ -599,6 +690,8 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     Model model, {
     required bool newChat,
   }) async {
+    _realtimeBlock = null;
+    _realtimeAudioMissing = false;
     final RealtimeCallRoute route;
     try {
       route = await ref.read(realtimeCallRouteResolverProvider)(
@@ -640,6 +733,8 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
         );
       }
     }
+    _realtimeBlock = route.block;
+    _realtimeAudioMissing = route.block == null;
     DebugLogger.log(
       'realtime-unavailable',
       scope: 'chat/voice_mode',
@@ -690,7 +785,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     final callId = state.activeCallId;
     if (_isCurrent(token) && !_markedCallConnected && callId != null) {
       _markedCallConnected = true;
-      unawaited(_callKit!.markCallConnected(callId));
+      _inBackground(_callKit!.markCallConnected(callId), 'mark-connected');
     }
   }
 
@@ -875,6 +970,26 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
 
       await _startListening(token);
     });
+  }
+
+  /// Runs [work] without waiting for it. These start from host events
+  /// (speech, transcription, CallKit, timers) where nothing awaits them, so
+  /// a host call that fails is logged instead of escaping.
+  void _inBackground(Future<Object?>? work, String what) {
+    if (work == null) return;
+    unawaited(
+      work.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stackTrace) {
+          DebugLogger.error(
+            '$what-failed',
+            scope: 'voice-mode',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        },
+      ),
+    );
   }
 
   Future<void> toggleMute() {
@@ -1096,7 +1211,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
         }
       case VoiceCallKitMuteToggled(callId: final mutedCallId, :final isMuted):
         if (mutedCallId == callId && isMuted != state.isMuted) {
-          unawaited(toggleMute());
+          _inBackground(toggleMute(), 'toggle-mute');
         }
     }
   }
@@ -1117,7 +1232,10 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
           }
         case TtsCompleted():
           if (_assistantFinalized && _awaitingAssistant) {
-            unawaited(_resumeAfterAssistantSpeech(token));
+            _inBackground(
+              _resumeAfterAssistantSpeech(token, playedOut: true),
+              'resume',
+            );
           }
         case TtsCancelled():
           break;
@@ -1131,7 +1249,10 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
           // mode active with no way to accept the next utterance.
           if (_awaitingAssistant) {
             _assistantFinalized = true;
-            unawaited(_resumeAfterAssistantSpeech(token));
+            _inBackground(
+              _resumeAfterAssistantSpeech(token, playedOut: false),
+              'resume',
+            );
           }
         case TtsPaused():
         case TtsResumed():
@@ -1240,7 +1361,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
         _backgroundKeepAliveTimer = null;
         return;
       }
-      unawaited(background.keepAlive());
+      _inBackground(background.keepAlive(), 'keep-alive');
     });
   }
 
@@ -1323,7 +1444,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
         return;
       }
       _transcriptSub = null;
-      unawaited(_handleListeningDone(token));
+      _inBackground(_handleListeningDone(token), 'listening-done');
     }
 
     if (_transcriptSub == null || !input.isListening) {
@@ -1351,7 +1472,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     final callId = state.activeCallId;
     if (!_markedCallConnected && callId != null) {
       _markedCallConnected = true;
-      unawaited(_callKit!.markCallConnected(callId));
+      _inBackground(_callKit!.markCallConnected(callId), 'mark-connected');
     }
 
     if (_transcriptSub == null || !input.isListening) {
@@ -1405,7 +1526,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     bufferedEvents.clear();
     if (bufferedDone && _isCurrent(token)) {
       _transcriptSub = null;
-      unawaited(_handleListeningDone(token));
+      _inBackground(_handleListeningDone(token), 'listening-done');
     }
   }
 
@@ -1418,7 +1539,10 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     }
 
     if (event.isFinal) {
-      unawaited(_handleFinalTranscript(event.text, token));
+      _inBackground(
+        _handleFinalTranscript(event.text, token),
+        'final-transcript',
+      );
     }
   }
 
@@ -1494,12 +1618,26 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
           _pendingFinalTranscripts.clear();
           return;
         }
-        if (assistantActive) {
-          await _interruptAssistantForBargeIn(token);
+        if (assistantActive
+            ? _isEchoOfSpeech(transcript)
+            : _isEchoOfFinishedReply(transcript)) {
+          DebugLogger.info(
+            'barge-in-echo-ignored',
+            scope: 'chat/voice_mode',
+            data: {'afterPlayback': !assistantActive},
+          );
+          if (!assistantActive && _currentTranscript.trim() == transcript) {
+            _currentTranscript = '';
+            state = state.copyWith(transcript: '');
+          }
+        } else {
+          if (assistantActive) {
+            await _interruptAssistantForBargeIn(token);
+          }
+          if (!_isCurrent(token) || state.isMuted) return;
+          _lastSubmittedTranscript = transcript;
+          await _sendTranscript(transcript, token);
         }
-        if (!_isCurrent(token) || state.isMuted) return;
-        _lastSubmittedTranscript = transcript;
-        await _sendTranscript(transcript, token);
       } finally {
         _sendingTranscript = false;
       }
@@ -1510,6 +1648,48 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       }
       transcript = pending;
     }
+  }
+
+  /// Whether [transcript] is the reply coming back through the microphone.
+  ///
+  /// Where the platform cancels no echo (Android before 13 listens through
+  /// the recognizer's own microphone), a reply on the loudspeaker is heard
+  /// and transcribed. It is compared with the chunk being spoken and the one
+  /// before it, since the recognizer finishes an utterance after a pause.
+  bool _isEchoOfSpeech(String transcript) {
+    final index = _activeAssistantSpeechChunkIndex;
+    final chunks = _assistantSpeechChunks;
+    if (index < 0 || index >= chunks.length) return false;
+    return _isEchoOf(
+      transcript,
+      chunks.sublist(index > 0 ? index - 1 : 0, index + 1),
+    );
+  }
+
+  /// Whether [transcript] is the end of the reply that just played. A
+  /// recognizer that listened through it finalizes its last sentence only
+  /// after the silence that follows, once playback has ended.
+  bool _isEchoOfFinishedReply(String transcript) {
+    final until = _finishedReplyEchoUntil;
+    if (until == null || !clock.now().isBefore(until)) {
+      _finishedReplyChunks = const <String>[];
+      _finishedReplyEchoUntil = null;
+      return false;
+    }
+    return _isEchoOf(transcript, _finishedReplyChunks);
+  }
+
+  /// Whether [transcript] reads as [spoken], the chunks just played, oldest
+  /// first. A few words could as well be the caller repeating the reply, so
+  /// they count only as the whole end of one of those chunks: an echo is
+  /// finalized after the pause that ends a sentence.
+  bool _isEchoOf(String transcript, List<String> spoken) {
+    final heard = _speechWords(transcript);
+    if (heard.isEmpty) return false;
+    if (heard.length <= _shortEchoWords) {
+      return spoken.any((chunk) => _endsWithWords(_speechWords(chunk), heard));
+    }
+    return _isEcho(heard, _speechWords(spoken.join(' ')));
   }
 
   void _enqueuePendingFinalTranscript(String transcript) {
@@ -1573,7 +1753,12 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
           inputOwnsResponseCapture = await input.prepareResponseWaitHandoff();
           if (!_isCurrent(token)) return;
         }
-        if (_platform.isIOS) {
+        // Voice chat's processing plays replies far quieter than spoken audio
+        // (#912), so iOS keeps it only while something still listens: barge-in,
+        // or a server recorder held through the reply, which `record` does
+        // not restart after a mode change. The native response-wait capture
+        // does restart.
+        if (_platform.isIOS && (keepListening || inputOwnsResponseCapture)) {
           await _audioSessionCoordinator?.configureForBargeInSpeaking();
         } else {
           await _audioSessionCoordinator?.configureForSpeaking();
@@ -1602,6 +1787,8 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       _activeAssistantMessageId = null;
       _assistantSpeechChunks = const <String>[];
       _activeAssistantSpeechChunkIndex = -1;
+      _finishedReplyChunks = const <String>[];
+      _finishedReplyEchoUntil = null;
 
       state = state.copyWith(
         phase: ChatVoiceModePhase.sending,
@@ -1615,10 +1802,9 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       await _backgroundCoordinator?.keepAlive();
       if (!_isCurrent(token)) return;
       final selectedToolIds = ref.read(selectedToolIdsProvider);
-      await durableSend(
+      await ref.read(chatVoiceSendProvider)(
         ref,
         transcript,
-        null,
         toolIds: selectedToolIds,
         isVoiceMode: true,
       );
@@ -1694,7 +1880,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     }
 
     _lastFedAssistantText = text;
-    unawaited(_textToSpeech!.feedStreamingText(text));
+    _inBackground(_textToSpeech!.feedStreamingText(text), 'feed-tts');
   }
 
   void _handleChatMessagesChanged(List<ChatMessage> messages) {
@@ -1732,7 +1918,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       return;
     }
 
-    unawaited(_finishAssistantResponse(_token));
+    _inBackground(_finishAssistantResponse(_token), 'finish-response');
   }
 
   Future<void> _finishAssistantResponse(int token) async {
@@ -1834,7 +2020,10 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     await tts.feedStreamingText(pendingText);
   }
 
-  Future<void> _resumeAfterAssistantSpeech(int token) async {
+  Future<void> _resumeAfterAssistantSpeech(
+    int token, {
+    required bool playedOut,
+  }) async {
     if (!_isCurrent(token) || !_awaitingAssistant) {
       return;
     }
@@ -1845,6 +2034,15 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     _lastSubmittedTranscript = null;
     _activeAssistantMessageId = null;
     _lastFedAssistantText = '';
+    // Barge-in keeps the recognizer listening through playback, so the end
+    // of the reply can still come back as a transcript.
+    final heardReply = _transcriptSub != null && _voiceInput!.isListening;
+    _finishedReplyChunks = heardReply
+        ? _lastSpokenChunks(playedOut: playedOut)
+        : const <String>[];
+    _finishedReplyEchoUntil = heardReply
+        ? clock.now().add(_finishedReplyEchoWindow)
+        : null;
     _assistantSpeechChunks = const <String>[];
     _activeAssistantSpeechChunkIndex = -1;
     _assistantMessageIdsBeforeTurn = <String>{};
@@ -1958,11 +2156,13 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
   void _setError(
     String message, [
     ChatVoiceModeError kind = ChatVoiceModeError.other,
+    VoiceCallRefusal? refusal,
   ]) {
     state = state.copyWith(
       phase: ChatVoiceModePhase.error,
       errorMessage: message,
       errorKind: kind,
+      refusal: refusal,
       clearActiveCallId: true,
       clearSpokenResponse: true,
       intensity: 0,
@@ -2001,6 +2201,7 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     required bool endCallKit,
     required int ownershipToken,
   }) async {
+    final heldSharedAudio = _holdsSharedAudio;
     final input = _voiceInput;
     final tts = _textToSpeech;
     final callKit = _callKit;
@@ -2070,11 +2271,14 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
             !_isCurrent(ownershipToken) && _voiceInput != null;
         bool replacementOwnsTts() =>
             !_isCurrent(ownershipToken) && _textToSpeech != null;
+        // A controller whose call never took the shared call audio (one
+        // refused before admission, say) leaves it to whoever holds it.
         bool replacementOwnsSharedAudio() =>
-            !_isCurrent(ownershipToken) &&
-            (_voiceInput != null ||
-                _textToSpeech != null ||
-                _backgroundLeaseId != null);
+            !heldSharedAudio ||
+            (!_isCurrent(ownershipToken) &&
+                (_voiceInput != null ||
+                    _textToSpeech != null ||
+                    _backgroundLeaseId != null));
 
         // Before the audio session goes, so the call's audio stops first.
         await _runTeardownStep('realtime-end', () async {
@@ -2165,6 +2369,9 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
         stackTrace: stackTrace,
       );
     }
+    // Free for another chat's call once this teardown is over (a failed call
+    // included), unless a start of this controller took it meanwhile.
+    if (_isCurrent(ownershipToken)) _releaseSharedAudio();
   }
 
   Future<void> _runTeardownStep(
@@ -2214,6 +2421,19 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
     _sendingTranscript = false;
     _assistantSpeechChunks = const <String>[];
     _activeAssistantSpeechChunkIndex = -1;
+    _finishedReplyChunks = const <String>[];
+    _finishedReplyEchoUntil = null;
+  }
+
+  /// The last two chunks played: the reply's last two once it [playedOut],
+  /// or up to the one that was playing when it stopped.
+  List<String> _lastSpokenChunks({required bool playedOut}) {
+    final chunks = _assistantSpeechChunks;
+    final index = _activeAssistantSpeechChunkIndex;
+    final end = playedOut || index < 0 || index >= chunks.length
+        ? chunks.length
+        : index + 1;
+    return chunks.sublist(math.max(0, end - 2), end);
   }
 
   void _replaceSocketBackgroundLease(SocketService? socket) {
@@ -2373,4 +2593,52 @@ class ChatVoiceModeController extends Notifier<ChatVoiceModeSnapshot> {
       await callKit?.endCall(callId);
     } catch (_) {}
   }
+}
+
+final _speechWordPattern = RegExp(
+  r"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*",
+  unicode: true,
+);
+
+/// [text]'s words, lower case, without punctuation, as recognizers write them.
+List<String> _speechWords(String text) => _speechWordPattern
+    .allMatches(text.toLowerCase())
+    .map((match) => match[0]!.replaceAll('’', "'"))
+    .toList(growable: false);
+
+/// Transcripts this short count as echo only as the end of a chunk.
+const _shortEchoWords = 3;
+
+/// Whether [words] ends with [tail].
+bool _endsWithWords(List<String> words, List<String> tail) {
+  if (tail.length > words.length) return false;
+  final offset = words.length - tail.length;
+  for (var i = 0; i < tail.length; i++) {
+    if (words[offset + i] != tail[i]) return false;
+  }
+  return true;
+}
+
+/// Whether [heard] reads as a run of [spoken]: one word in four may be
+/// misheard, dropped or added, as a recognizer does with speech it hears
+/// through a loudspeaker. Three words or fewer must match exactly.
+bool _isEcho(List<String> heard, List<String> spoken) {
+  if (heard.isEmpty || spoken.isEmpty) return false;
+  // Word edit distance from [heard] to the closest run of [spoken] (Sellers):
+  // a run may start and end anywhere, so the first row and the minimum over
+  // the last row are free.
+  var previous = List<int>.filled(spoken.length + 1, 0);
+  for (var i = 1; i <= heard.length; i++) {
+    final current = List<int>.filled(spoken.length + 1, i);
+    for (var j = 1; j <= spoken.length; j++) {
+      final substitution =
+          previous[j - 1] + (heard[i - 1] == spoken[j - 1] ? 0 : 1);
+      current[j] = math.min(
+        substitution,
+        math.min(previous[j], current[j - 1]) + 1,
+      );
+    }
+    previous = current;
+  }
+  return previous.reduce(math.min) <= heard.length ~/ 4;
 }

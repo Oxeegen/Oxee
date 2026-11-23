@@ -605,7 +605,7 @@ void main() {
   for (final visible in <bool>[true, false]) {
     testWidgets(
       visible
-          ? 'native settings list Personal connections as a dismissing action'
+          ? 'native settings list Personal connections as a page of Settings\'s own'
           : 'native settings leave out Personal connections when hidden',
       (tester) async {
         NativeProfileSheetConfig? presented;
@@ -661,13 +661,17 @@ void main() {
           return;
         }
         // Both the flat menu and the sections carry it, and selecting it
-        // dismisses the sheet and reports the id the app handles.
+        // opens its page inside the sheet, which stays open.
         expect(items, hasLength(2));
         for (final item in items) {
           expect(item.title, 'Personal Connections');
-          expect(item.dismissOnSelect, isTrue);
-          expect(item.actionId, NativeSheetRoutes.personalConnections);
+          expect(item.dismissOnSelect, isFalse);
+          expect(item.actionId, isNull);
         }
+        expect(
+          presented!.detailSheets.map((detail) => detail.id),
+          contains(NativeSheetRoutes.personalConnections),
+        );
       },
     );
   }
@@ -675,7 +679,7 @@ void main() {
   for (final visible in <bool>[true, false]) {
     testWidgets(
       visible
-          ? 'native settings list Scheduled tasks as a dismissing action'
+          ? 'native settings list Scheduled tasks as a page of Settings\'s own'
           : 'native settings leave out Scheduled tasks when hidden',
       (tester) async {
         NativeProfileSheetConfig? presented;
@@ -731,13 +735,17 @@ void main() {
           return;
         }
         // Both the flat menu and the sections carry it, and selecting it
-        // dismisses the sheet and reports the id the app handles.
+        // opens its page inside the sheet, which stays open.
         expect(items, hasLength(2));
         for (final item in items) {
           expect(item.title, 'Scheduled Tasks');
-          expect(item.dismissOnSelect, isTrue);
-          expect(item.actionId, NativeSheetRoutes.scheduledTasks);
+          expect(item.dismissOnSelect, isFalse);
+          expect(item.actionId, isNull);
         }
+        expect(
+          presented!.detailSheets.map((detail) => detail.id),
+          contains(NativeSheetRoutes.scheduledTasks),
+        );
       },
     );
   }
@@ -745,7 +753,7 @@ void main() {
   for (final visible in <bool>[true, false]) {
     testWidgets(
       visible
-          ? 'native settings list Calendar as a dismissing action'
+          ? 'native settings list Calendar as a page of their own'
           : 'native settings leave out Calendar when hidden',
       (tester) async {
         NativeProfileSheetConfig? presented;
@@ -800,14 +808,18 @@ void main() {
           expect(items, isEmpty);
           return;
         }
-        // Both the flat menu and the sections carry it, and selecting it
-        // dismisses the sheet and reports the id the app handles.
+        // Both the flat menu and the sections carry it, and it opens a page
+        // inside the sheet rather than closing it.
         expect(items, hasLength(2));
         for (final item in items) {
           expect(item.title, 'Calendar');
-          expect(item.dismissOnSelect, isTrue);
-          expect(item.actionId, NativeSheetRoutes.calendar);
+          expect(item.dismissOnSelect, isFalse);
+          expect(item.actionId, isNull);
         }
+        expect(
+          presented!.detailSheets.map((detail) => detail.id),
+          contains(NativeSheetRoutes.calendar),
+        );
       },
     );
   }
@@ -873,8 +885,9 @@ void main() {
         expect(items, hasLength(2));
         for (final item in items) {
           expect(item.title, 'Data Controls');
-          expect(item.dismissOnSelect, isTrue);
-          expect(item.actionId, NativeSheetRoutes.chatDataControls);
+          // A page of Settings's own: it opens inside the sheet.
+          expect(item.dismissOnSelect, isFalse);
+          expect(item.actionId, isNull);
         }
       },
     );

@@ -97,7 +97,7 @@ abstract class _ApiServiceBase {
     String messageId,
   );
   Future<ServerUserSettings> getServerUserSettingsModel();
-  Future<bool> deleteChatRaw(String id);
+  Future<bool> deleteChatRaw(String id, {ApiAuthSnapshot? authSnapshot});
   Future<Map<String, dynamic>?> getChatRaw(
     String id, {
     ApiAuthSnapshot? authSnapshot,
@@ -121,14 +121,31 @@ abstract class _ApiServiceBase {
   late final ApiAuthInterceptor _authInterceptor;
   Future<void> _userSettingsMutationQueue = Future<void>.value();
   bool _disposed = false;
+
+  /// Ends each held-reply wait still running ([_awaitHeldReply]), for
+  /// [closeNow].
+  final Set<void Function()> _heldReplyWaits = <void Function()>{};
+
+  /// Set by [closeNow], for a held-reply wait first listened to after it.
+  bool _closedNow = false;
   _ChatRequestMetadataFormat? _chatRequestMetadataFormat;
   bool _runsOutletFiltersInline = false;
+  // Whether chat requests carry `model_item` and `tool_servers`: null until
+  // the server's version, or a refusal of them, says.
+  bool? _sendsClientModelFields;
+  // Whether the server holds messages sent under a running reply, and reads
+  // `regeneration_message_id`: null until its version says.
+  bool? _holdsMessages;
+  // Whether `/api/config` has answered with a version that can be told, and
+  // the read of it a request is waiting on.
+  bool _serverVersionRead = false;
+  Future<void>? _serverVersionReading;
   // Public getter for dio instance
   Dio get dio => _dio;
   // Public getter for base URL
   String get baseUrl => serverConfig.url;
   // Callback to notify when auth token becomes invalid
-  void Function()? onAuthTokenInvalid;
+  void Function(AuthFailureKind kind)? onAuthTokenInvalid;
   // New callback for the unified auth state manager
   Future<void> Function()? onTokenInvalidated;
   _ApiServiceBase({
@@ -308,6 +325,11 @@ abstract class _ApiServiceBase {
   /// request from silently adopting a later account's token on the same
   /// [ApiService] instance.
   ApiAuthSnapshot captureAuthSnapshot() => _authInterceptor.captureSnapshot();
+
+  /// Whether a request bound to [authSnapshot] would still be sent: false
+  /// once another session has replaced it.
+  bool authSnapshotIsCurrent(ApiAuthSnapshot authSnapshot) =>
+      _authInterceptor.snapshotIsCurrent(authSnapshot);
   Options _withAuthSnapshot(Options options, ApiAuthSnapshot? authSnapshot) {
     if (authSnapshot == null) return options;
     options.extra = <String, dynamic>{
@@ -674,9 +696,13 @@ abstract class _ApiServiceBase {
   /// a local message list, preserving server-only history fields.
   Future<void> _deleteConversationMessageByHistoryRewrite(
     String conversationId,
-    String messageId,
-  ) async {
-    final response = await _dio.get('/api/v1/chats/$conversationId');
+    String messageId, {
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
+    final response = await _dio.get(
+      '/api/v1/chats/$conversationId',
+      options: _withAuthSnapshot(Options(), authSnapshot),
+    );
     final rawConversation = _coerceJsonMap(response.data);
     final rawChat = _coerceJsonMap(rawConversation?['chat']);
     if (rawConversation == null || rawChat == null) {
@@ -721,7 +747,11 @@ abstract class _ApiServiceBase {
     }
     chat['history'] = history;
 
-    await _dio.post('/api/v1/chats/$conversationId', data: {'chat': chat});
+    await _dio.post(
+      '/api/v1/chats/$conversationId',
+      data: {'chat': chat},
+      options: _withAuthSnapshot(Options(), authSnapshot),
+    );
   }
 
   Future<void> _persistLegacyPendingTurn({
@@ -730,13 +760,17 @@ abstract class _ApiServiceBase {
     required String model,
     required Map<String, dynamic> userMessage,
     Map<String, dynamic>? modelItem,
+    ApiAuthSnapshot? authSnapshot,
   }) async {
     _traceApi(
       'Persisting legacy pending turn for chat=$conversationId '
       'assistant=$assistantMessageId',
     );
 
-    final response = await _dio.get('/api/v1/chats/$conversationId');
+    final response = await _dio.get(
+      '/api/v1/chats/$conversationId',
+      options: _withAuthSnapshot(Options(), authSnapshot),
+    );
     final rawConversation = _coerceJsonMap(response.data);
     final rawChat = _coerceJsonMap(rawConversation?['chat']);
     if (rawConversation == null || rawChat == null) {
@@ -840,7 +874,11 @@ abstract class _ApiServiceBase {
     }
     chat['models'] = models;
 
-    await _dio.post('/api/v1/chats/$conversationId', data: {'chat': chat});
+    await _dio.post(
+      '/api/v1/chats/$conversationId',
+      data: {'chat': chat},
+      options: _withAuthSnapshot(Options(), authSnapshot),
+    );
   }
 
   Future<void> _setConversationToggle({
@@ -1242,6 +1280,33 @@ abstract class _ApiServiceBase {
         normalized.contains('validation');
   }
 
+  /// Reads the server's version from `/api/config` for a request whose shape
+  /// depends on it, unless a read has already told it. Requests waiting at
+  /// once share one read, and wait at most 5 seconds: one that fails, takes
+  /// longer, or finds no version that can be told leaves the version unknown,
+  /// and a later request reads it again.
+  Future<void> _readServerVersionIfUnknown() async {
+    if (_serverVersionRead) return;
+    final reading = _serverVersionReading ??= () async {
+      try {
+        final response = await _dio.get('/api/config');
+        final data = response.data is String && response.data != ''
+            ? json.decode(response.data as String)
+            : response.data;
+        if (data is Map) {
+          _setChatRequestMetadataFormatFromVersion(data['version']);
+        }
+      } finally {
+        _serverVersionReading = null;
+      }
+    }();
+    try {
+      await reading.timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Unknown: the request goes as to a server older than 0.13.4.
+    }
+  }
+
   void _setChatRequestMetadataFormatFromVersion(dynamic rawVersion) {
     final inferred = _inferChatRequestMetadataFormatFromVersion(rawVersion);
     // Open WebUI 0.9 moved outlet filters into completion itself. Keep this
@@ -1249,6 +1314,21 @@ abstract class _ApiServiceBase {
     _runsOutletFiltersInline = inferred == _ChatRequestMetadataFormat.modernV09;
     if (inferred != null) {
       _chatRequestMetadataFormat = inferred;
+    }
+    final passedOn = ServerVersionCompat.knownAtLeast(
+      rawVersion?.toString(),
+      ServerVersionCompat.clientModelFieldsPassedOnVersion,
+    );
+    if (passedOn != null) {
+      _sendsClientModelFields = !passedOn;
+    }
+    final holdsMessages = ServerVersionCompat.knownAtLeast(
+      rawVersion?.toString(),
+      ServerVersionCompat.heldMessagesVersion,
+    );
+    if (holdsMessages != null) {
+      _holdsMessages = holdsMessages;
+      _serverVersionRead = true;
     }
   }
 
@@ -1525,6 +1605,14 @@ abstract class _ApiServiceBase {
   // Widened from Map<String, CancelToken> to support both legacy CancelToken
   // cancellation and new abort-handle cancellation from sendMessageSession.
   final Map<String, Future<void> Function()> _streamCancelActions = {};
+
+  // The sends under way whose completion request is not registered yet, by
+  // answer id, and whether a Stop has reached each ([beginSend]).
+  final Map<String, bool> _sendsUnderWay = {};
+
+  // The stops of a chat's tasks under way, by chat id
+  // ([holdingChatCompletions]).
+  final Map<String, Set<Future<void>>> _chatStopsUnderWay = {};
   // -----------------------------------------------------------------------
   // Payload construction (shared by legacy and new transport-aware path)
   // -----------------------------------------------------------------------
@@ -1560,8 +1648,10 @@ abstract class _ApiServiceBase {
     Map<String, dynamic>? variables,
     List<Map<String, dynamic>>? files,
     List<ChatCompletionTarget>? messageIds,
+    String? regenerationMessageId,
     _ChatRequestMetadataFormat metadataFormat =
         _ChatRequestMetadataFormat.modernV09,
+    bool includeClientModelFields = true,
   }) {
     bool isImageFile(Map<String, dynamic> file) {
       if (file['type'] == 'image') {
@@ -1755,7 +1845,7 @@ abstract class _ApiServiceBase {
     // Include model_item with real server routing data (pipe, actions,
     // filters, etc.). This is critical for pipe models which need
     // model_item.pipe to be routed to the pipe function on the backend.
-    if (modelItem != null) {
+    if (modelItem != null && includeClientModelFields) {
       data['model_item'] = modelItem;
     }
 
@@ -1810,9 +1900,11 @@ abstract class _ApiServiceBase {
       // own tool-calling mode, so it is deliberately not applied a second time.
     }
 
-    data['tool_servers'] = toolServers ?? <Map<String, dynamic>>[];
-    if (toolServers != null && toolServers.isNotEmpty) {
-      _traceApi('Including tool_servers in request (${toolServers.length})');
+    if (includeClientModelFields) {
+      data['tool_servers'] = toolServers ?? <Map<String, dynamic>>[];
+      if (toolServers != null && toolServers.isNotEmpty) {
+        _traceApi('Including tool_servers in request (${toolServers.length})');
+      }
     }
 
     if (allFiles.isNotEmpty) {
@@ -1872,6 +1964,9 @@ abstract class _ApiServiceBase {
           data['parent_message'] = userMessage;
         }
     }
+    if (regenerationMessageId != null) {
+      data['regeneration_message_id'] = regenerationMessageId;
+    }
 
     data['background_tasks'] = backgroundTasks ?? <String, dynamic>{};
 
@@ -1886,17 +1981,167 @@ abstract class _ApiServiceBase {
     return data;
   }
 
-  bool _isUnsupportedModernChatMetadataError(String error) {
+  /// Whether [error] refuses one of [fields] as a field the request may not
+  /// carry, as a strict server or provider words it.
+  bool _refusesRequestField(String error, List<String> fields) {
     final normalized = error.toLowerCase();
-    if (!normalized.contains('user_message')) {
+    if (!fields.any(normalized.contains)) {
       return false;
     }
 
     return normalized.contains('unsupported') ||
         normalized.contains('extra_forbidden') ||
         normalized.contains('extra inputs') ||
-        normalized.contains('not permitted');
+        normalized.contains('not permitted') ||
+        normalized.contains('unrecognized');
   }
+
+  /// Reply [messageId] of saved chat [chatId] as the server holds it, or null
+  /// when the chat does not hold it.
+  Future<Map<String, dynamic>?> _readSavedReply(
+    String chatId,
+    String messageId, {
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
+    final chat = await getChatRaw(chatId, authSnapshot: authSnapshot);
+    final history = chat?['chat'] is Map ? chat!['chat']['history'] : null;
+    final messages = history is Map ? history['messages'] : null;
+    final candidate = messages is Map ? messages[messageId] : null;
+    return candidate is Map ? Map<String, dynamic>.from(candidate) : null;
+  }
+
+  /// Whether the server has finished [reply], with an answer or an error.
+  static bool _savedReplyFinished(Map<String, dynamic>? reply) =>
+      reply != null && (reply['done'] == true || reply['error'] != null);
+
+  /// Reads of a saved chat that may find a held reply missing before the wait
+  /// for it ends: the server records a turn before it runs it, so one that is
+  /// still missing was never taken.
+  static const int _heldReplyMissingReads = 3;
+
+  /// The session for a held completion request that ran out of time while the
+  /// server was still running its reply (see
+  /// [ApiService.heldCompletionReceiveTimeout]).
+  ///
+  /// Its byte stream carries nothing and ends once the saved reply has
+  /// finished, read again and again with a growing pause, so the turn stays
+  /// running until then; how a stream ends without `[DONE]` then reads the
+  /// finished reply, as for a JSON null answer. When the saved chat does not
+  /// hold the reply, or [ApiService.heldReplyWaitLimit] passes first, it ends
+  /// with [HeldReplyUnresolved] instead. Cancelling the stream or aborting the
+  /// session (the user stopped the reply, or a caller gave up) stops the wait.
+  /// The request is never sent again.
+  ChatCompletionSession _awaitHeldReply({
+    required String chatId,
+    required String messageId,
+    String? sessionId,
+    required Future<void> Function() abort,
+    ApiAuthSnapshot? authSnapshot,
+  }) {
+    var cancelled = false;
+    Timer? pause;
+    Completer<void>? paused;
+    late final StreamController<List<int>> body;
+
+    Future<void> sleep(Duration delay) {
+      final wake = paused = Completer<void>();
+      pause = Timer(delay, () {
+        if (!wake.isCompleted) wake.complete();
+      });
+      return wake.future;
+    }
+
+    Future<void> wait() async {
+      final elapsed = Stopwatch()..start();
+      var missing = 0;
+      var finished = false;
+      for (var read = 0; ; read++) {
+        if (read > 0 && !cancelled) await sleep(_heldReplyPollDelay(read));
+        if (cancelled) return;
+        try {
+          final reply = await _readSavedReply(
+            chatId,
+            messageId,
+            authSnapshot: authSnapshot,
+          );
+          if (cancelled) return;
+          if (_savedReplyFinished(reply)) {
+            finished = true;
+            break;
+          }
+          missing = reply == null ? missing + 1 : 0;
+          if (missing >= _heldReplyMissingReads) break;
+        } catch (error) {
+          DebugLogger.warning(
+            'held-reply-read-failed',
+            scope: 'api/chat',
+            data: {'chatId': chatId, 'error': error.toString()},
+          );
+        }
+        if (elapsed.elapsed >= ApiService.heldReplyWaitLimit) break;
+      }
+      if (cancelled) return;
+      if (!finished) body.addError(const HeldReplyUnresolved());
+      unawaited(body.close());
+    }
+
+    void stopWaiting() {
+      cancelled = true;
+      pause?.cancel();
+      final wake = paused;
+      if (wake != null && !wake.isCompleted) wake.complete();
+    }
+
+    // The client closed now: nothing it reads can arrive, so the wait ends
+    // rather than reading on until its limit.
+    void abandon() {
+      if (cancelled) return;
+      stopWaiting();
+      body.addError(const HeldReplyAbandoned());
+      unawaited(body.close());
+    }
+
+    body = StreamController<List<int>>(
+      onListen: () {
+        // Closed before anything listened (shutdown cut it while the caller
+        // was still preparing): nothing it could read will arrive.
+        if (_closedNow) {
+          abandon();
+          return;
+        }
+        _heldReplyWaits.add(abandon);
+        unawaited(wait().whenComplete(() => _heldReplyWaits.remove(abandon)));
+      },
+      onCancel: () {
+        _heldReplyWaits.remove(abandon);
+        stopWaiting();
+      },
+    );
+    DebugLogger.warning(
+      'held-completion-awaiting-saved-reply',
+      scope: 'api/chat',
+      data: {'chatId': chatId, 'messageId': messageId},
+    );
+    return ChatCompletionSession.httpStream(
+      messageId: messageId,
+      sessionId: sessionId,
+      conversationId: chatId,
+      byteStream: body.stream,
+      // A caller that gives up aborts without cancelling the stream it was
+      // draining, so aborting stops the wait too. Not awaited: a stream that
+      // was never listened to would not finish closing.
+      abort: () async {
+        stopWaiting();
+        unawaited(body.close());
+        await abort();
+      },
+    );
+  }
+
+  /// The pause before read [read] of a held reply: 1, 2, 4 and 8 seconds,
+  /// then every 15.
+  static Duration _heldReplyPollDelay(int read) =>
+      Duration(seconds: read >= 5 ? 15 : 1 << (read - 1));
 
   ChatCompletionSession _recoverJsonNullChatCompletion({
     required String messageId,
@@ -1944,16 +2189,18 @@ abstract class _ApiServiceBase {
     String? sessionId,
     String? conversationId,
     required Future<void> Function() abort,
+    required bool viaTether,
+    ApiAuthSnapshot? authSnapshot,
   }) async {
     final chatId = conversationId?.trim();
     if (chatId != null && chatId.isNotEmpty && !chatId.startsWith('local:')) {
       Map<String, dynamic>? reply;
       try {
-        final chat = await getChatRaw(chatId);
-        final history = chat?['chat'] is Map ? chat!['chat']['history'] : null;
-        final messages = history is Map ? history['messages'] : null;
-        final candidate = messages is Map ? messages[messageId] : null;
-        if (candidate is Map) reply = Map<String, dynamic>.from(candidate);
+        reply = await _readSavedReply(
+          chatId,
+          messageId,
+          authSnapshot: authSnapshot,
+        );
       } catch (e) {
         DebugLogger.warning(
           'error-status-reply-read-failed',
@@ -1964,9 +2211,7 @@ abstract class _ApiServiceBase {
       // Only a finished reply: one still running (a 409 can find it so)
       // would be read once, mid-answer, and closed as if complete. The
       // queued retry tries again instead, and finds it finished.
-      final replyFinished =
-          reply != null && (reply['done'] == true || reply['error'] != null);
-      if (replyFinished) {
+      if (_savedReplyFinished(reply)) {
         DebugLogger.warning(
           'error-status-recovery',
           scope: 'api/chat',
@@ -1989,7 +2234,7 @@ abstract class _ApiServiceBase {
         error.trim() == TemporaryChatUnavailable.serverDetail) {
       throw const TemporaryChatNeedsConnectionException();
     }
-    throw ChatCompletionHttpException(status, error);
+    throw ChatCompletionHttpException(status, error, viaTether: viaTether);
   }
 
   /// Classifies a fully-parsed JSON body as taskSocket or jsonCompletion.
@@ -2032,6 +2277,11 @@ abstract class _ApiServiceBase {
       );
     }
 
+    if (json['queued'] == true) {
+      _traceApi('classifyChatCompletionResponse → held by the server');
+      throw const ChatCompletionHeld();
+    }
+
     _traceApi('classifyChatCompletionResponse → jsonCompletion');
     return ChatCompletionSession.jsonCompletion(
       messageId: messageId,
@@ -2044,17 +2294,33 @@ abstract class _ApiServiceBase {
   // Internal helpers for response classification
   // -----------------------------------------------------------------------
 
-  /// Attempts to decode a non-2xx response body into a human-readable
-  /// error string.
+  /// The words of an error answer to a completion request: its `error`, or
+  /// FastAPI's `detail`. A provider's error that Open WebUI passes through
+  /// keeps its words under `error.message`; any other object is kept as JSON.
+  ///
+  /// The refusal's relay to one of the user's devices is read from what this
+  /// returns ([ChatCompletionHttpException.relay]), so a body whose code
+  /// (`tether_interrupted`) names a relay failure its words do not, or names
+  /// another than its words do, stays whole: the code decides.
   Future<String> _decodeChatCompletionError(Response<ResponseBody> resp) async {
     try {
       final bytes = await _collectBytes(resp.data!.stream);
       final text = utf8.decode(bytes, allowMalformed: true);
       final json = _tryParseJsonMap(text);
-      if (json != null) {
-        return json['error']?.toString() ?? json['detail']?.toString() ?? text;
+      if (json == null) return text;
+      final reason = json['error'] ?? json['detail'];
+      final words = switch (reason) {
+        null => text,
+        String() => reason,
+        {'message': final String message} when message.trim().isNotEmpty =>
+          message,
+        Map() || List() => jsonEncode(reason),
+        _ => reason.toString(),
+      };
+      if (tetherRelayFailureOf(json) != tetherRelayFailureOf(words)) {
+        return text;
       }
-      return text;
+      return words;
     } catch (_) {
       return 'status ${resp.statusCode}';
     }

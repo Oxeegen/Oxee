@@ -11,19 +11,25 @@ import 'dart:async';
 
 import 'package:riverpod/riverpod.dart';
 
+import 'package:conduit_core/providers/account_change_superseded.dart';
 import 'package:conduit_core/auth/auth_state_manager.dart';
 import 'package:conduit_core/auth/openwebui_account_summaries.dart';
 import 'package:conduit_core/database/account_storage_isolation.dart'
     show conversationUsesOpenWebUiStorage;
 import 'package:conduit_core/features/chat/providers/chat_providers.dart'
     show
+        ChatSessionScope,
+        chatSessionRegistryProvider,
         isChatStreamingProvider,
         localChatGenerationActiveProvider,
+        openWebUiReplyStreamingProvider,
         stopAllLibreChatRunsProvider,
         stopGenerationProvider,
-        stopOpenWebUiMainResponse;
+        stopOpenWebUiMainResponse,
+        stopOpenWebUiMainResponseProvider;
 import 'package:conduit_core/features/direct_connections/providers/direct_connection_providers.dart';
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
+import 'package:conduit_core/features/push/providers/push_providers.dart';
 import 'package:conduit_core/persistence/persistence_keys.dart';
 import 'package:conduit_core/persistence/preferences_store.dart';
 import 'package:conduit_core/providers/app_providers.dart';
@@ -44,13 +50,23 @@ enum OpenWebUiAccountChangeResult {
   blockedByActiveReply,
 }
 
+/// The chat session scopes still open under this root: an account-wide
+/// action reaches each of them as well as the root's own chat.
+Iterable<ChatSessionScope> _liveChatScopes(Ref ref) => ref
+    .read(chatSessionRegistryProvider)
+    .scopes
+    .where((scope) => !scope.isDisposed);
+
 /// Whether a reply is still being written that leaving the active account
-/// would cut off. The host may widen it (background streams it tracks).
+/// would cut off, in the root's chat or in any chat session scope. The host
+/// may widen it (background streams it tracks).
 final accountChangeReplyGuardProvider = Provider<bool Function()>((ref) {
   return () {
     try {
       return ref.read(isChatStreamingProvider) ||
-          ref.read(localChatGenerationActiveProvider);
+          ref.read(localChatGenerationActiveProvider) ||
+          _liveChatScopes(ref)
+              .any((scope) => scope.container.read(isChatStreamingProvider));
     } catch (_) {
       return false;
     }
@@ -65,21 +81,35 @@ final accountChangeReplyGuardProvider = Provider<bool Function()>((ref) {
 final addressChangeReplyGuardProvider = Provider<bool Function()>((ref) {
   return () {
     try {
-      return ref.read(isChatStreamingProvider) &&
-          conversationUsesOpenWebUiStorage(
-            ref.read(activeConversationProvider),
-          );
+      return (ref.read(isChatStreamingProvider) &&
+              conversationUsesOpenWebUiStorage(
+                ref.read(activeConversationProvider),
+              )) ||
+          _liveChatScopes(ref).any(_scopeStreamsOpenWebUi);
     } catch (_) {
       return false;
     }
   };
 });
 
+/// Whether [scope] streams a reply from the Open WebUI server, by the running
+/// turn's transport: a Direct, Apple or Hermes reply in a chat Open WebUI
+/// stores is not cut off by its address changing.
+bool _scopeStreamsOpenWebUi(ChatSessionScope scope) =>
+    scope.container.read(openWebUiReplyStreamingProvider);
+
 /// Stops the reply [addressChangeReplyGuardProvider] reported, once the user
 /// has agreed to change the address anyway: the open chat's Open WebUI one,
 /// and no Direct, Hermes or on-device run.
 final addressChangeStopRepliesProvider = Provider<void Function()>((ref) {
-  return () => unawaited(stopOpenWebUiMainResponse(ref));
+  return () {
+    unawaited(stopOpenWebUiMainResponse(ref));
+    // The same stop as the root's, in each scope: it leaves another
+    // backend's reply alone.
+    for (final scope in _liveChatScopes(ref)) {
+      unawaited(scope.container.read(stopOpenWebUiMainResponseProvider)());
+    }
+  };
 });
 
 /// Stops the replies [accountChangeReplyGuardProvider] reported, once the
@@ -87,14 +117,18 @@ final addressChangeStopRepliesProvider = Provider<void Function()>((ref) {
 final accountChangeStopRepliesProvider = Provider<void Function()>((ref) {
   return () {
     ref.read(stopGenerationProvider)();
+    // Each chat session scope's reply too, as the guard counts them.
+    for (final scope in _liveChatScopes(ref)) {
+      scope.container.read(stopGenerationProvider)();
+    }
     // LibreChat replies run on in chats not open, which the guard counts.
     ref.read(stopAllLibreChatRunsProvider)();
   };
 });
 
 /// Called after the active Open WebUI account changed, with the new one (or
-/// null). The host clears what the core cannot name: posted notifications,
-/// home-screen widgets.
+/// null), for the host to follow. Posted notifications stay: each opens in
+/// the account that posted it.
 final hostActiveAccountChangedProvider = Provider<void Function(String?)>(
   (ref) => (_) {},
 );
@@ -186,16 +220,34 @@ class OpenWebUiAccountsController {
   }
 
   /// Makes [accountId] the active account.
+  ///
+  /// [stillFrom] is asked at the change's turn, once the changes before it
+  /// are done, and again after the active account is read: whether the
+  /// account the switch was asked over is still the one in charge. False
+  /// switches nothing and throws [AccountChangeSuperseded].
   Future<OpenWebUiAccountChangeResult> switchTo(
     String accountId, {
     bool force = false,
-  }) => _afterLastChange(() => _switchTo(accountId, force: force));
+    bool Function()? stillFrom,
+  }) => _afterLastChange(
+    () => _switchTo(accountId, force: force, stillFrom: stillFrom),
+  );
 
   Future<OpenWebUiAccountChangeResult> _switchTo(
     String accountId, {
     required bool force,
+    bool Function()? stillFrom,
   }) async {
-    if (await _activeAccountId() == accountId) {
+    void requireFrom() {
+      if (!(stillFrom?.call() ?? true)) {
+        throw const AccountChangeSuperseded();
+      }
+    }
+
+    requireFrom();
+    final activeId = await _activeAccountId();
+    requireFrom();
+    if (activeId == accountId) {
       // Signed out, it goes to auth, which takes up a session it still has.
       final auth = _ref.read(authStateManagerProvider).asData?.value;
       if (auth == null || auth.isAuthenticated) {
@@ -260,9 +312,14 @@ class OpenWebUiAccountsController {
         data: {'errorType': error.runtimeType.toString()},
       );
     }
+    // While the session still works: the account's push subscription is
+    // removed from its server with its own token. Bounded; never throws.
+    final pushHook = _ref.read(pushSignOutHookProvider);
+    if (pushHook.inUse) await pushHook.beforeOpenWebUiSignOut(accountId);
     final signedIn = await _ref
         .read(authStateManagerProvider.notifier)
         .signOutAccount(accountId, thenActivate: next);
+    notifyHostSignedOut(_ref, accountId);
     // Read again: the sign-out waited on the server, and what is active now
     // is what it left, or what a sign-in made active meanwhile.
     final String? now;
@@ -586,10 +643,7 @@ final openWebUiDuplicateAccountReconcilerProvider = Provider<void>((ref) {
     }
   }
 
-  ref.listen<AsyncValue<AuthState>>(authStateManagerProvider, (
-    previous,
-    next,
-  ) {
+  ref.listen<AsyncValue<AuthState>>(authStateManagerProvider, (previous, next) {
     final auth = next.asData?.value;
     if (auth == null || !auth.isAuthenticated || auth.user == null) return;
     final before = previous?.asData?.value;

@@ -30,10 +30,17 @@ OpenWebUiAccountEntry _account(String id, String url, {bool session = true}) =>
       hasSession: session,
     );
 
+/// Reads providers as the app does: with Oxee's overrides.
+final _oxee = ProviderContainer(overrides: oxeeProviderOverrides).read;
+
+/// Reads providers as upstream's tests do: without them.
+final _upstream = ProviderContainer().read;
+
 void main() {
-  group('native Settings, as Oxee shows it', () {
+  group('Settings, as Oxee shows it', () {
     test('the root drops the donations and puts Region under the card', () {
       final sections = oxeeNativeRootSections(
+        _oxee,
         [
           NativeSheetSectionConfig(
             items: [_item('accounts'), _item('account-add')],
@@ -44,7 +51,7 @@ void main() {
             items: [_item('buy-me-a-coffee'), _item('github-sponsors')],
           ),
         ],
-        region: _item(oxeeRegionNativeSheetItemId),
+        region: () => _item(oxeeRegionNativeSheetItemId),
       );
 
       check(
@@ -55,9 +62,56 @@ void main() {
       ]);
     });
 
+    test('without Oxee\'s overrides every page is upstream\'s', () {
+      final root = [
+        NativeSheetSectionConfig(items: [_item('accounts')]),
+        NativeSheetSectionConfig(
+          items: [_item(NativeSheetRoutes.helpAbout), _item('buy-me-a-coffee')],
+        ),
+      ];
+      var regionBuilt = false;
+      check(
+        oxeeNativeRootSections(
+          _upstream,
+          root,
+          region: () {
+            regionBuilt = true;
+            return _item(oxeeRegionNativeSheetItemId);
+          },
+        ),
+      ).identicalTo(root);
+      check(regionBuilt).isFalse();
+
+      final about = [_item(NativeSheetRoutes.releaseNotesManual)];
+      check(oxeeNativeAboutItems(_upstream, about)).identicalTo(about);
+      final push = [
+        NativeSheetSectionConfig(items: [_item('push-enabled')]),
+      ];
+      check(oxeePushSections(_upstream, push)).identicalTo(push);
+      final accounts = NativeSheetDetailConfig(
+        id: 'accounts',
+        title: 'Accounts',
+        sections: [
+          NativeSheetSectionConfig(
+            items: [_item(NativeSheetRoutes.directConnections)],
+          ),
+        ],
+      );
+      check(oxeeNativeAccountsDetail(_upstream, accounts)).identicalTo(accounts);
+    });
+
+    test('push is left out of a build without a relay', () {
+      check(
+        oxeePushSections(_oxee, [
+          NativeSheetSectionConfig(items: [_item('push-enabled')]),
+        ]),
+      ).isEmpty();
+    });
+
     test('About keeps its group when the donations share it, without the '
         'footer asking for support', () {
       final sections = oxeeNativeRootSections(
+        _oxee,
         [
           NativeSheetSectionConfig(items: [_item('accounts')]),
           NativeSheetSectionConfig(
@@ -69,7 +123,7 @@ void main() {
             ],
           ),
         ],
-        region: _item(oxeeRegionNativeSheetItemId),
+        region: () => _item(oxeeRegionNativeSheetItemId),
       );
 
       check(
@@ -83,10 +137,12 @@ void main() {
 
     test('the Accounts page keeps Oxeegen accounts and Oxee Hermes', () {
       final detail = oxeeNativeAccountsDetail(
+        _oxee,
         NativeSheetDetailConfig(
           id: 'accounts',
           title: 'Accounts',
           trailingActionId: 'account-add',
+          trailingActionDetailId: 'account-add-page',
           sections: [
             NativeSheetSectionConfig(items: [_item('account-server:us')]),
             NativeSheetSectionConfig(items: [_item('accounts-hermes')]),
@@ -99,13 +155,14 @@ void main() {
 
       check(detail.id).equals('accounts');
       check(detail.trailingActionId).equals('account-add');
+      check(detail.trailingActionDetailId).equals('account-add-page');
       check(
         detail.sections.expand((s) => s.items).map((i) => i.id).toList(),
       ).deepEquals(['account-server:us', 'accounts-hermes']);
     });
 
     test('About has no release notes', () {
-      final items = oxeeNativeAboutItems([
+      final items = oxeeNativeAboutItems(_oxee, [
         _item('app-version'),
         _item(NativeSheetRoutes.releaseNotesManual),
         _item(NativeSheetRoutes.openSourceLicenses),

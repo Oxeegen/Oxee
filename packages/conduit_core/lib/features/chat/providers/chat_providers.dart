@@ -21,7 +21,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:clock/clock.dart' show clock;
-import 'package:dio/dio.dart' show CancelToken;
+import 'package:dio/dio.dart' show CancelToken, DioException;
 import 'package:drift/drift.dart' show Value;
 import 'package:meta/meta.dart';
 import 'package:conduit_core/utils/openwebui_request_variables.dart';
@@ -42,6 +42,8 @@ import 'package:conduit_core/models/message_voice.dart';
 import 'package:conduit_core/models/model.dart';
 import 'package:conduit_core/models/openwebui_chat_prompt.dart';
 import 'package:conduit_core/models/openwebui_chat_settings.dart';
+import 'package:conduit_core/models/openwebui_chat_settings_form.dart'
+    show ChatParamsPatch;
 import 'package:conduit_core/models/conversation.dart';
 import 'package:conduit_core/models/file_info.dart';
 import 'package:conduit_core/models/folder.dart'
@@ -55,6 +57,7 @@ import 'package:conduit_core/database/account_storage_isolation.dart';
 // moving it to the core without this turns every one of those into an error.
 export 'package:conduit_core/database/account_storage_isolation.dart'
     show conversationUsesOpenWebUiStorage;
+import 'package:collection/collection.dart' show DeepCollectionEquality;
 import 'package:conduit_core/database/app_database.dart';
 import 'package:conduit_core/database/daos/outbox_dao.dart';
 import 'package:conduit_core/database/database_manager.dart';
@@ -67,7 +70,9 @@ import 'package:conduit_core/features/librechat/models/librechat_model.dart';
 import 'package:conduit_core/features/librechat/models/librechat_tools.dart';
 import 'package:conduit_core/features/librechat/providers/librechat_composer_providers.dart';
 import 'package:conduit_core/features/librechat/models/librechat_transport.dart';
+import 'package:conduit_core/features/librechat/models/librechat_account.dart';
 import 'package:conduit_core/features/librechat/providers/librechat_providers.dart';
+import 'package:conduit_core/providers/backend_mode_providers.dart';
 import 'package:conduit_core/features/librechat/services/librechat_errors.dart';
 import 'package:conduit_core/features/librechat/services/librechat_message_mapper.dart';
 import 'package:conduit_core/features/librechat/services/librechat_provenance.dart';
@@ -99,9 +104,14 @@ import 'package:conduit_core/sync/sync_engine.dart';
 import 'package:conduit_core/sync/sync_api_client.dart'
     show SyncTerminalException;
 
+import 'package:conduit_core/features/chat/providers/queued_completion_provider.dart'
+    show chatSessionScopedQueuedCompletionOverrides;
+import 'package:conduit_core/features/chat/services/chat_draft_queue.dart'
+    show chatSessionScopedDraftQueueOverrides;
 import 'package:conduit_core/services/chat_completion_transport.dart';
 
 import 'package:conduit_core/services/api_service.dart';
+import 'package:conduit_core/services/answer_copies.dart';
 import 'package:conduit_core/services/moa_completion.dart';
 import 'package:conduit_core/services/openwebui_stream_parser.dart';
 
@@ -115,6 +125,8 @@ import 'package:conduit_core/services/streaming_response_controller.dart';
 
 import 'package:conduit_core/services/streaming_helper.dart';
 import 'package:conduit_core/services/structured_output.dart';
+import 'package:conduit_core/services/direct_replay_output.dart'
+    show parseConduitDirectReplayOutput;
 import 'package:conduit_core/services/structured_output_renderer.dart';
 import 'package:conduit_core/services/openwebui_outlet.dart';
 
@@ -149,9 +161,15 @@ import 'package:conduit_core/features/hermes/models/hermes_model.dart';
 import 'package:conduit_core/features/hermes/controllers/hermes_busy_turn_controller.dart';
 
 import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
+import 'package:conduit_core/features/hermes/providers/hermes_background_work_providers.dart'
+    show chatSessionScopedHermesWorkOverrides;
+import 'package:conduit_core/features/push/providers/push_providers.dart';
+import 'package:conduit_core/features/hermes/models/hermes_clarify_form.dart';
+import 'package:conduit_core/features/hermes/models/hermes_run_event.dart';
 import 'package:conduit_core/features/hermes/services/hermes_api_service.dart';
 import 'package:conduit_core/features/hermes/services/hermes_copied_history_store.dart';
 import 'package:conduit_core/features/hermes/services/hermes_backend_service.dart';
+import 'package:conduit_core/features/hermes/services/hermes_desktop_api_service.dart';
 import 'package:conduit_core/features/hermes/services/hermes_history_edit.dart';
 import 'package:conduit_core/features/hermes/services/hermes_local_document_service.dart';
 import 'package:conduit_core/features/hermes/services/hermes_local_document_trust_store.dart';
@@ -167,6 +185,7 @@ import 'package:conduit_core/features/direct_connections/services/direct_mcp_cli
 import 'package:conduit_core/features/chat/models/chat_context_attachment.dart';
 import 'package:conduit_core/features/chat/providers/context_attachments_provider.dart';
 import 'package:conduit_core/features/chat/providers/reasoning_effort_provider.dart';
+import 'package:conduit_core/features/chat/providers/openwebui_chat_prompt_provider.dart';
 
 import 'package:conduit_core/features/tools/providers/tools_providers.dart';
 import 'package:conduit_core/features/terminal/models/terminal_agent_model.dart';
@@ -174,15 +193,23 @@ import 'package:conduit_core/models/model_controls.dart';
 import 'package:conduit_core/features/terminal/models/terminal_models.dart'
     show TerminalServerInfo;
 import 'package:conduit_core/features/terminal/providers/terminal_providers.dart';
+import 'package:conduit_core/features/terminal/services/terminal_service.dart'
+    show TerminalService;
+import 'package:conduit_core/features/chat/voice_mode/chat_voice_mode_controller.dart'
+    show chatSessionScopedVoiceOverrides;
 import 'package:conduit_core/features/integrations/personal_tool_execution.dart';
 import 'package:conduit_core/features/integrations/personal_connection_client.dart';
 import 'package:conduit_core/features/integrations/personal_connection_settings.dart';
 import 'package:conduit_core/features/integrations/providers/personal_connections_providers.dart'
+    show personalConnectionsOfferedProvider, personalSelectionNoticeProvider;
+import 'package:conduit_core/features/tether/tether_offers.dart'
+    show isTetherModel, tetherAnswerRecord;
+import 'package:conduit_core/features/tether/tether_relay_failure.dart'
     show
-        PersonalConnectionsAccess,
-        PersonalConnectionsBlock,
-        personalConnectionsAccessProvider,
-        personalSelectionNoticeProvider;
+        answerViaTether,
+        withTetherRecord,
+        withTetherRecordOf,
+        withTetherRecordOfVersion;
 import 'package:conduit_core/utils/system_prompt.dart';
 import 'package:conduit_core/features/direct_connections/services/direct_chat_storage.dart';
 import 'package:conduit_core/features/web_search/web_search.dart';
@@ -200,6 +227,7 @@ import 'package:conduit_core/features/chat/providers/chat_model_choice.dart';
 import 'package:conduit_core/providers/chat_picks_session.dart';
 import 'package:conduit_core/features/chat/services/reviewer_mode_service.dart';
 
+part 'chat_action_availability.dart';
 part 'chat_attachments.dart';
 part 'chat_branch_controller.dart';
 part 'chat_capability_providers.dart';
@@ -213,6 +241,8 @@ part 'chat_direct_turns.dart';
 part 'chat_feature_defaults.dart';
 part 'chat_generation_control.dart';
 part 'chat_headless_completion.dart';
+part 'chat_hermes_approvals.dart';
+part 'chat_hermes_decisions.dart';
 part 'chat_hermes_projection_store.dart';
 part 'chat_hermes_replay.dart';
 part 'chat_hermes_turns.dart';
@@ -227,6 +257,7 @@ part 'chat_openwebui_settings.dart';
 part 'chat_regeneration.dart';
 part 'chat_send_message.dart';
 part 'chat_send_placeholder.dart';
+part 'chat_session_scope.dart';
 part 'chat_session_lifecycle.dart';
 part 'chat_terminal_agents.dart';
 part 'chat_streaming_content.dart';

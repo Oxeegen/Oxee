@@ -1,0 +1,19 @@
+{
+  "channels": [
+    {
+      "id": "c2",
+      "name": "ops",
+      "private": true,
+      "unread": 0,
+      "manager": false,
+      "canPost": false,
+      "kind": "standard",
+      "title": "",
+      "muted": false,
+      "canDelete": false,
+      "canLeave": false
+    }
+  ],
+  "enabled": true,
+  "canCreate": false
+}

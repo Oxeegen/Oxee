@@ -19,7 +19,10 @@ import 'package:conduit_core/utils/usage_summary.dart';
 import 'package:conduit_core/utils/model_display_name.dart';
 import 'package:conduit_core/features/direct_connections/services/model_logo_catalog.dart'
     show installedModelLogoCatalog;
+import 'package:conduit_core/features/chat/utils/message_action_layout.dart';
 import 'package:conduit_core/models/chat_comparison.dart';
+import 'package:conduit_core/features/chat/views/assistant_message_blocks.dart'
+    show markStandaloneBase64Images, stripAssistantContentPlaceholders;
 import 'package:conduit_core/models/chat_message.dart';
 import 'package:conduit_core/features/hermes/models/hermes_inline_diff.dart'
     show isHermesInlineDiffItem;
@@ -34,14 +37,14 @@ import 'package:conduit_core/features/direct_connections/services/direct_adapter
 import 'package:conduit_core/features/direct_connections/services/direct_chat_bridge.dart'
     show directModelAdvertisedContextLength, isDirectTooManyImagesError;
 import 'package:conduit_core/features/web_search/services/direct_web_search_mode.dart';
+import 'package:conduit_core/services/chat_completion_transport.dart'
+    show isHeldReplyUnresolvedError, isReplyStillRunningError;
 import 'package:conduit_markdown/conduit_markdown.dart';
 
 import '../providers/text_to_speech_provider.dart';
 
 import 'package:conduit_core/features/chat/providers/queued_completion_provider.dart';
 import 'package:conduit_core/features/chat/providers/streaming_haptic_memory.dart';
-import 'package:conduit_core/features/chat/providers/reasoning_effort_provider.dart'
-    show kAutomaticReasoningEffort, reasoningEffortForModel;
 
 import 'enhanced_image_attachment.dart';
 import 'enhanced_video_attachment.dart';
@@ -63,6 +66,8 @@ import '../../../shared/widgets/web_content_embed.dart';
 import 'package:conduit_core/features/chat/providers/chat_providers.dart'
     show
         ChatForkAvailability,
+        errorMentionsReasoningEffort,
+        isReasoningEffortRejection,
         isUnconfirmedLibreChatMessage,
         ComparisonAnswerStop,
         ComparisonMergeException,
@@ -82,8 +87,6 @@ import 'package:conduit_core/features/chat/providers/chat_providers.dart'
 import 'package:conduit_core/providers/app_providers.dart'
     show activeConversationProvider, modelsProvider, selectedModelProvider;
 import 'package:conduit_core/models/model.dart' show Model;
-import 'package:conduit_core/models/openwebui_chat_settings.dart'
-    show kChatParamReasoningEffort;
 
 import '../../../shared/utils/external_link_launcher.dart';
 
@@ -109,20 +112,13 @@ import 'chat_comparison_widgets.dart';
 
 import 'package:conduit/features/chat/widgets/mcp_app_embed.dart';
 import 'package:conduit_core/features/mcp_apps/openwebui_mcp_app.dart';
+import 'package:conduit_core/features/web_embed/web_embed_media_account.dart'
+    show webEmbedCameFromOpenWebUiChat;
 
 import 'code_execution_display.dart';
 import 'follow_up_suggestions.dart';
 import 'usage_stats_modal.dart';
 
-// Wrap only standalone base64 image lines so <details> attributes stay intact.
-final _standaloneBase64ImagePattern = RegExp(
-  r'(^|\n)([ \t]*)(data:image/[^;\s]+;base64,[A-Za-z0-9+/=]+)(?=(?:[ \t]*\n|$))',
-  multiLine: true,
-);
-final _ttsDetailsPattern = RegExp(
-  r'<details[^>]*>[\s\S]*?<\/details>',
-  caseSensitive: false,
-);
 // Handle both URL formats: /api/v1/files/{id} and /api/v1/files/{id}/content
 final _fileIdPattern = RegExp(r'/api/v1/files/([^/]+)(?:/content)?$');
 
@@ -512,16 +508,7 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
         : (streamingContent ?? overrideContent ?? widget.message.content ?? '');
 
     // Strip any leftover placeholders from content before parsing
-    const ti = '[TYPING_INDICATOR]';
-    const searchBanner = '🔍 Searching the web...';
-    String raw = raw0;
-    if (raw.startsWith(ti)) {
-      raw = raw.substring(ti.length);
-    }
-    if (raw.startsWith(searchBanner)) {
-      raw = raw.substring(searchBanner.length);
-    }
-    return raw;
+    return stripAssistantContentPlaceholders(raw0);
   }
 
   void _queueDisplayedContentRefresh([String? overrideContent]) {
@@ -701,25 +688,10 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
         .firstOrNull;
   }
 
-  /// The finished answers of this turn a merge may read, one per slot in slot
-  /// order: the shown answer for its own slot, otherwise the slot's current
-  /// one. An answer still being written, failed, or without text is left out,
-  /// so one unfinished slot never blocks merging the others.
-  List<ChatComparisonAnswer> _mergeableAnswers(ChatComparisonGroup group) {
-    final shown = _shownAnswer(group);
-    return [
-      for (final slot in group.slots)
-        if (_isMergeable(
-          shown != null && slot.index == shown.slot ? shown : slot.current,
-        ))
-          shown != null && slot.index == shown.slot ? shown : slot.current,
-    ];
-  }
-
-  static bool _isMergeable(ChatComparisonAnswer answer) =>
-      !answer.isStreaming &&
-      answer.error == null &&
-      answer.sourceText.trim().isNotEmpty;
+  /// The finished answers of this turn a merge may read: the shown answer
+  /// for its own slot, otherwise each slot's current one (the core's rule).
+  List<ChatComparisonAnswer> _mergeableAnswers(ChatComparisonGroup group) =>
+      group.mergeableAnswers(shownId: _shownAnswer(group)?.messageId);
 
   /// Merges answers of this comparison into one response, saved on the answer
   /// being shown. With two finished answers that is all there is to choose;
@@ -1374,7 +1346,19 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
 
   @override
   Widget build(BuildContext context) {
-    return _buildDocumentationMessage();
+    final message = widget.message;
+    final openWebUi = ref.watch(
+      activeConversationProvider.select(
+        (conversation) => webEmbedCameFromOpenWebUiChat(
+          conversation,
+          message: message is ChatMessage ? message : null,
+        ),
+      ),
+    );
+    return WebEmbedServerMediaScope(
+      enabled: openWebUi,
+      child: _buildDocumentationMessage(),
+    );
   }
 
   Widget _buildDocumentationMessage() {
@@ -1854,13 +1838,16 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
     final msg = widget.message as ChatMessage;
 
     // If viewing a version, return the version's error
-    if (_activeVersionIndex >= 0 && _activeVersionIndex < msg.versions.length) {
+    if (_viewingVersion(msg)) {
       return msg.versions[_activeVersionIndex].error;
     }
 
     // Otherwise return the main message's error
     return msg.error;
   }
+
+  bool _viewingVersion(ChatMessage message) =>
+      _activeVersionIndex >= 0 && _activeVersionIndex < message.versions.length;
 
   /// The card for a failed Hermes turn Hermes classified, or null for any
   /// other error (shown as the banner).
@@ -1890,17 +1877,29 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
     // wording: a model that can't call tools rejects web search's tool
     // definitions, a provider can refuse a request for too many images, and
     // a model can keep asking for tools after Conduit stopped offering them.
+    // So does a failed relay to one of the user's Tether devices.
     final l10n = AppLocalizations.of(context)!;
+    final relayFailure = switch (error.relay) {
+      TetherRelayFailure.interrupted => l10n.tetherRelayInterrupted,
+      TetherRelayFailure.unavailable => l10n.tetherRelayUnavailable,
+      TetherRelayFailure.busy => l10n.tetherRelayBusy,
+      null => null,
+    };
     final displayText = isDirectToolsUnsupportedError(errorContent)
         ? l10n.directModelToolsUnsupported
         : isDirectTooManyImagesError(errorContent)
         ? l10n.directModelTooManyImages
         : isDirectToolLoopNoAnswerError(errorContent)
         ? l10n.directToolLoopNoAnswer
-        : (errorContent != null && errorContent.isNotEmpty)
-        ? errorContent
-        // If no content, show a generic error message
-        : 'An error occurred while generating this response.';
+        : isHeldReplyUnresolvedError(errorContent)
+        ? l10n.heldReplyStillRunning
+        : relayFailure ??
+              (isReplyStillRunningError(errorContent)
+                  ? l10n.chatDataControlsResponseRunning
+                  : (errorContent != null && errorContent.isNotEmpty)
+                  ? errorContent
+                  // If no content, show a generic error message
+                  : 'An error occurred while generating this response.');
 
     return Container(
       padding: const EdgeInsets.all(Spacing.md),
@@ -2082,18 +2081,8 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
     return widget.message.usage;
   }
 
-  String _processContentForImages(String content) {
-    if (!content.contains('data:image/')) {
-      return content;
-    }
-
-    return content.replaceAllMapped(_standaloneBase64ImagePattern, (match) {
-      final linePrefix = match.group(1) ?? '';
-      final indentation = match.group(2) ?? '';
-      final imageData = match.group(3)!;
-      return '$linePrefix$indentation![Generated Image]($imageData)';
-    });
-  }
+  String _processContentForImages(String content) =>
+      markStandaloneBase64Images(content);
 
   Widget _buildAttachmentItems() {
     if (widget.message.attachmentIds == null ||
@@ -2144,7 +2133,10 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
           if (OpenWebUiMcpApp.tryParse(embed) case final app?) {
             return KeyedSubtree(
               key: ValueKey('message-mcp-app-$index-${app.binding}'),
-              child: McpAppEmbed(app: app),
+              child: McpAppEmbed(
+                app: app,
+                cacheId: '${_markdownStateScopeId()}|embed:$index',
+              ),
             );
           }
           final source = extractEmbedSource(embed);
@@ -2379,7 +2371,6 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
     required List<ChatSourceReference> activeSources,
     required bool includeActions,
   }) {
-    const maxInlineActions = 3;
     // A row that does not own its grouped response's bar still shows its own
     // sources and version chip; only the buttons collapse onto the last row.
     final actions = includeActions
@@ -2388,36 +2379,14 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
     final preferred = ref.watch(
       appSettingsProvider.select((settings) => settings.inlineMessageActions),
     );
-    String preferenceId(_AssistantFooterAction action) => switch (action.id) {
-      'retry' => 'regenerate',
-      'stop-merge' => 'merge',
-      _ => action.id,
-    };
-    // Share, Delete and the Hermes history actions live in the overflow.
-    bool overflowOnly(_AssistantFooterAction action) =>
-        action.id == 'share' ||
-        action.id == 'delete' ||
-        action.id.startsWith('hermes-');
-    final forcedOverflowActions = actions
-        .where(overflowOnly)
-        .toList(growable: false);
-    final inlineCandidateActions = actions
-        .where((action) => !overflowOnly(action))
-        .toList(growable: false);
-    final visibleActions = preferred == null
-        ? inlineCandidateActions.take(maxInlineActions).toList(growable: false)
-        : [
-            for (final id in preferred.toSet())
-              ...actions.where((action) => preferenceId(action) == id),
-          ];
-    final overflowActions = preferred == null
-        ? [
-            ...inlineCandidateActions.skip(maxInlineActions),
-            ...forcedOverflowActions,
-          ]
-        : actions
-              .where((action) => !preferred.contains(preferenceId(action)))
-              .toList(growable: false);
+    // Inline as Settings › Chats › Message Actions says; Share, Delete and the
+    // Hermes history actions live in More unless the user put them inline.
+    final layout = messageActionLayout([
+      for (final action in actions) action.id,
+    ], preferred);
+    final actionById = {for (final action in actions) action.id: action};
+    final visibleActions = [for (final id in layout.inline) actionById[id]!];
+    final overflowActions = [for (final id in layout.more) actionById[id]!];
     final infoWidgets = <Widget>[
       if (activeSources.isNotEmpty)
         OpenWebUISourcesWidget(
@@ -2659,14 +2628,6 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
     return _errorScanResult;
   }
 
-  // Issue #779: an explicit effort opt-in on a model that does not advertise
-  // support can be rejected by the upstream provider. When the failure names
-  // the parameter, the footer offers to clear the opt-in and retry.
-  static final _reasoningEffortRejectionPattern = RegExp(
-    r'reasoning[_\s-]*effort',
-    caseSensitive: false,
-  );
-
   /// Resolves [modelId] against the model list, or the model selected now
   /// when the id is absent or already the selected one. Null when the id
   /// names a model that left the list — then only the chat-wide override can
@@ -2728,46 +2689,12 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
 
   /// The chat's own saved `reasoning_effort`, which a model that advertises
   /// support is sent over the picker's value.
-  bool get _chatHasReasoningEffortOverride {
-    final params = ref.read(activeConversationProvider)?.chatParams;
-    final value = params == null ? null : params[kChatParamReasoningEffort];
-    return value is String &&
-        value.trim().isNotEmpty &&
-        value.trim().toLowerCase() != kAutomaticReasoningEffort;
-  }
-
-  /// Whether the chat saved a default (Automatic) for `reasoning_effort`,
-  /// which outranks every model's own pick.
-  bool get _chatSavedReasoningEffortDefault {
-    final params = ref.read(activeConversationProvider)?.chatParams;
-    return params != null &&
-        params.containsKey(kChatParamReasoningEffort) &&
-        !_chatHasReasoningEffortOverride;
-  }
-
-  bool _isReasoningEffortRejection(String errorText, Model? retryModel) {
-    if (!_reasoningEffortRejectionPattern.hasMatch(errorText)) return false;
-    // An explicitly refusing model never takes the parameter: the request
-    // boundary strips it whatever the opt-ins say. A retry through such a
-    // model therefore cannot fail on the value, and offering recovery would
-    // discard the user's pick and the chat-wide override on an error that
-    // cannot be about the never-sent parameter (issue #779). A model that
-    // left the list is unknown, not refusing — recovery stays available.
-    if (retryModel?.explicitlyRejectsReasoningEffort ?? false) return false;
-    // A model that does not advertise support is sent only its own pick
-    // (issue #611); one that does is sent the chat's saved value over the
-    // picker's. A model that left the list may have been sent either.
-    final pickerOptIn =
-        retryModel != null &&
-        !retryModel.advertisesReasoningEffort &&
-        !_chatSavedReasoningEffortDefault &&
-        reasoningEffortForModel(ref.read, retryModel) !=
-            kAutomaticReasoningEffort;
-    final chatOptIn =
-        (retryModel == null || retryModel.advertisesReasoningEffort) &&
-        _chatHasReasoningEffortOverride;
-    return pickerOptIn || chatOptIn;
-  }
+  bool _isReasoningEffortRejection(String errorText, Model? retryModel) =>
+      isReasoningEffortRejection(
+        ref,
+        errorText: errorText,
+        retryModel: retryModel,
+      );
 
   /// Like [_isReasoningEffortRejection] for a parked queued completion,
   /// additionally qualified from the request itself: the replay sends the
@@ -2781,7 +2708,7 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
   /// here as well.
   bool _isQueuedReasoningEffortRejection(QueuedCompletionInfo info) {
     final errorText = info.lastError ?? '';
-    if (!_reasoningEffortRejectionPattern.hasMatch(errorText)) return false;
+    if (!errorMentionsReasoningEffort(errorText)) return false;
     final retryModel = _modelForQueuedRetry();
     if (_isReasoningEffortRejection(errorText, retryModel)) return true;
     if (retryModel?.explicitlyRejectsReasoningEffort ?? false) return false;
@@ -2925,7 +2852,7 @@ class _AssistantMessageWidgetState extends ConsumerState<AssistantMessageWidget>
         comparisonGroup.isComparison &&
         ref.watch(comparisonMergeCommandAvailableProvider) &&
         shownAnswer != null &&
-        _isMergeable(shownAnswer) &&
+        shownAnswer.isMergeable &&
         _mergeableAnswers(comparisonGroup).length >= 2;
 
     final IconData listenIcon = Platform.isIOS
@@ -3373,15 +3300,7 @@ String _buildTtsPlainTextWorker(Map<String, dynamic> payload) {
   return _buildTtsPlainTextFromRaw(raw);
 }
 
-String _buildTtsPlainTextFromRaw(String raw) {
-  if (raw.trim().isEmpty) {
-    return '';
-  }
-
-  final sanitized = ConduitMarkdownPreprocessor.sanitize(raw);
-  final withoutDetails = sanitized.replaceAll(_ttsDetailsPattern, '');
-  return ConduitMarkdownPreprocessor.cleanText(withoutDetails).trim();
-}
+String _buildTtsPlainTextFromRaw(String raw) => readAloudTextOf(raw);
 
 /// Whether any of [statuses] carries the diff of a Hermes edit.
 bool _hasHermesDiff(List<ChatStatusUpdate> statuses) =>

@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import 'package:conduit_core/auth/api_auth_interceptor.dart'
+    show ApiAuthSnapshot;
+import 'package:conduit_core/database/app_database.dart';
 import 'package:conduit_core/providers/app_providers.dart';
 import 'package:conduit_core/services/api_service.dart';
 
@@ -18,10 +21,18 @@ part 'sync_api_client.g.dart';
 /// 404 is NOT modeled as terminal here: for delete it means already-gone
 /// (success), for update it is handled inline (Phase 2: log + done).
 class SyncTerminalException implements Exception {
-  const SyncTerminalException({this.statusCode, required this.message});
+  const SyncTerminalException({
+    this.statusCode,
+    required this.message,
+    this.mayRecover = false,
+  });
 
   final int? statusCode;
   final String message;
+
+  /// Whether the check behind the refusal could not tell, so the drainer asks
+  /// about its parked op again, a few times with backoff.
+  final bool mayRecover;
 
   @override
   String toString() => 'SyncTerminalException($statusCode): $message';
@@ -45,6 +56,26 @@ class SyncRejectedException implements Exception {
   String toString() => 'SyncRejectedException($statusCode): ${detail ?? ''}';
 }
 
+/// What the server says about a session owning a chat.
+enum ChatOwnership {
+  /// It reads the chat as the session's own.
+  owns,
+
+  /// It says the chat is not the session's: it refuses the session or the
+  /// chat, has no such chat, or names another owner.
+  notOwner,
+
+  /// It could not be asked, or did not answer in a way that tells.
+  unknown,
+}
+
+/// A [SyncApiClient] that can tell whether its session still owns a chat.
+abstract interface class ChatOwnershipProbe {
+  /// Whether the session this client sends as still reads chat [chatId] as
+  /// its owner, as Open WebUI's message delete requires.
+  Future<ChatOwnership> chatOwnership(String chatId);
+}
+
 /// Thin client seam so `PullSync`/`PushSync` are unit-testable against
 /// `FakeOpenWebUiServer` (CDT-RFC-001 Phase 1 + Phase 2).
 abstract interface class SyncApiClient {
@@ -60,6 +91,14 @@ abstract interface class SyncApiClient {
   /// (4th call beyond the planned three: required by Q-03 default "archived
   /// metadata only"; the main list ALWAYS excludes archived server-side.)
   Future<List<Map<String, dynamic>>> getArchivedChatListPage(int page);
+
+  /// GET `/api/v1/chats/pinned` — the ids of every chat the account has
+  /// pinned and not archived, all in one answer.
+  Future<Set<String>> getPinnedChatIds();
+
+  /// GET `/api/v1/chats/archived/count` — how many chats the account has
+  /// archived, or null when the server does not say.
+  Future<int?> getArchivedChatCount();
 
   /// GET `/api/v1/chats/{id}` — raw `ChatResponse` map; null on 404.
   Future<Map<String, dynamic>?> getChatRaw(String id);
@@ -83,6 +122,12 @@ abstract interface class SyncApiClient {
   /// Throws when either list cannot be fetched so the caller never replaces
   /// the folders table from a partial result.
   Future<(List<Map<String, dynamic>>, bool)> getFoldersRaw();
+
+  /// This client bound to the session that owns [db]'s account as it is
+  /// asked: every chat request it makes goes as that session, and one made
+  /// once another session has replaced it is refused unsent. Null while no
+  /// session owns [db].
+  SyncApiClient? ownedBy(AppDatabase db);
 
   // ---- Phase 2 write extensions (CDT-RFC-001 §7.2/§7.4, B1) ----
 
@@ -109,10 +154,35 @@ abstract interface class SyncApiClient {
     Map<String, dynamic> fullBlob,
   );
 
+  /// GET `/api/tasks/chat/{id}`: the tasks the session's account runs in
+  /// chat [chatId]. Another device of the account answering there has one.
+  Future<List<String>> getChatTaskIds(String chatId);
+
+  /// The id of the user the session this client sends as signs in, as the
+  /// server answers it; null when it does not say.
+  Future<String?> sessionUserId();
+
+  /// POST `/api/tasks/chat/{id}/stop`. It stops every task the account runs
+  /// in chat [chatId]. With none running, Open WebUI marks each of the
+  /// account's answers there that it holds as not done as done, keeping the
+  /// text it stored, and only then takes an update of them ([updateChat]).
+  /// 401/403 throws [SyncTerminalException].
+  Future<void> stopChatTasks(String chatId);
+
   /// DELETE `/api/v1/chats/{id}`. `true` on success; 404 (already-gone) ->
   /// `false` WITHOUT throwing. 401/403 (no delete perm) throws
   /// [SyncTerminalException].
   Future<bool> deleteChat(String id);
+
+  /// DELETE `/api/v1/chats/{id}/messages/{messageId}` for each of
+  /// [messageIds] in turn (or, on a server older than that route, the same
+  /// edit of its history), all as the session the call starts in: once
+  /// another replaces it, the deletes left are refused unsent. Completes when
+  /// the messages are gone, a 404 included: the message or its chat is
+  /// already gone. Throws [SyncTerminalException] for 401/403 once the
+  /// session no longer owns the chat, and the error itself for anything
+  /// worth trying again.
+  Future<void> deleteChatMessages(String chatId, List<String> messageIds);
 
   /// GET `/api/v1/chats/{id}/pinned` -> bool. (Toggle-delta source for
   /// pin/archive; see [togglePin].)
@@ -226,10 +296,27 @@ abstract interface class SyncApiClient {
 }
 
 /// Production implementation over [ApiService].
-class ApiSyncApiClient implements SyncApiClient {
-  ApiSyncApiClient(this.api);
+class ApiSyncApiClient implements SyncApiClient, ChatOwnershipProbe {
+  /// [ownsDatabase] tells whether the session [api] sends as now owns the
+  /// account of a database ([ownedBy]).
+  ApiSyncApiClient(
+    this.api, {
+    required bool Function(AppDatabase db) ownsDatabase,
+  }) : _ownsDatabase = ownsDatabase,
+       _session = null;
+
+  ApiSyncApiClient._owned(this.api, this._ownsDatabase, this._session);
 
   final ApiService api;
+  final bool Function(AppDatabase db) _ownsDatabase;
+
+  /// The session this client's chat requests go as, once [ownedBy] bound it.
+  final ApiAuthSnapshot? _session;
+
+  @override
+  SyncApiClient? ownedBy(AppDatabase db) => _ownsDatabase(db)
+      ? ApiSyncApiClient._owned(api, _ownsDatabase, api.captureAuthSnapshot())
+      : null;
 
   @override
   Future<List<Map<String, dynamic>>> getChatListPage(int page) {
@@ -246,8 +333,17 @@ class ApiSyncApiClient implements SyncApiClient {
   }
 
   @override
+  Future<Set<String>> getPinnedChatIds() async => {
+    for (final item in await api.getPinnedChatListRaw())
+      if (item['id'] case final String id when id.isNotEmpty) id,
+  };
+
+  @override
+  Future<int?> getArchivedChatCount() => api.getArchivedChatCountRaw();
+
+  @override
   Future<Map<String, dynamic>?> getChatRaw(String id) {
-    return api.getChatRaw(id);
+    return api.getChatRaw(id, authSnapshot: _session);
   }
 
   @override
@@ -326,30 +422,117 @@ class ApiSyncApiClient implements SyncApiClient {
   Future<Map<String, dynamic>> createChat(
     Map<String, dynamic> chatBlob, {
     String? folderId,
-  }) => api.createChatRaw(chatBlob, folderId: folderId);
+  }) => api.createChatRaw(chatBlob, folderId: folderId, authSnapshot: _session);
 
   @override
   Future<Map<String, dynamic>?> updateChat(
     String id,
     Map<String, dynamic> fullBlob,
-  ) => api.updateChatRaw(id, fullBlob);
+  ) => api.updateChatRaw(id, fullBlob, authSnapshot: _session);
 
   @override
-  Future<bool> deleteChat(String id) => api.deleteChatRaw(id);
+  Future<List<String>> getChatTaskIds(String chatId) =>
+      api.getChatTaskIdsRaw(chatId, authSnapshot: _session);
 
   @override
-  Future<bool> getChatPinned(String id) => api.getChatPinnedRaw(id);
+  Future<void> stopChatTasks(String chatId) =>
+      api.stopChatTasksRaw(chatId, authSnapshot: _session);
 
   @override
-  Future<Map<String, dynamic>?> togglePin(String id) => api.togglePinRaw(id);
+  Future<String?> sessionUserId() async {
+    final user = await api.getCurrentUser(
+      authSnapshot: _session ?? api.captureAuthSnapshot(),
+      suppressAuthFailureNotification: true,
+    );
+    return user.id.isEmpty ? null : user.id;
+  }
+
+  @override
+  Future<bool> deleteChat(String id) =>
+      api.deleteChatRaw(id, authSnapshot: _session);
+
+  @override
+  Future<void> deleteChatMessages(
+    String chatId,
+    List<String> messageIds,
+  ) async {
+    final authSnapshot = _session ?? api.captureAuthSnapshot();
+    for (final messageId in messageIds) {
+      try {
+        await api.deleteConversationMessage(
+          chatId,
+          messageId,
+          authSnapshot: authSnapshot,
+        );
+      } on DioException catch (e) {
+        final code = e.response?.statusCode;
+        if (code == 404) continue;
+        if (code == 401 || code == 403) {
+          // Open WebUI 0.13.4 also answers 401 for a delete whose write
+          // failed (routers/chats.py:1683-1687), so only a session that owns
+          // the chat retries in place. Anything else parks: a parked delete
+          // holds up none of its chat's later work, and its recovery asks
+          // again, a few times when the check can't tell.
+          final ownership = await _chatOwnership(chatId, authSnapshot);
+          if (ownership == ChatOwnership.owns) rethrow;
+          throw SyncTerminalException(
+            statusCode: code,
+            message: 'deleteChatMessages forbidden',
+            mayRecover: ownership == ChatOwnership.unknown,
+          );
+        }
+        rethrow;
+      }
+    }
+  }
+
+  @override
+  Future<ChatOwnership> chatOwnership(String chatId) =>
+      _chatOwnership(chatId, _session ?? api.captureAuthSnapshot());
+
+  Future<ChatOwnership> _chatOwnership(
+    String chatId,
+    ApiAuthSnapshot authSnapshot,
+  ) async {
+    try {
+      final user = await api.getCurrentUser(
+        authSnapshot: authSnapshot,
+        suppressAuthFailureNotification: true,
+      );
+      final chat = await api.getChatRaw(chatId, authSnapshot: authSnapshot);
+      if (chat == null) return ChatOwnership.notOwner;
+      final owner = chat['user_id'];
+      if (user.id.isEmpty || owner is! String || owner.isEmpty) {
+        return ChatOwnership.unknown;
+      }
+      return owner == user.id ? ChatOwnership.owns : ChatOwnership.notOwner;
+    } on DioException catch (e) {
+      // Open WebUI answers 401 for a chat the session may not read
+      // (routers/chats.py:1477).
+      return switch (e.response?.statusCode) {
+        401 || 403 || 404 => ChatOwnership.notOwner,
+        _ => ChatOwnership.unknown,
+      };
+    } catch (_) {
+      return ChatOwnership.unknown;
+    }
+  }
+
+  @override
+  Future<bool> getChatPinned(String id) =>
+      api.getChatPinnedRaw(id, authSnapshot: _session);
+
+  @override
+  Future<Map<String, dynamic>?> togglePin(String id) =>
+      api.togglePinRaw(id, authSnapshot: _session);
 
   @override
   Future<Map<String, dynamic>?> toggleArchive(String id) =>
-      api.toggleArchiveRaw(id);
+      api.toggleArchiveRaw(id, authSnapshot: _session);
 
   @override
   Future<Map<String, dynamic>?> moveChatToFolder(String id, String? folderId) =>
-      api.moveChatToFolderRaw(id, folderId);
+      api.moveChatToFolderRaw(id, folderId, authSnapshot: _session);
 
   @override
   Future<Map<String, dynamic>> createFolder({
@@ -494,5 +677,14 @@ class ApiSyncApiClient implements SyncApiClient {
 @Riverpod(keepAlive: true)
 SyncApiClient? syncApiClient(Ref ref) {
   final api = ref.watch(apiServiceProvider);
-  return api == null ? null : ApiSyncApiClient(api);
+  return api == null
+      ? null
+      : ApiSyncApiClient(
+          api,
+          // The session owns the database it is certified for, while this
+          // API is still the account's.
+          ownsDatabase: (db) =>
+              captureOpenWebUiConversationRead(ref, database: db, api: api) !=
+              null,
+        );
 }

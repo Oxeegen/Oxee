@@ -1,0 +1,1648 @@
+import 'dart:async';
+
+import 'package:conduit/l10n/app_localizations.dart';
+import 'package:conduit_core/auth/auth_state_manager.dart'
+    show authStateManagerProvider;
+import 'package:conduit_core/features/auth/providers/unified_auth_providers.dart'
+    show currentUserProvider2;
+import 'package:conduit_core/features/chat/providers/chat_providers.dart';
+import 'package:conduit_core/features/chat/server_speech/direct_voice_provider_settings.dart';
+import 'package:conduit_core/features/chat/services/quick_pill_catalog.dart';
+import 'package:conduit_core/features/direct_connections/providers/direct_connection_providers.dart';
+import 'package:conduit_core/features/librechat/providers/librechat_providers.dart';
+import 'package:conduit_core/features/notifications/services/notification_prefs_sync.dart';
+import 'package:conduit_core/features/push/models/push_status.dart'
+    show PushAndroidTransport;
+import 'package:conduit_core/features/push/models/push_target.dart'
+    show OpenWebUiPushTarget;
+import 'package:conduit_core/features/push/providers/push_providers.dart';
+import 'package:conduit_core/features/tools/providers/tools_providers.dart';
+import 'package:conduit_core/models/server_memory.dart';
+import 'package:conduit_core/models/tool.dart';
+import 'package:conduit_core/providers/app_providers.dart';
+import 'package:conduit_core/providers/openwebui_accounts_controller.dart'
+    show OpenWebUiAccountChangeResult;
+import 'package:conduit_core/services/settings_service.dart';
+import 'package:conduit_core/utils/debug_logger.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart' show TextInput;
+import 'package:flutter/widgets.dart';
+
+import '../../core/services/native_sheet_bridge.dart';
+import '../../core/services/native_sheet_hydration_service.dart';
+import '../../core/utils/current_localizations.dart';
+import '../../core/utils/message_action_settings.dart';
+import '../../core/utils/native_sheet_utils.dart';
+import '../../core/utils/tts_voice_utils.dart';
+import '../../shared/services/navigation_service.dart';
+import '../../shared/theme/theme_providers.dart';
+import '../../shared/utils/ui_utils.dart';
+import '../../shared/widgets/platform_ui/vocabulary.dart';
+import '../../shared/widgets/sign_out_options_dialog.dart';
+import '../auth/widgets/browser_sign_in_settings_sheet.dart'
+    show showServerBrowserSignInSettings;
+import '../chat/providers/text_to_speech_provider.dart';
+import '../notifications/services/calendar_reminder_scheduler.dart';
+import '../notifications/services/local_notification_service.dart';
+import '../profile/widgets/account_actions.dart';
+import '../../brand/oxee_brand.dart'; // OXEE: region row
+import '../profile/widgets/stt_language_picker.dart'
+    show showDeviceSttLanguagePickerSheet;
+import '../push/widgets/push_target_actions.dart'
+    show setPushEnabledFromNativeSheet;
+import 'settings_page_module.dart';
+import 'pages/push_page_ids.dart' show pushTargetSignInActionId;
+import 'pages/server_address_settings_pages.dart'
+    show
+        serverAddressesAddAccountActionId,
+        serverAddressesPageId,
+        serverBrowserSignInActionId;
+import 'settings_pages.dart';
+
+/// Which Settings an event came from.
+enum SettingsEventSource {
+  /// The iOS native sheet, which closes itself before an action that opens
+  /// a Flutter page, so that page arrives without a transition of its own.
+  nativeSheet,
+
+  /// The Flutter Settings pages, which stay under any page opened from them.
+  flutter;
+
+  /// How a page push's rows open arrives: from the native sheet as it slides
+  /// away, without a second transition; from a Flutter Settings page as any
+  /// page does.
+  NativeSheetNavigationOrigin? get navigationOrigin => switch (this) {
+    nativeSheet => const NativeSheetNavigationOrigin(),
+    flutter => null,
+  };
+}
+
+final settingsControllerProvider = Provider<SettingsController>(
+  (_) => SettingsController(),
+);
+
+/// What every Settings row does, whichever Settings it is in.
+///
+/// The native sheet and the Flutter Settings pages draw the same page
+/// definitions and send their rows here, so a row behaves the same in both.
+/// The controller acts through the app root's [WidgetRef], which lives as
+/// long as the app; [attach] hands it over.
+class SettingsController {
+  WidgetRef? _widgetRef;
+  final Map<String, String> _nativeSheetDraftValues = {};
+
+  /// Counts visits to the Change Password page, so a change sent on one
+  /// visit doesn't report on the next.
+  int _passwordVisit = 0;
+  Future<void> _nativeSheetControlQueue = Future<void>.value();
+
+  /// Hands over the app root's ref. Settings events that arrive before it
+  /// are dropped, as there is no app to act in yet.
+  ///
+  /// Settings pages belong to the account they were described for: when
+  /// another account (or none) takes over, they are all forgotten, and a
+  /// page still open describes itself again for the new one.
+  void attach(WidgetRef ref) {
+    _widgetRef = ref;
+    // The pages' modules follow providers through their provider's Ref. A
+    // provider no one listens to goes inactive after each read -- and every
+    // row change reads it -- which pauses those subscriptions, so a module
+    // would miss the changes it follows. Listened to here, it stays active.
+    ref.listenManual(settingsPageModulesProvider, (_, _) {});
+    ref.listenManual(
+      currentUserProvider2.select((user) => user?.id),
+      (previous, next) => _forgetPages(),
+    );
+    ref.listenManual(apiServiceProvider, (previous, next) {
+      if (!identical(previous, next)) _forgetPages();
+    });
+  }
+
+  SettingsSurface get _surface => ref.read(settingsSurfaceProvider);
+
+  /// Numbers each row change as it joins the queue.
+  int _controlsQueued = 0;
+  int? _controlHandled;
+
+  /// How many row changes have joined the queue so far. A page recording
+  /// this as it appears can tell a change made on an earlier visit, still
+  /// waiting its turn, from one made on its own.
+  int get controlsQueued => _controlsQueued;
+
+  /// The number of the queued row change being handled now; null when none
+  /// is (a change handled straight away, outside the queue).
+  int? get controlHandled => _controlHandled;
+
+  /// The account a row change belongs to: the user signed in, on the server
+  /// they are signed in to (both null with none).
+  (String?, String?) _controlOwner() => (
+    ref.read(currentUserProvider2)?.id,
+    ref.read(apiServiceProvider)?.serverConfig.id,
+  );
+
+  void _forgetPages() {
+    _nativeSheetDraftValues.clear();
+    _passwordVisit++;
+    _clearNewMemoryDraft();
+    _startMemorySession();
+    ref.read(settingsPagesProvider.notifier).clear();
+  }
+
+  /// A Settings page closed: what it held unsaved is forgotten, and its
+  /// module hears of it. A page closing as its tree goes passes the
+  /// [modules] it read while it was up, as no provider may be read then.
+  void pageClosed(String detailId, {List<SettingsPageModule>? modules}) {
+    if (detailId == 'password') _startPasswordVisit();
+    final List<SettingsPageModule> owners;
+    if (modules != null) {
+      owners = modules;
+    } else if (_attached) {
+      owners = ref.read(settingsPageModulesProvider);
+    } else {
+      owners = const [];
+    }
+    for (final module in owners) {
+      if (module.ownsPage(detailId)) module.pageLeft(detailId);
+    }
+  }
+
+  bool get _attached => _widgetRef?.context.mounted ?? false;
+
+  WidgetRef get ref => _widgetRef!;
+
+  /// Handles one event from a Settings page: a row changed or tapped, a
+  /// page appeared, a profile edit, sign out. [source] says which Settings
+  /// sent it -- the native sheet, which closes itself before an action that
+  /// opens a page, or the Flutter pages, which stay under the page opened.
+  void handle(
+    NativeSheetEvent event, {
+    SettingsEventSource source = SettingsEventSource.nativeSheet,
+  }) {
+    if (!_attached) return;
+    switch (event) {
+      case NativeSheetLogoutRequested():
+        unawaited(_handleNativeSheetLogoutRequested());
+      case NativeSheetDetailLeft(:final detailId):
+        pageClosed(detailId);
+      case NativeSheetDismissed():
+        for (final module in ref.read(settingsPageModulesProvider)) {
+          module.settingsClosed();
+        }
+        _nativeSheetDraftValues.clear();
+        _passwordVisit++;
+        _clearNewMemoryDraft();
+        _startMemorySession();
+        // The sheet forgets every page it was handed as it closes; so does
+        // Settings, so the next time it opens, a page hands the sheet again
+        // the pages its rows lead to rather than taking them as drawn.
+        ref.read(settingsPagesProvider.notifier).clear();
+      case NativeSheetControlChanged(
+        id: 'sign-out',
+        value: final bool keepServerDetails,
+      ):
+        unawaited(
+          _handleNativeSheetLogoutRequested(
+            keepServerDetails: keepServerDetails,
+          ),
+        );
+      case NativeSheetControlChanged():
+        // A change waits its turn behind the ones before it; by then another
+        // account may have taken over, and the change, made on a page of the
+        // last one, is dropped rather than sent to the new one.
+        final owner = _controlOwner();
+        final draft = _newMemoryDraftVisit;
+        final sequence = ++_controlsQueued;
+        _nativeSheetControlQueue = _nativeSheetControlQueue.then((_) async {
+          if (owner != _controlOwner()) return;
+          _controlHandled = sequence;
+          try {
+            await _handleNativeSheetControlChanged(
+              event,
+              source,
+              newMemoryDraftVisit: draft,
+            );
+          } finally {
+            _controlHandled = null;
+          }
+        });
+      case NativeSheetDetailAppeared(:final detailId):
+        // A password typed on an earlier visit is not combined with this one.
+        if (detailId == 'password') _startPasswordVisit();
+        // Back on the memory list, an Add Memory page left without Done is
+        // gone: the next one starts empty, as it is drawn. The memory pages
+        // are drawn again from the list too, without what they said.
+        if (detailId == 'memory-manage') {
+          _clearNewMemoryDraft();
+          _startMemorySession();
+        }
+        final hydration = ref.read(nativeSheetHydrationServiceProvider);
+        // The native sheet fills in its own Profile page as it opens.
+        if (detailId == NativeSheetRoutes.profile &&
+            source == SettingsEventSource.flutter) {
+          unawaited(
+            hydration.hydrateFlutterProfileDetail(currentAppLocalizations()),
+          );
+        } else {
+          unawaited(hydration.hydrateDetail(detailId));
+        }
+      case NativeEditProfileCommitted():
+        unawaited(_handleNativeEditProfileCommitted(event));
+    }
+  }
+
+  /// The native Settings rows for accounts and connections. Returns whether
+  /// [actionId] was one of them.
+  Future<bool> _handleNativeAccountAction(
+    String actionId,
+    Object? value,
+  ) async {
+    final context = NavigationService.context;
+    // Sign Out from an account row's menu, on the server's page: the
+    // Settings sheet closes first, as the sign-out page's own rows do.
+    const signOutOfPrefix = '$nativeAccountSignOutOfActionId:';
+    if (actionId.startsWith(signOutOfPrefix)) {
+      // Waited for, so the sign-out question is not presented over the
+      // sheet as it leaves, where it could be dropped.
+      if (!await NativeSheetBridge.instance.dismissSettings()) return true;
+      return _handleNativeAccountAction(
+        nativeAccountSignOutOfActionId,
+        actionId.substring(signOutOfPrefix.length),
+      );
+    }
+    switch (actionId) {
+      case nativeAccountSwitchActionId:
+        if (context == null || value is! String) return true;
+        await switchToSavedAccount(context, ref, value);
+        return true;
+      case nativeAccountAddActionId:
+        if (context == null) return true;
+        await showAddAccountSheet(
+          context,
+          ref,
+          kind: value is String
+              ? AccountKind.values.asNameMap()[value] ?? AccountKind.openWebUi
+              : AccountKind.openWebUi,
+        );
+        return true;
+      case serverAddressesAddAccountActionId:
+        if (context == null || value is! String) return true;
+        openAddAccount(context, ref, serverId: value);
+        return true;
+      case serverBrowserSignInActionId:
+        if (context == null || value is! String) return true;
+        await showServerBrowserSignInSettings(context, ref, serverId: value);
+        return true;
+      case nativeHermesUseActionId:
+        if (context == null || value is! String) return true;
+        await useHermesConnection(context, ref, value);
+        return true;
+      case nativeLibreChatUseActionId:
+        if (context == null || value is! String) return true;
+        await switchToLibreChatAccount(context, ref, value);
+        return true;
+      case nativeLibreChatSignOutActionId:
+        if (context == null || value is! String) return true;
+        final registry = await ref.read(libreChatRegistryProvider.future);
+        final account = registry.byId(value);
+        if (account == null || !context.mounted) return true;
+        await signOutOfLibreChatAccount(context, account);
+        await _refreshSignOutPage();
+        return true;
+      case nativeAccountSignOutOfActionId:
+        if (context == null || value is! String) return true;
+        final accounts = await ref.read(openWebUiAccountsProvider.future);
+        final entry = accounts.where((entry) => entry.id == value).firstOrNull;
+        if (entry == null || !context.mounted) return true;
+        await signOutOfSavedAccount(context, ref, entry);
+        await _refreshSignOutPage();
+        // Its server's page no longer lists it, and goes with its last one.
+        await ref
+            .read(nativeSheetHydrationServiceProvider)
+            .hydrateDetail(serverAddressesPageId(entry.server.id));
+        return true;
+      case nativeAccountSignOutActionId:
+        if (context == null) return true;
+        final accounts = await ref.read(openWebUiAccountsProvider.future);
+        final active = accounts.where((entry) => entry.isActive).firstOrNull;
+        if (active == null || !context.mounted) return true;
+        await signOutOfSavedAccount(context, ref, active);
+        return true;
+    }
+    return false;
+  }
+
+  Future<void> _handleNativeSheetLogoutRequested({
+    bool? keepServerDetails,
+  }) async {
+    try {
+      var resolvedKeepServerDetails = keepServerDetails;
+      if (resolvedKeepServerDetails == null) {
+        final navigatorContext = NavigationService.context;
+        if (navigatorContext == null) {
+          throw StateError('Native sign-out navigator is unavailable.');
+        }
+        resolvedKeepServerDetails = await showSignOutOptionsDialog(
+          navigatorContext,
+        );
+      }
+      if (!_attached || resolvedKeepServerDetails == null) return;
+      await ref
+          .read(signOutCoordinatorProvider)
+          .signOut(keepServerDetails: resolvedKeepServerDetails);
+    } catch (error, stackTrace) {
+      DebugLogger.error(
+        'native-sign-out-failed',
+        scope: 'native/sheet',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<void> _handleNativeEditProfileCommitted(
+    NativeEditProfileCommitted event,
+  ) async {
+    try {
+      final account =
+          ref.read(accountProfileProvider).asData?.value ??
+          await ref.read(accountProfileProvider.future);
+      if (account == null) return;
+
+      await ref
+          .read(accountProfileProvider.notifier)
+          .save(
+            name: event.name.trim(),
+            profileImageUrl: event.profileImageUrl.trim(),
+            bio: event.bio,
+            gender: _normalizeOptionalNativeText(event.gender),
+            dateOfBirth: _normalizeOptionalNativeText(event.dateOfBirth),
+            timezone: account.timezone,
+          );
+    } catch (error, stackTrace) {
+      DebugLogger.error(
+        'native-edit-profile-commit-failed',
+        scope: 'native/sheet',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  /// Mirrors the three Open WebUI-aligned notification prefs to the server when
+  /// toggled from the iOS native sheet (core's
+  /// [syncNotificationPrefsToServer]). Fire-and-forget: local persistence has
+  /// already succeeded, so a failed sync only loses cross-device parity.
+  void _syncNotificationPrefsToServer({
+    bool? enabled,
+    bool? sound,
+    bool? soundAlways,
+  }) {
+    unawaited(
+      syncNotificationPrefsToServer(
+        ref.read(apiServiceProvider),
+        enabled: enabled,
+        sound: sound,
+        soundAlways: soundAlways,
+      ),
+    );
+  }
+
+  Future<void> _handleNativeSheetControlChanged(
+    NativeSheetControlChanged sent,
+    SettingsEventSource source, {
+    int? newMemoryDraftVisit,
+  }) async {
+    // A memory page's Retry sends the text its page last failed to send, as
+    // the row it stands for; once a send from the page went through, there
+    // is nothing left to send.
+    final isMemoryRetry =
+        sent.id == nativeMemoryAddRetryId ||
+        sent.id.startsWith(nativeMemorySaveRetryPrefix);
+    final event = isMemoryRetry ? _memoryRetryChange(sent.id) : sent;
+    if (event == null) return;
+    final value = event.value;
+    try {
+      // OXEE: region row of Settings (lib/brand/oxee_brand.dart). In the
+      // native sheet the row closes the sheet itself (dismissOnSelect).
+      if (event.id == oxeeRegionNativeSheetItemId) {
+        final context = NavigationService.context;
+        if (context == null || !context.mounted) return;
+        await showOxeeRegionSwitcher(context, ref);
+        return;
+      }
+
+      // Accountless (Hermes, Direct, Apple) "Connect to Open WebUI" row.
+      // Dismiss the native sheet and route into the OWUI connect flow (the
+      // router allows the serverConnection route for accountless users).
+      if (event.id == 'add-owui-server') {
+        if (source == SettingsEventSource.nativeSheet) {
+          NavigationService.openOpenWebUIConnectFromNativeSheet();
+        } else {
+          NavigationService.router.goNamed(RouteNames.serverConnection);
+        }
+        return;
+      }
+
+      if (await _handleNativeAccountAction(event.id, value)) return;
+
+      if (event.id.startsWith('tts-voice-pick:')) {
+        await _handleNativeTtsVoicePick(event);
+        return;
+      }
+
+      if (event.id == 'tts-voice-picker' && value is String) {
+        await _handleNativeTtsVoiceSelection(
+          value == '__default__' ? ttsSystemDefaultVoiceId : value,
+        );
+        return;
+      }
+
+      final l10n = currentAppLocalizations();
+      for (final module in ref.read(settingsPageModulesProvider)) {
+        if (await module.handleChange(event.id, value, l10n)) return;
+      }
+
+      if (event.id == pushTargetSignInActionId && value is String) {
+        await _signInForPush(value);
+        return;
+      }
+
+      if (event.id == nativePushEnabledId && value is bool) {
+        await _setPushEnabled(value);
+        return;
+      }
+
+      if (await _handlePushOption(event.id)) return;
+
+      if (await _handleMemoryEditorChange(
+        event.id,
+        value,
+        draftVisit: newMemoryDraftVisit,
+      )) {
+        return;
+      }
+
+      if (event.id.startsWith('memory-save:')) {
+        final encoded = event.id.substring('memory-save:'.length);
+        final memoryId = Uri.decodeComponent(encoded);
+        if (value is String) {
+          final session = _memorySession;
+          final refusal = await _runNativeMemoryAction(
+            (memories, owner) =>
+                memories.updateItem(memoryId, value, owner: owner),
+          );
+          if (session != _memorySession) return;
+          if (refusal != null) {
+            await _showMemoryEditRefusal(memoryId, refusal, content: value);
+          } else {
+            await _showMemoryChangeWent(memoryId);
+          }
+        }
+        return;
+      }
+
+      if (event.id.startsWith('memory-delete:')) {
+        final encoded = event.id.substring('memory-delete:'.length);
+        final memoryId = Uri.decodeComponent(encoded);
+        final session = _memorySession;
+        final refusal = await _runNativeMemoryAction(
+          (memories, owner) => memories.deleteItem(memoryId, owner: owner),
+        );
+        if (session != _memorySession) return;
+        if (refusal != null) {
+          // Text whose save failed stays on the page through it.
+          await _showMemoryEditRefusal(
+            memoryId,
+            refusal,
+            content: _memoryNotices[_memoryEditPageId(memoryId)],
+          );
+          return;
+        }
+        // The memory is gone, and so is its page.
+        await _surface.closeDetail('memory-edit:$encoded');
+        return;
+      }
+
+      if (event.id == 'message-actions-reorder' && value is List) {
+        final selected = ref.read(appSettingsProvider).inlineMessageActions;
+        if (selected == null) return;
+        final ordered = value
+            .whereType<String>()
+            .map((id) => id.replaceFirst('message-action:', ''))
+            .toList();
+        if (value.length != selected.length ||
+            ordered.length != selected.length ||
+            ordered.toSet().length != selected.length ||
+            !ordered.every(selected.contains)) {
+          return;
+        }
+        // UIKit has already moved its row. Reloading the detail during its
+        // move animation would disturb the displayed cells.
+        await ref
+            .read(appSettingsProvider.notifier)
+            .setInlineMessageActions(ordered);
+        return;
+      }
+      if (event.id == 'message-actions-automatic' && value is bool) {
+        await ref
+            .read(appSettingsProvider.notifier)
+            .setInlineMessageActions(
+              value ? null : defaultInlineMessageActions,
+            );
+        await ref
+            .read(nativeSheetHydrationServiceProvider)
+            .hydrateDetail('message-actions');
+        return;
+      }
+      if (event.id == 'message-actions-reset') {
+        await ref
+            .read(appSettingsProvider.notifier)
+            .setInlineMessageActions(null);
+        await ref
+            .read(nativeSheetHydrationServiceProvider)
+            .hydrateDetail('message-actions');
+        return;
+      }
+      if (event.id.startsWith('message-action:') && value is bool) {
+        final id = event.id.substring('message-action:'.length);
+        final context = NavigationService.context;
+        if (context == null ||
+            !context.mounted ||
+            !messageActionSettings(AppLocalizations.of(context)!)
+                .any((action) => action.id == id)) {
+          return;
+        }
+        await ref
+            .read(appSettingsProvider.notifier)
+            .setMessageActionVisible(id, value);
+        await ref
+            .read(nativeSheetHydrationServiceProvider)
+            .hydrateDetail('message-actions');
+        return;
+      }
+
+      if (event.id.startsWith('quick-pill:')) {
+        final pillId = event.id.substring('quick-pill:'.length);
+        if (value is! bool) return;
+        final tools = ref
+            .read(toolsListProvider)
+            .maybeWhen(data: (v) => v, orElse: () => const <Tool>[]);
+        final selectedModel = ref.read(selectedModelProvider);
+        final offered = quickPillCandidates(
+          tools: tools,
+          filters: selectedModel?.filters ?? const [],
+        );
+        if (!offered.any((pill) => pill.id == pillId)) return;
+        final current = List<String>.from(
+          ref.read(appSettingsProvider).quickPills,
+        );
+        if (value) {
+          if (!current.contains(pillId)) current.add(pillId);
+        } else {
+          current.remove(pillId);
+        }
+        await ref.read(appSettingsProvider.notifier).setQuickPills(current);
+        return;
+      }
+
+      if (event.id.startsWith('model-system-prompt:')) {
+        final encoded = event.id.substring('model-system-prompt:'.length);
+        final modelId = Uri.decodeComponent(encoded);
+        if (value is! String) return;
+        final api = ref.read(apiServiceProvider);
+        if (api == null) return;
+        await api.updateModelSystemPrompt(modelId, value);
+        await ref.read(modelsProvider.notifier).refresh();
+        return;
+      }
+
+      switch (event.id) {
+        case 'default-model':
+          if (value is String) {
+            final modelId = value == 'auto-select' ? null : value;
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setDefaultModel(modelId);
+            await restoreDefaultModel(ref);
+          }
+        case 'default-image-generation-model':
+          if (value is String) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setOpenRouterImageGenerationModel(value);
+          }
+        case 'voice-barge-in':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setVoiceBargeInEnabled(value);
+          }
+        case 'stt-silence-duration':
+          final ms = switch (value) {
+            final int i => i,
+            final double d => d.round(),
+            _ => int.tryParse('$value'),
+          };
+          if (ms != null) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setVoiceSilenceDuration(ms);
+          }
+        case 'tts-speed':
+          final speed = double.tryParse('$value');
+          if (speed != null) {
+            await ref.read(appSettingsProvider.notifier).setTtsSpeed(speed);
+          }
+        case 'tts-preview':
+          final text = value is String ? value : null;
+          if (text == null || text.isEmpty) return;
+          final controller = ref.read(textToSpeechControllerProvider.notifier);
+          final speechState = ref.read(textToSpeechControllerProvider);
+          if (speechState.isSpeaking || speechState.isBusy) {
+            await controller.stop();
+          } else {
+            await controller.toggleForMessage(
+              messageId: 'tts_preview',
+              text: text,
+            );
+          }
+        case 'memory-add-content':
+          if (value is String && value.trim().isNotEmpty) {
+            final session = _memorySession;
+            final refusal = await _runNativeMemoryAction(
+              (memories, owner) => memories.add(value.trim(), owner: owner),
+            );
+            if (session != _memorySession) return;
+            _memoryNotices.remove(_memoryAddPageId);
+            if (refusal != null) {
+              _memoryNotices[_memoryAddPageId] = refusal.canRetry
+                  ? value
+                  : null;
+              await _surface.applyDetail(
+                buildNativeMemoryAddDetail(
+                  currentAppLocalizations(),
+                  content: value,
+                  notice: refusal.text,
+                  canRetry: refusal.canRetry,
+                ),
+              );
+              return;
+            }
+            await _surface.closeDetail('memory-add');
+          }
+        case 'memory-clear-all':
+          await _runNativeMemoryAction(
+            (memories, owner) => memories.clearAll(owner: owner),
+          );
+        case 'memory-enabled':
+          if (value is bool) {
+            await ref
+                .read(personalizationSettingsProvider.notifier)
+                .setMemoryEnabled(value);
+          }
+        case 'system-prompt':
+          if (value is String) {
+            await ref
+                .read(personalizationSettingsProvider.notifier)
+                .setSystemPrompt(value);
+          }
+        case 'stt-engine':
+          if (value == SttPreference.serverOnly.name) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setSttPreference(SttPreference.serverOnly);
+            await _refreshNativeVoiceDetail();
+          } else if (value == SttPreference.deviceOnly.name) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setSttPreference(SttPreference.deviceOnly);
+            await _refreshNativeVoiceDetail();
+          }
+        case 'stt-language-code':
+          if (value is String) {
+            final normalized = SettingsService.normalizeSttLanguageCode(value);
+            if (normalized != null ||
+                SettingsService.isSttLanguageAutoInput(value)) {
+              await ref
+                  .read(appSettingsProvider.notifier)
+                  .setSttLanguageCode(normalized);
+              await _refreshNativeVoiceDetail();
+            } else {
+              DebugLogger.validation(
+                'Ignoring invalid native STT language code',
+                scope: 'native/sheet',
+                data: {'value': value},
+              );
+              await _refreshNativeVoiceDetail();
+            }
+          }
+        case 'tts-engine':
+          final notifier = ref.read(appSettingsProvider.notifier);
+          if (value == TtsEngine.server.name) {
+            await notifier.setTtsEngineSelection(TtsEngine.server);
+            await _refreshNativeVoiceDetail();
+          } else if (value == TtsEngine.device.name) {
+            await notifier.setTtsEngineSelection(TtsEngine.device);
+            await _refreshNativeVoiceDetail();
+          }
+        case 'voice-call-mode':
+          final mode = VoiceCallMode.values
+              .where((mode) => mode.name == value)
+              .firstOrNull;
+          if (mode != null) {
+            await ref.read(appSettingsProvider.notifier).setVoiceCallMode(mode);
+            await _refreshNativeVoiceDetail();
+          }
+        case 'voice-provider-connection':
+          if (value is String) {
+            await _chooseNativeVoiceProvider(value);
+            await _refreshNativeVoiceDetail(NativeSheetRoutes.voiceProvider);
+          }
+        case final id when nativeVoiceProviderFieldIds.containsKey(id):
+          final current = ref.read(appSettingsProvider).directVoiceProvider;
+          if (value is String && current != null) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setDirectVoiceProvider(
+                  current.withField(nativeVoiceProviderFieldIds[id]!, value),
+                );
+            await _refreshNativeVoiceDetail(NativeSheetRoutes.voiceProvider);
+          }
+        case 'theme-light':
+          switch (value) {
+            case 'system':
+              ref
+                  .read(appThemeModeProvider.notifier)
+                  .setTheme(ThemeMode.system);
+            case 'light':
+              ref.read(appThemeModeProvider.notifier).setTheme(ThemeMode.light);
+            case 'dark':
+              ref.read(appThemeModeProvider.notifier).setTheme(ThemeMode.dark);
+          }
+          await _refreshNativeAppearanceDetail();
+        case 'language':
+          if (value == 'system') {
+            await ref.read(appLocaleProvider.notifier).setLocale(null);
+          } else if (value is String && value.isNotEmpty) {
+            final locale = _localeFromNativeTag(value);
+            if (locale != null) {
+              await ref.read(appLocaleProvider.notifier).setLocale(locale);
+            }
+          }
+        case 'theme-palette':
+          if (value is String && value.isNotEmpty) {
+            await ref.read(appThemePaletteProvider.notifier).setPalette(value);
+            await _refreshNativeAppearanceDetail();
+          }
+        case 'quick-pills-clear':
+          await ref.read(appSettingsProvider.notifier).setQuickPills(const []);
+        case 'computer-enabled':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setComputerEnabled(value);
+          }
+        case 'composer-notes-button':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setShowComposerNotesButton(value);
+          }
+        case 'composer-model-name':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setShowModelNameInComposer(value);
+          }
+        case 'send-on-enter':
+          if (value is bool) {
+            await ref.read(appSettingsProvider.notifier).setSendOnEnter(value);
+          }
+        case 'temporary-chat-default':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setTemporaryChatByDefault(value);
+          }
+        case nativeSlidingSidebarId:
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setSlidingSidebarEnabled(value);
+          }
+        case nativeAdvancedFeaturesId:
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setAdvancedFeaturesEnabled(value);
+            final hydration = ref.read(nativeSheetHydrationServiceProvider);
+            await hydration.hydrateDetail(NativeSheetRoutes.chats);
+            // The Settings root under this page lists what Advanced reveals,
+            // so it gains or loses those rows before the user goes back.
+            await hydration.refreshProfileRoot();
+          }
+        case nativeCitationShowTitlesId:
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setCitationShowTitles(value);
+          }
+        case nativeCitationBackgroundId:
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setCitationBackground(value);
+          }
+        case 'disable-haptics-streaming':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setDisableHapticsWhileStreaming(value);
+          }
+        case 'notifications-enabled':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationsEnabled(value);
+            _syncNotificationPrefsToServer(enabled: value);
+            // The options under the switch come and go with it.
+            unawaited(
+              ref
+                  .read(nativeSheetHydrationServiceProvider)
+                  .hydrateDetail(NativeSheetRoutes.notificationSettings),
+            );
+            if (value) {
+              // Best-effort OS permission on opt-in; OS governs delivery.
+              final granted = await ref
+                  .read(localNotificationServiceProvider)
+                  .requestPermissions();
+              if (!granted) {
+                _showMessage((l10n) => l10n.notificationsPermissionDenied);
+              }
+            }
+          }
+        case nativeNotificationSystemSettingsId:
+          final opened = await ref
+              .read(localNotificationServiceProvider)
+              .openSystemSettings();
+          if (!opened) {
+            _showMessage((l10n) => l10n.notificationSystemSettingsOpenFailed);
+          }
+        case nativeNotificationCalendarExactId:
+          await ref.read(localNotificationServiceProvider).requestExactReminders();
+          // Moves the scheduled reminders onto exact alarms if it was allowed,
+          // then drops the row.
+          await ref.read(calendarReminderSchedulerProvider).sync();
+          unawaited(
+            ref
+                .read(nativeSheetHydrationServiceProvider)
+                .hydrateDetail(NativeSheetRoutes.notificationSettings),
+          );
+        case nativeDeviceSttLanguageId:
+          final context = NavigationService.context;
+          if (context == null || !context.mounted) return;
+          await showDeviceSttLanguagePickerSheet(
+            context,
+            ref,
+            ref.read(appSettingsProvider),
+          );
+          await _refreshNativeVoiceDetail();
+        case nativeAndroidAssistantTriggerId:
+          final trigger = AndroidAssistantTrigger.values
+              .where((trigger) => trigger.name == value)
+              .firstOrNull;
+          if (trigger != null) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setAndroidAssistantTrigger(trigger);
+          }
+        case 'notification-in-app-banner':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationInAppBanner(value);
+          }
+        case 'notification-system':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationSystem(value);
+          }
+        case 'notification-sound':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationSound(value);
+            _syncNotificationPrefsToServer(sound: value);
+            // Always play sound can be changed only while Sound is on.
+            unawaited(
+              ref
+                  .read(nativeSheetHydrationServiceProvider)
+                  .hydrateDetail(NativeSheetRoutes.notificationSettings),
+            );
+          }
+        case 'notification-sound-always':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationSoundAlways(value);
+            _syncNotificationPrefsToServer(soundAlways: value);
+          }
+        case 'notification-chat':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationChatEnabled(value);
+          }
+        case 'notification-channel':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationChannelEnabled(value);
+          }
+        case 'notification-scheduled':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationScheduledEnabled(value);
+          }
+        case 'notification-calendar':
+          if (value is bool) {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setNotificationCalendarEnabled(value);
+            await ref.read(calendarReminderSchedulerProvider).sync();
+            // The exact-timing row under the switch comes and goes with it.
+            unawaited(
+              ref
+                  .read(nativeSheetHydrationServiceProvider)
+                  .hydrateDetail(NativeSheetRoutes.notificationSettings),
+            );
+          }
+        case 'transport-auto':
+          await ref
+              .read(appSettingsProvider.notifier)
+              .setSocketTransportMode('auto');
+        case 'transport-streaming':
+          await ref
+              .read(appSettingsProvider.notifier)
+              .setSocketTransportMode('ws');
+        case 'transport-mode':
+          if (value == 'ws' || value == 'streaming') {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setSocketTransportMode('ws');
+          } else if (value == 'polling' || value == 'auto') {
+            await ref
+                .read(appSettingsProvider.notifier)
+                .setSocketTransportMode('auto');
+          }
+        case 'current-password':
+        case 'new-password':
+        case 'confirm-password':
+          // Typed into the draft only: nothing is sent before Done.
+          if (value is String) _nativeSheetDraftValues[event.id] = value;
+        case nativePasswordSaveActionId:
+          await _changeNativePassword();
+      }
+    } catch (error, stackTrace) {
+      DebugLogger.error(
+        'native-sheet-control-failed',
+        scope: 'native/sheet',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  String? _normalizeOptionalNativeText(String? value) {
+    final trimmed = value?.trim();
+    return trimmed == null || trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// Makes the connection with [profileId] the Voice provider, or clears it.
+  Future<void> _chooseNativeVoiceProvider(String profileId) async {
+    final notifier = ref.read(appSettingsProvider.notifier);
+    if (profileId == nativeNoVoiceProviderId) {
+      await notifier.setDirectVoiceProvider(null);
+      return;
+    }
+    // Connections still loading are not gone: the choice waits for them.
+    final profiles = ref.read(directConnectionProfilesProvider).value;
+    if (profiles == null) return;
+    final profile = profiles
+        .where(canBeVoiceProvider)
+        .where((profile) => profile.id == profileId)
+        .firstOrNull;
+    await notifier.setDirectVoiceProvider(
+      profile == null
+          ? null
+          : DirectVoiceProviderSettings.forConnection(
+              profile,
+              current: ref.read(appSettingsProvider).directVoiceProvider,
+            ),
+    );
+  }
+
+  /// Redraws Appearance after its scheme or palette changed, so its rows show
+  /// the choice -- the palette's name and swatch, the scheme tiles painted in
+  /// the new palette -- rather than the rows the sheet was opened with.
+  Future<void> _refreshNativeAppearanceDetail() {
+    return ref
+        .read(nativeSheetHydrationServiceProvider)
+        .hydrateDetail(NativeSheetRoutes.appearance);
+  }
+
+  /// Redraws the Voice pages from [detailId], the one the change came from.
+  Future<void> _refreshNativeVoiceDetail([
+    String detailId = NativeSheetRoutes.voice,
+  ]) {
+    return ref
+        .read(nativeSheetHydrationServiceProvider)
+        .hydrateDetail(detailId);
+  }
+
+  /// Done on Change Password: the draft's three fields, sent once.
+  Future<void> _changeNativePassword() async {
+    final current = _nativeSheetDraftValues['current-password'];
+    final next = _nativeSheetDraftValues['new-password'];
+    final confirm = _nativeSheetDraftValues['confirm-password'];
+    // Nothing typed since the last Done -- tapped again, or on a page with
+    // no form -- leaves the page as it says.
+    if ([current, next, confirm].every((text) => text?.isEmpty ?? true)) {
+      return;
+    }
+    final l10n = currentAppLocalizations();
+    // Whatever the outcome, the page starts over with it said on the page,
+    // and nothing typed stays behind.
+    _forgetPasswordDraft();
+    final visit = _passwordVisit;
+    String? outcome;
+    if (current == null ||
+        current.isEmpty ||
+        next == null ||
+        next.isEmpty ||
+        confirm == null ||
+        confirm.isEmpty) {
+      outcome = l10n.passwordFieldsRequired;
+    } else if (confirm != next) {
+      outcome = l10n.passwordsDoNotMatch;
+    } else {
+      try {
+        await ref
+            .read(accountProfileProvider.notifier)
+            .updatePassword(password: current, newPassword: next);
+      } catch (error, stackTrace) {
+        DebugLogger.error(
+          'settings-password-change-failed',
+          scope: 'settings/profile',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        outcome = l10n.errorMessage;
+      }
+    }
+    // The page was left, or opened again, while the change was sent: the
+    // outcome is not put over what that visit shows, nor ends the AutoFill
+    // context of fields that are not the ones it was sent from.
+    if (visit != _passwordVisit) return;
+    // AutoFill (Android's, through the Flutter fields) offers to save the
+    // new password once its fields' context ends with the change made; a
+    // refused change saves nothing.
+    TextInput.finishAutofillContext(shouldSave: outcome == null);
+    // Changed, the page says so in place of its fields, with nothing left
+    // to send or to lose; refused, it starts over saying why.
+    await _surface.applyDetail(
+      buildNativePasswordDetail(
+        l10n,
+        passwordChangeEnabled: true,
+        changed: outcome == null,
+        subtitle: outcome,
+      ),
+    );
+  }
+
+  void _forgetPasswordDraft() {
+    _nativeSheetDraftValues.remove('current-password');
+    _nativeSheetDraftValues.remove('new-password');
+    _nativeSheetDraftValues.remove('confirm-password');
+  }
+
+  /// The Change Password page opened or closed: what was typed is forgotten,
+  /// and a change still being sent no longer reports on the page.
+  void _startPasswordVisit() {
+    _forgetPasswordDraft();
+    _passwordVisit++;
+  }
+
+  /// The page listing the accounts to sign out of, read again after one
+  /// signed out, so it no longer offers that account.
+  Future<void> _refreshSignOutPage() => ref
+      .read(nativeSheetHydrationServiceProvider)
+      .hydrateDetail(nativeAccountSignOutOfDetailId);
+
+  /// Runs a memory action from the native Memory list for the account that
+  /// list was built for. With no list on record, or once the account has
+  /// changed, nothing is sent. Returns why the action did not go through,
+  /// and whether trying again could help (not once the account changed), or
+  /// null once it has.
+  Future<({String text, bool canRetry})?> _runNativeMemoryAction(
+    Future<void> Function(UserMemories memories, MemoryOwner owner) action,
+  ) async {
+    final l10n = currentAppLocalizations();
+    final accountChanged = (
+      text: l10n.personalizationMemoryAccountChanged,
+      canRetry: false,
+    );
+    final owner = ref.read(nativeSheetHydrationServiceProvider).memoryOwner;
+    if (owner == null) return accountChanged;
+    try {
+      await action(ref.read(userMemoriesProvider.notifier), owner);
+      return null;
+    } on MemoryOwnerChangedException {
+      return accountChanged;
+    } catch (error, stackTrace) {
+      DebugLogger.error(
+        'native-memory-action-failed',
+        scope: 'native/sheet',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return (text: l10n.errorMessage, canRetry: true);
+    }
+  }
+
+  /// Keeps the page of memory [memoryId] open after a change that did not go
+  /// through, saying why, with [content] -- the text that was to be saved --
+  /// still in it.
+  Future<void> _showMemoryEditRefusal(
+    String memoryId,
+    ({String text, bool canRetry}) refusal, {
+    String? content,
+  }) async {
+    final l10n = currentAppLocalizations();
+    final memory = ref
+        .read(userMemoriesProvider)
+        .asData
+        ?.value
+        .where((candidate) => candidate.id == memoryId)
+        .firstOrNull;
+    final pageId = _memoryEditPageId(memoryId);
+    _memoryNotices[pageId] = refusal.canRetry ? content : null;
+    if (memory == null) {
+      // Not in the list read now, so there is nothing left to edit: the
+      // page only says why.
+      await _surface.applyDetailPatch(
+        detailId: pageId,
+        items: [
+          NativeSheetItemConfig(
+            id: '$pageId-notice',
+            title: refusal.text,
+            sfSymbol: 'exclamationmark.triangle',
+            kind: NativeSheetItemKind.info,
+          ),
+        ],
+      );
+      return;
+    }
+    await _surface.applyDetail(
+      buildNativeMemoryEditDetail(
+        l10n,
+        memory,
+        advanced: ref.read(appSettingsProvider).advancedFeaturesEnabled,
+        content: content,
+        notice: refusal.text,
+        canRetry: refusal.canRetry,
+      ),
+    );
+  }
+
+  /// Counts the times the memory pages on screen stopped being the ones a
+  /// memory action was sent from: another account, Settings closing, the
+  /// memory list drawn again. An action's outcome shows only on the pages
+  /// it was sent from, never on a later visit's.
+  int _memorySession = 0;
+
+  void _startMemorySession() {
+    _memoryNotices.clear();
+    _memorySession++;
+  }
+
+  /// The memory pages showing why a change did not go through, by page id,
+  /// each with the text its Retry sends again (null with no Retry).
+  final Map<String, String?> _memoryNotices = {};
+
+  static const _memoryAddPageId = 'memory-add';
+
+  static String _memoryEditPageId(String memoryId) =>
+      'memory-edit:${Uri.encodeComponent(memoryId)}';
+
+  /// The change memory Retry row [retryId] stands for: its page's own row,
+  /// with the text that page last failed to send. Null once that went
+  /// through, or with no such page.
+  NativeSheetControlChanged? _memoryRetryChange(String retryId) {
+    if (retryId == nativeMemoryAddRetryId) {
+      final text = _memoryNotices[_memoryAddPageId];
+      return text == null
+          ? null
+          : NativeSheetControlChanged(id: 'memory-add-content', value: text);
+    }
+    final encoded = retryId.substring(nativeMemorySaveRetryPrefix.length);
+    final text = _memoryNotices['memory-edit:$encoded'];
+    return text == null
+        ? null
+        : NativeSheetControlChanged(id: 'memory-save:$encoded', value: text);
+  }
+
+  /// A change to memory [memoryId] went through: its page no longer says
+  /// why an earlier one did not, nor offers to send that again.
+  Future<void> _showMemoryChangeWent(String memoryId) async {
+    if (!_memoryNotices.containsKey(_memoryEditPageId(memoryId))) return;
+    _memoryNotices.remove(_memoryEditPageId(memoryId));
+    final memory = ref
+        .read(userMemoriesProvider)
+        .asData
+        ?.value
+        .where((candidate) => candidate.id == memoryId)
+        .firstOrNull;
+    if (memory == null) return;
+    await _surface.applyDetail(
+      buildNativeMemoryEditDetail(
+        currentAppLocalizations(),
+        memory,
+        advanced: ref.read(appSettingsProvider).advancedFeaturesEnabled,
+      ),
+    );
+  }
+
+  /// Turns push on or off from the Notifications page's switch. The page
+  /// shows the push targets row once push is on, and their statuses once
+  /// setup has run, so it is drawn again at both points. A failure is logged
+  /// once.
+  Future<void> _setPushEnabled(bool value) {
+    final hydration = ref.read(nativeSheetHydrationServiceProvider);
+    return setPushEnabledFromNativeSheet(
+      coordinator: ref.read(pushCoordinatorProvider.notifier),
+      enabledNow: () => ref.read(pushCoordinatorProvider).enabled,
+      value: value,
+      refresh: () async {
+        await hydration.hydrateDetail(NativeSheetRoutes.notificationSettings);
+        await hydration.hydrateDetail(NativeSheetRoutes.pushTargets);
+      },
+      onError: (message, error, stackTrace) {
+        DebugLogger.error(
+          message,
+          scope: 'native-sheet',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        // As the Flutter switch did: a switch that did not go through says
+        // so.
+        if (message == 'native-push-toggle-failed') {
+          _showMessage((l10n) => l10n.errorMessage);
+        }
+      },
+    );
+  }
+
+  /// Push's other rows on the Notifications page: the system settings while
+  /// notifications are blocked, and with Advanced on, Android's delivery
+  /// service and distributor, and resetting the keys. Returns whether [id]
+  /// was one of them.
+  Future<bool> _handlePushOption(String id) async {
+    final coordinator = ref.read(pushCoordinatorProvider.notifier);
+    final hydration = ref.read(nativeSheetHydrationServiceProvider);
+    if (id == nativePushPermissionId) {
+      final opened = await ref
+          .read(localNotificationServiceProvider)
+          .openSystemSettings();
+      if (!opened) {
+        _showMessage((l10n) => l10n.notificationSystemSettingsOpenFailed);
+      }
+      return true;
+    }
+    if (id == nativePushDistributorsRetryId) {
+      // The page asks again as it is drawn again.
+      await hydration.hydrateDetail(NativeSheetRoutes.notificationSettings);
+      return true;
+    }
+    if (id == nativePushResetKeysId) {
+      // Subscriptions are released and set up again: the pages show how
+      // that went once it has, and say so if it did not.
+      unawaited(
+        coordinator
+            .resetKeys()
+            .catchError((Object error, StackTrace stack) {
+              DebugLogger.error(
+                'push-reset-keys-failed',
+                scope: 'native-sheet',
+                error: error,
+                stackTrace: stack,
+              );
+              _showMessage((l10n) => l10n.errorMessage);
+            })
+            .whenComplete(() async {
+              await hydration.hydrateDetail(
+                NativeSheetRoutes.notificationSettings,
+              );
+              await hydration.hydrateDetail(NativeSheetRoutes.pushTargets);
+            }),
+      );
+      return true;
+    }
+    final push = ref.read(pushCoordinatorProvider);
+    final PushAndroidTransport? transport;
+    final String? distributor;
+    if (id.startsWith(nativePushDeliveryPrefix)) {
+      transport = PushAndroidTransport.tryParse(
+        id.substring(nativePushDeliveryPrefix.length),
+      );
+      distributor = transport == PushAndroidTransport.unifiedPush
+          ? push.distributor ?? hydration.pushDistributors?.firstOrNull
+          : push.distributor;
+    } else if (id.startsWith(nativePushDistributorPrefix)) {
+      transport = push.androidTransport;
+      distributor = id.substring(nativePushDistributorPrefix.length);
+    } else {
+      return false;
+    }
+    try {
+      await coordinator.setAndroidTransport(
+        transport,
+        distributor: distributor,
+      );
+    } catch (error, stackTrace) {
+      DebugLogger.error(
+        'push-delivery-change-failed',
+        scope: 'native-sheet',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      // The page is drawn again with whatever choice stands; it says the
+      // one asked for did not go through.
+      _showMessage((l10n) => l10n.errorMessage);
+    }
+    await hydration.hydrateDetail(NativeSheetRoutes.notificationSettings);
+    return true;
+  }
+
+  /// Signs in to the Open WebUI account behind push target [scope], from its
+  /// push page's Sign In row; the native sheet has closed for it. Another
+  /// account is switched to, opening its sign-in when it needs one. For the
+  /// account in use, which the app still takes for signed in while its
+  /// server refused push, the session is checked: one that still works sets
+  /// push up again, and an expired one goes through the app's own
+  /// sign-in-again flow.
+  Future<void> _signInForPush(String scope) async {
+    final target = ref.read(pushStateIfUsedProvider)?.targets[scope]?.target;
+    if (target is! OpenWebUiPushTarget) return;
+    final context = NavigationService.context;
+    if (context == null || !context.mounted) return;
+    // Read now: the page may not outlast the switch.
+    final container = ProviderScope.containerOf(context, listen: false);
+    final router = NavigationService.router;
+    final result = await switchToSavedAccount(context, ref, target.accountId);
+    if (result != OpenWebUiAccountChangeResult.alreadyActive) return;
+    if (await recheckActiveAccountSession(container)) {
+      unawaited(
+        container
+            .read(pushCoordinatorProvider.notifier)
+            .retry(scope)
+            .catchError((Object error, StackTrace stackTrace) {
+              DebugLogger.error(
+                'push-retry-failed',
+                scope: 'settings/push',
+                error: error,
+                stackTrace: stackTrace,
+              );
+            }),
+      );
+    } else if (container
+            .read(authStateManagerProvider)
+            .asData
+            ?.value
+            .isAuthenticated !=
+        true) {
+      openActiveAccountSignIn(router);
+    }
+  }
+
+  /// The Add memory page's fields with Advanced on, kept until Done adds
+  /// the memory with all three, or until the page is left without it.
+  String? _newMemoryContent;
+  String? _newMemoryType;
+  String? _newMemoryPath;
+
+  /// Counts the Add Memory visits: a field change queued on one that has
+  /// since been left is not put into the next one's draft.
+  int _newMemoryDraftVisit = 0;
+
+  void _clearNewMemoryDraft() {
+    _newMemoryContent = _newMemoryType = _newMemoryPath = null;
+    _newMemoryDraftVisit++;
+  }
+
+  /// The Advanced memory rows: the new memory's fields and Done, and one
+  /// memory's type and path, saved as they change. Returns whether [id] was
+  /// one of them.
+  Future<bool> _handleMemoryEditorChange(
+    String id,
+    Object? value, {
+    int? draftVisit,
+  }) async {
+    final staleDraft = draftVisit != null && draftVisit != _newMemoryDraftVisit;
+    switch (id) {
+      case nativeMemoryNewContentId ||
+              nativeMemoryNewTypeId ||
+              nativeMemoryNewPathId ||
+              nativeMemoryNewSaveId
+          when staleDraft:
+        return true;
+      case nativeMemoryNewContentId:
+        if (value is String) _newMemoryContent = value;
+        return true;
+      case nativeMemoryNewTypeId:
+        if (value is String) _newMemoryType = value;
+        return true;
+      case nativeMemoryNewPathId:
+        if (value is String) _newMemoryPath = value;
+        return true;
+      case nativeMemoryNewSaveId:
+        final content = _newMemoryContent?.trim() ?? '';
+        if (content.isEmpty) return true;
+        final path = _newMemoryPath?.trim() ?? '';
+        final type = _newMemoryType ?? ServerMemory.userType;
+        final session = _memorySession;
+        final refusal = await _runNativeMemoryAction(
+          (memories, owner) => memories.add(
+            content,
+            type: type,
+            path: path.isEmpty ? null : path,
+            owner: owner,
+          ),
+        );
+        if (session != _memorySession) return true;
+        if (refusal != null) {
+          await _surface.applyDetail(
+            buildNativeMemoryAddDetail(
+              currentAppLocalizations(),
+              advanced: true,
+              content: _newMemoryContent ?? '',
+              type: type,
+              path: _newMemoryPath,
+              // Done stays, and sends it all again.
+              notice: refusal.text,
+            ),
+          );
+          return true;
+        }
+        _clearNewMemoryDraft();
+        await _surface.closeDetail('memory-add');
+        return true;
+    }
+    final typed = id.startsWith(nativeMemoryTypePrefix);
+    if (!typed && !id.startsWith(nativeMemoryPathPrefix)) return false;
+    if (value is! String) return true;
+    final memoryId = Uri.decodeComponent(
+      id.substring(
+        (typed ? nativeMemoryTypePrefix : nativeMemoryPathPrefix).length,
+      ),
+    );
+    final memory = ref
+        .read(userMemoriesProvider)
+        .asData
+        ?.value
+        .where((candidate) => candidate.id == memoryId)
+        .firstOrNull;
+    if (memory == null) {
+      // Gone from the server meanwhile (cleared, say): the page says so
+      // rather than seeming to take the change.
+      await _showMemoryEditRefusal(memoryId, (
+        text: currentAppLocalizations().personalizationMemoryGone,
+        canRetry: false,
+      ));
+      return true;
+    }
+    final session = _memorySession;
+    final refusal = await _runNativeMemoryAction(
+      (memories, owner) => memories.updateItem(
+        memory.id,
+        memory.content,
+        type: typed ? value : null,
+        path: typed ? null : value.trim(),
+        owner: owner,
+      ),
+    );
+    if (session != _memorySession) return true;
+    // Text whose save failed stays on the page, with its Retry, whatever
+    // becomes of the type or path: they are saved with the text as stored.
+    final unsavedText = _memoryNotices[_memoryEditPageId(memory.id)];
+    if (refusal != null) {
+      await _showMemoryEditRefusal(memory.id, refusal, content: unsavedText);
+    } else if (unsavedText == null) {
+      await _showMemoryChangeWent(memory.id);
+    }
+    return true;
+  }
+
+  /// Says why a row tapped in the native sheet did nothing: it went away
+  /// while the sheet was open (Advanced turned off, the account lost access).
+  /// The sheet has already closed, so the message shows over the app.
+  /// Shows a short message over the app, in the language it is in now.
+  void _showMessage(String Function(AppLocalizations l10n) message) {
+    final context = NavigationService.context;
+    if (context == null || !context.mounted) return;
+    final l10n = AppLocalizations.of(context);
+    if (l10n == null) return;
+    UiUtils.showMessage(context, message(l10n));
+  }
+
+  Future<void> _handleNativeTtsVoicePick(
+    NativeSheetControlChanged event,
+  ) async {
+    final encoded = event.id.substring('tts-voice-pick:'.length);
+    final voiceKey = Uri.decodeComponent(encoded);
+    final fallbackDisplayName = event.value is String
+        ? event.value as String
+        : null;
+    await _handleNativeTtsVoiceSelection(
+      voiceKey == '__default__' ? ttsSystemDefaultVoiceId : voiceKey,
+      fallbackDisplayName: fallbackDisplayName,
+    );
+  }
+
+  Future<void> _handleNativeTtsVoiceSelection(
+    String voiceKey, {
+    String? fallbackDisplayName,
+  }) async {
+    final settings = ref.read(appSettingsProvider);
+    final notifier = ref.read(appSettingsProvider.notifier);
+
+    if (voiceKey == ttsSystemDefaultVoiceId) {
+      if (settings.ttsEngine == TtsEngine.server) {
+        await notifier.setTtsServerVoiceSelection(null, null);
+      } else {
+        await notifier.setTtsDeviceVoiceSelection(null, null);
+      }
+      await _refreshNativeVoiceDetail();
+      return;
+    }
+
+    var selectedId = voiceKey;
+    var displayName = fallbackDisplayName ?? voiceKey;
+    final l10n = currentAppLocalizations();
+    try {
+      final ttsService = ref.read(textToSpeechServiceProvider);
+      await ttsService.updateSettings(engine: settings.ttsEngine);
+      final voices = await ttsService.getAvailableVoices();
+      final selected = findTtsVoiceOption(
+        l10n,
+        settings.ttsEngine,
+        voices,
+        voiceKey,
+      );
+      if (selected != null) {
+        selectedId = selected.id;
+        displayName = selected.label;
+      }
+    } catch (error, stackTrace) {
+      DebugLogger.warning(
+        'native-tts-voice-selection-lookup-failed',
+        scope: 'native/sheet',
+        data: {'error': error, 'stackTrace': stackTrace},
+      );
+    }
+
+    if (settings.ttsEngine == TtsEngine.server) {
+      await notifier.setTtsServerVoiceSelection(selectedId, displayName);
+    } else {
+      await notifier.setTtsDeviceVoiceSelection(selectedId, displayName);
+    }
+    await _refreshNativeVoiceDetail();
+  }
+}
+
+Locale? _localeFromNativeTag(String code) {
+  final normalized = code.replaceAll('_', '-');
+  final parts = normalized.split('-');
+  if (parts.isEmpty || parts.first.isEmpty) return null;
+
+  final language = parts.first;
+  String? script;
+  String? country;
+
+  for (var i = 1; i < parts.length; i++) {
+    final part = parts[i];
+    if (part.length == 4) {
+      script = '${part[0].toUpperCase()}${part.substring(1).toLowerCase()}';
+    } else if (part.length == 2 || part.length == 3) {
+      country = part.toUpperCase();
+    }
+  }
+
+  return Locale.fromSubtags(
+    languageCode: language,
+    scriptCode: script,
+    countryCode: country,
+  );
+}

@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:checks/checks.dart';
 import 'package:conduit_core/auth/api_auth_interceptor.dart';
 import 'package:conduit_core/models/chat_message.dart';
+import 'package:conduit_core/models/conversation.dart';
+import 'package:conduit_core/models/socket_health.dart';
 import 'package:conduit_core/services/api_service.dart';
 import 'package:conduit_core/services/chat_completion_transport.dart';
 import 'package:conduit_core/services/socket_service.dart';
@@ -61,6 +64,87 @@ class _TrackingApiService extends ApiService {
     chatCompletedCalls += 1;
     return const <String, dynamic>{};
   }
+}
+
+/// Answers a read of the chat only once [release] completes, with
+/// [conversation].
+class _HeldSnapshotApi extends ApiService {
+  _HeldSnapshotApi(this.conversation)
+    : super(
+        serverConfig: const ServerConfig(
+          id: 'test',
+          name: 'Test',
+          url: 'http://localhost:0',
+        ),
+        workerManager: WorkerManager(),
+      );
+
+  final Conversation conversation;
+  final asked = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<Conversation> getConversation(
+    String id, {
+    ApiAuthSnapshot? authSnapshot,
+  }) async {
+    if (!asked.isCompleted) asked.complete();
+    await release.future;
+    return conversation;
+  }
+}
+
+/// Answers a read of the chat only once [release] completes, with [chat].
+class _HeldPollAdapter implements HttpClientAdapter {
+  _HeldPollAdapter(this.chat);
+
+  final Map<String, dynamic> chat;
+  final asked = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<List<int>>? requestStream,
+    Future<void>? cancelOnError,
+  ) async {
+    final body = options.method == 'GET' ? chat : const <String, dynamic>{};
+    if (options.method == 'GET') {
+      if (!asked.isCompleted) asked.complete();
+      await release.future;
+    }
+    return ResponseBody(
+      Stream.value(utf8.encode(jsonEncode(body))),
+      200,
+      headers: {
+        'content-type': ['application/json'],
+      },
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+/// Records every request's path, then lets [_inner] answer it.
+class _PathRecordingAdapter implements HttpClientAdapter {
+  _PathRecordingAdapter(this._inner);
+
+  final HttpClientAdapter _inner;
+  final paths = <String>[];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelOnError,
+  ) {
+    paths.add(options.path);
+    return _inner.fetch(options, requestStream, cancelOnError);
+  }
+
+  @override
+  void close({bool force = false}) => _inner.close(force: force);
 }
 
 /// Adapter that optionally returns a canned poll response.
@@ -325,6 +409,7 @@ ActiveChatStream _attach({
   String? activeConversationId = 'conv-1',
   SocketService? socketService,
   void Function(String? chatId, bool active)? onChatActiveChanged,
+  bool viaTether = false,
 }) {
   return attachUnifiedChunkedStreaming(
     session: session,
@@ -351,6 +436,7 @@ ActiveChatStream _attach({
     getMessages: log.getMessages,
     getVisibleStreamingContent: () => null,
     flushStreamingBuffer: log.flushStreamingBuffer,
+    viaTether: viaTether,
   );
 }
 
@@ -362,11 +448,20 @@ class FakeSocketInjector {
   final _registrations = <_ChatHandlerRegistration>[];
 
   /// Fires the socket's reconnect signal; [sessionId] is the session it is
-  /// connected as.
+  /// connected as, at first the one the stream was sent with.
   final reconnects = StreamController<void>.broadcast();
-  String sessionId = 'test-session';
+  String sessionId = 'sess-1';
 
   bool get hasChatHandler => _registrations.isNotEmpty;
+
+  /// Reports that events were dropped from the replay buffer.
+  void replayGap() {
+    for (final registration in List<_ChatHandlerRegistration>.from(
+      _registrations,
+    )) {
+      registration.onReplayGap?.call(SocketReplayGapReason.eventLimit);
+    }
+  }
 
   void emitChatEvent(
     String type,
@@ -414,6 +509,7 @@ class _ChatHandlerRegistration {
     required this.messageId,
     required this.requireFocus,
     required this.handler,
+    this.onReplayGap,
   });
 
   final String id;
@@ -422,6 +518,7 @@ class _ChatHandlerRegistration {
   final String? messageId;
   final bool requireFocus;
   final SocketChatEventHandler handler;
+  final SocketReplayGapCallback? onReplayGap;
 }
 
 bool _shouldDeliver(
@@ -482,6 +579,7 @@ class _MockSocketService implements SocketService {
         messageId: messageId,
         requireFocus: requireFocus,
         handler: handler,
+        onReplayGap: onReplayGap,
       ),
     );
     return SocketEventSubscription(
@@ -504,7 +602,19 @@ class _MockSocketService implements SocketService {
   Stream<void> get onReconnect => _injector.reconnects.stream;
 
   @override
+  Stream<SocketHealth> get healthStream => const Stream<SocketHealth>.empty();
+
+  @override
+  Stream<void> get transportPolicyChanges => const Stream<void>.empty();
+
+  @override
   bool get isConnected => true;
+
+  @override
+  bool get isAppForeground => true;
+
+  @override
+  bool get mayMaintainTransport => true;
 
   @override
   String? get sessionId => _injector.sessionId;
@@ -559,6 +669,439 @@ void main() {
 
       check(log.appendedChunks).deepEquals(['Hello', ' world']);
       check(log.finishCount).equals(1);
+    });
+
+    test('a held reply never recovered ends the turn as unresolved, not as an '
+        'empty answer, and nothing is sent again', () async {
+      // Issue #848: a held completion whose saved reply the server never
+      // finished while Conduit waited for it.
+      final log = _CallbackLog();
+      final api = _buildFakeApi();
+      final requests = _PathRecordingAdapter(api.dio.httpClientAdapter);
+      api.dio.httpClientAdapter = requests;
+
+      _attach(
+        session: ChatCompletionSession.httpStream(
+          messageId: 'msg-1',
+          conversationId: 'conv-1',
+          byteStream: Stream<List<int>>.error(const HeldReplyUnresolved()),
+          abort: () async {},
+        ),
+        log: log,
+        api: api,
+      );
+
+      await pumpMicrotasks();
+      await pumpMicrotasks();
+      await pumpMicrotasks();
+
+      final reply = log.messages.single;
+      check(reply.isStreaming).isFalse();
+      check(reply.error?.content).equals(kHeldReplyUnresolvedMessage);
+      check(isHeldReplyUnresolvedError(reply.error?.content)).isTrue();
+      check(log.finishCount).equals(1);
+      check(requests.paths).not((it) => it.contains('/api/chat/completions'));
+    });
+
+    test('an answer read back after its stream ends keeps the relay its '
+        'saved error records', () async {
+      // A device's answer, whose stream ended early; the error saved with it
+      // records how its relay failed.
+      final log = _CallbackLog();
+      _attach(
+        session: ChatCompletionSession.httpStream(
+          messageId: 'msg-1',
+          conversationId: 'conv-1',
+          byteStream: const Stream<List<int>>.empty(),
+          abort: () async {},
+        ),
+        log: log,
+        api: _buildFakeApi(
+          pollResponse: {
+            'id': 'conv-1',
+            'chat': {
+              'history': {
+                'messages': {
+                  'msg-1': {
+                    'id': 'msg-1',
+                    'role': 'assistant',
+                    'content': '',
+                    'done': true,
+                    'error': {
+                      'content': 'Open WebUI: Server Connection Error',
+                      'tetherRelay': 'busy',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ),
+        viaTether: true,
+      );
+
+      await pumpEventQueue();
+
+      check(log.messages.single.error).isNotNull()
+        ..has(
+          (it) => it.content,
+          'content',
+        ).equals('Open WebUI: Server Connection Error')
+        ..has((it) => it.relay, 'relay').equals(TetherRelayFailure.busy);
+    });
+
+    // A failed relay's error may say how it failed only by its code, beside
+    // words of its own.
+    const relayError = <String, dynamic>{
+      'code': 'tether_interrupted',
+      'message': 'Connection lost',
+      'content': 'Connection lost',
+    };
+
+    test("a JSON completion's error keeps the relay its code names", () async {
+      final log = _CallbackLog();
+      _attach(
+        session: ChatCompletionSession.jsonCompletion(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          jsonPayload: const {'error': relayError},
+        ),
+        log: log,
+      );
+
+      await pumpEventQueue();
+
+      check(log.messages.single.error?.relay)
+          .equals(TetherRelayFailure.interrupted);
+    });
+
+    test("a socket's error event keeps the relay its code names", () async {
+      final log = _CallbackLog();
+      final registrar = FakeSocketInjector();
+      _attach(
+        session: ChatCompletionSession.taskSocket(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          conversationId: 'conv-1',
+          taskId: 'task-1',
+        ),
+        log: log,
+        socketService: _MockSocketService(registrar),
+      );
+
+      registrar.emitChatEvent(
+        'chat:message:error',
+        const {'error': relayError, 'done': true},
+        conversationId: 'conv-1',
+        sessionId: 'sess-1',
+        messageId: 'msg-1',
+      );
+      await pumpEventQueue();
+
+      check(log.messages.single.error?.relay)
+          .equals(TetherRelayFailure.interrupted);
+    });
+
+    test("a Responses failure keeps the relay its code names", () async {
+      final log = _CallbackLog();
+      _attach(
+        session: ChatCompletionSession.httpStream(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          byteStream: Stream<List<int>>.fromIterable([
+            _sseFrame({
+              'type': 'response.failed',
+              'response': {
+                'error': {
+                  'code': 'tether_interrupted',
+                  'message': 'Connection lost',
+                },
+              },
+            }),
+            _sseDone(),
+          ]),
+          abort: () async {},
+        ),
+        log: log,
+      );
+
+      await pumpEventQueue();
+
+      check(log.messages.single.error).isNotNull()
+        ..has((it) => it.content, 'content').equals('Connection lost')
+        ..has((it) => it.relay, 'relay').equals(TetherRelayFailure.interrupted);
+    });
+
+    test("an answer read back after its stream ends keeps the relay its "
+        "saved error's code names", () async {
+      final log = _CallbackLog();
+      _attach(
+        session: ChatCompletionSession.httpStream(
+          messageId: 'msg-1',
+          conversationId: 'conv-1',
+          byteStream: const Stream<List<int>>.empty(),
+          abort: () async {},
+        ),
+        log: log,
+        api: _buildFakeApi(
+          pollResponse: {
+            'id': 'conv-1',
+            'chat': {
+              'history': {
+                'messages': {
+                  'msg-1': {
+                    'id': 'msg-1',
+                    'role': 'assistant',
+                    'content': '',
+                    'done': true,
+                    // As Open WebUI 0.13.4 saves a relay's own failure.
+                    'error': {
+                      'content': {
+                        'error': 'Connection lost',
+                        'code': 'tether_interrupted',
+                        'outcome': 'unknown',
+                        'retryable': false,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ),
+      );
+
+      await pumpEventQueue();
+
+      check(log.messages.single.error?.relay)
+          .equals(TetherRelayFailure.interrupted);
+    });
+
+    // What a snapshot read before the failure arrived saved: the failure's
+    // words without its code, or no error yet.
+    const words = 'Connection lost';
+    for (final (label, saved) in <(String, ChatMessageError?)>[
+      ('the same words without the code', ChatMessageError(content: words)),
+      ('no error', null),
+    ]) {
+      test('a failure keeps the relay its code named when a snapshot read '
+          'before it arrived brings $label', () async {
+        final api = _HeldSnapshotApi(
+          Conversation(
+            id: 'conv-1',
+            title: 'Relay',
+            createdAt: DateTime.utc(2026, 11, 20),
+            updatedAt: DateTime.utc(2026, 11, 20),
+            messages: [
+              ChatMessage(
+                id: 'msg-1',
+                role: 'assistant',
+                content: '',
+                timestamp: DateTime.utc(2026, 11, 20),
+                metadata: const {'responseDone': true},
+                error: saved,
+              ),
+            ],
+          ),
+        );
+        final log = _CallbackLog();
+        final registrar = FakeSocketInjector();
+        _attach(
+          session: ChatCompletionSession.taskSocket(
+            messageId: 'msg-1',
+            sessionId: 'sess-1',
+            conversationId: 'conv-1',
+            taskId: 'task-1',
+          ),
+          log: log,
+          api: api,
+          socketService: _MockSocketService(registrar),
+        );
+
+        registrar.replayGap();
+        await api.asked.future;
+        registrar.emitChatEvent(
+          'chat:message:error',
+          const {
+            'error': {'content': words, 'code': 'tether_interrupted'},
+            'done': true,
+          },
+          conversationId: 'conv-1',
+          sessionId: 'sess-1',
+          messageId: 'msg-1',
+        );
+        api.release.complete();
+        await pumpEventQueue();
+
+        check(log.messages.single.error).isNotNull()
+          ..has((it) => it.content, 'content').equals(words)
+          ..has(
+            (it) => it.relay,
+            'relay',
+          ).equals(TetherRelayFailure.interrupted);
+      });
+    }
+
+    test('a snapshot read after an error that saved none clears it', () async {
+      final api = _HeldSnapshotApi(
+        Conversation(
+          id: 'conv-1',
+          title: 'Relay',
+          createdAt: DateTime.utc(2026, 11, 20),
+          updatedAt: DateTime.utc(2026, 11, 20),
+          messages: [
+            ChatMessage(
+              id: 'msg-1',
+              role: 'assistant',
+              content: 'Done',
+              timestamp: DateTime.utc(2026, 11, 20),
+              metadata: const {'responseDone': true},
+            ),
+          ],
+        ),
+      );
+      final log = _CallbackLog();
+      final registrar = FakeSocketInjector();
+      _attach(
+        session: ChatCompletionSession.taskSocket(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          conversationId: 'conv-1',
+          taskId: 'task-1',
+        ),
+        log: log,
+        api: api,
+        socketService: _MockSocketService(registrar),
+      );
+
+      // A tool's setup failed, and the answer went on.
+      registrar.emitChatEvent(
+        'chat:message:error',
+        const {
+          'error': {'content': words},
+          'done': false,
+        },
+        conversationId: 'conv-1',
+        sessionId: 'sess-1',
+        messageId: 'msg-1',
+      );
+      registrar.replayGap();
+      await api.asked.future;
+      api.release.complete();
+      await pumpEventQueue();
+
+      check(log.messages.single)
+        ..has((it) => it.content, 'content').equals('Done')
+        ..has((it) => it.error, 'error').isNull();
+    });
+
+    test("a poll read before a failure keeps the failure's relay", () async {
+      final server = _HeldPollAdapter({
+        'id': 'conv-1',
+        'chat': {
+          'history': {
+            'messages': {
+              'msg-1': {
+                'id': 'msg-1',
+                'role': 'assistant',
+                'content': '',
+                'done': true,
+                'error': {'content': words},
+              },
+            },
+          },
+        },
+      });
+      final log = _CallbackLog();
+      final registrar = FakeSocketInjector();
+      _attach(
+        // The stream ends without its [DONE], so the chat is read again.
+        session: ChatCompletionSession.httpStream(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          conversationId: 'conv-1',
+          byteStream: const Stream<List<int>>.empty(),
+          abort: () async {},
+        ),
+        log: log,
+        api: _buildFakeApi()..dio.httpClientAdapter = server,
+        socketService: _MockSocketService(registrar),
+      );
+
+      await server.asked.future;
+      registrar.emitChatEvent(
+        'chat:message:error',
+        const {
+          'error': {'content': words, 'code': 'tether_interrupted'},
+          'done': false,
+        },
+        conversationId: 'conv-1',
+        sessionId: 'sess-1',
+        messageId: 'msg-1',
+      );
+      server.release.complete();
+      await pumpEventQueue();
+
+      check(log.messages.single.error).isNotNull()
+        ..has((it) => it.content, 'content').equals(words)
+        ..has((it) => it.relay, 'relay').equals(TetherRelayFailure.interrupted);
+    });
+
+    // The server saves the error's words, not its code.
+    test("a poll read after a failure keeps the failure's relay for the same "
+        'words', () async {
+      final server = _HeldPollAdapter({
+        'id': 'conv-1',
+        'chat': {
+          'history': {
+            'messages': {
+              'msg-1': {
+                'id': 'msg-1',
+                'role': 'assistant',
+                'content': '',
+                'done': true,
+                'error': {'content': words},
+              },
+            },
+          },
+        },
+      });
+      final log = _CallbackLog();
+      final registrar = FakeSocketInjector();
+      final bytes = StreamController<List<int>>();
+      _attach(
+        session: ChatCompletionSession.httpStream(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          conversationId: 'conv-1',
+          byteStream: bytes.stream,
+          abort: () async {},
+        ),
+        log: log,
+        api: _buildFakeApi()..dio.httpClientAdapter = server,
+        socketService: _MockSocketService(registrar),
+      );
+
+      registrar.emitChatEvent(
+        'chat:message:error',
+        const {
+          'error': {'content': words, 'code': 'tether_interrupted'},
+          'done': false,
+        },
+        conversationId: 'conv-1',
+        sessionId: 'sess-1',
+        messageId: 'msg-1',
+      );
+      await pumpEventQueue();
+      // The stream ends without its [DONE], so the chat is read again.
+      await bytes.close();
+      await server.asked.future;
+      server.release.complete();
+      await pumpEventQueue();
+
+      check(log.messages.single.error).isNotNull()
+        ..has((it) => it.content, 'content').equals(words)
+        ..has((it) => it.relay, 'relay').equals(TetherRelayFailure.interrupted);
     });
 
     test('taskSocket completion calls chatCompleted exactly once', () async {
@@ -1239,6 +1782,52 @@ void main() {
       check(abortCalled).isTrue();
     });
 
+    test('stop drops a request still on its way, before any transport', () {
+      final api = _buildFakeApi();
+      var abortCalled = false;
+      api.registerLegacyCancelActionForTest('msg-sent', () async {
+        abortCalled = true;
+      });
+
+      // With no socket, Open WebUI answers the request only once the whole
+      // reply is written: until then no transport is attached.
+      final message = ChatMessage(
+        id: 'msg-sent',
+        role: 'assistant',
+        content: '',
+        timestamp: DateTime.now(),
+        isStreaming: true,
+      );
+
+      stopActiveTransport(message, api);
+
+      check(abortCalled).isTrue();
+    });
+
+    test('a Stop while the send prepares keeps its request from being sent, '
+        'though no abort was registered yet', () async {
+      final api = _buildFakeApi();
+      final requests = _PathRecordingAdapter(api.dio.httpClientAdapter);
+      api.dio.httpClientAdapter = requests;
+
+      api.beginSend('msg-preparing');
+      // Stop, as the chat's Stop reaches it while settings are read.
+      api.cancelStreamingMessage('msg-preparing');
+
+      await check(
+        api.sendMessageSession(
+          messages: const [
+            {'role': 'user', 'content': 'Hello'},
+          ],
+          model: 'model-1',
+          conversationId: 'conv-1',
+          responseMessageId: 'msg-preparing',
+        ),
+      ).throws<ChatCompletionStopped>();
+      check(requests.paths).not((it) => it.contains('/api/chat/completions'));
+      check(api.sendStopped('msg-preparing')).isFalse();
+    });
+
     // -------------------------------------------------------------------
     // 4. Stop cancels taskSocket using task id
     // -------------------------------------------------------------------
@@ -1384,6 +1973,45 @@ void main() {
       check(lastMsg.metadata).isNotNull();
       check(lastMsg.metadata!['transport']).equals('taskSocket');
       check(lastMsg.metadata!['taskId']).equals('task-abc');
+    });
+
+    test('a video Open WebUI 0.13.4 generated is kept as the server saved '
+        'it, whatever came first for its address', () {
+      final log = _CallbackLog(initialMessages: _fakeStreamingMessages());
+      final registrar = FakeSocketInjector();
+      _attach(
+        session: ChatCompletionSession.taskSocket(
+          messageId: 'msg-1',
+          sessionId: 'sess-1',
+          taskId: 'task-video',
+        ),
+        log: log,
+        socketService: _MockSocketService(registrar),
+      );
+      check(registrar.hasChatHandler).isTrue();
+
+      // `generate_video` in `tools/builtin.py`: the file as it is saved on
+      // the message, which Conduit writes back with the reply. The name is
+      // copied to `filename` too, which players and exports read.
+      const saved = <String, dynamic>{
+        'type': 'video',
+        'id': 'file-otter',
+        'url': '/api/v1/files/file-otter/content',
+        'name': 'generated-video.mp4',
+        'content_type': 'video/mp4',
+      };
+      registrar.emitChatEvent('chat:message:files', {
+        'files': [
+          {'url': saved['url'], 'content_type': 'video/mp4'},
+        ],
+      }, conversationId: 'conv-1');
+      registrar.emitChatEvent('chat:message:files', {
+        'files': [saved],
+      }, conversationId: 'conv-1');
+
+      check(log.messages.last.files).isNotNull().deepEquals([
+        {...saved, 'filename': 'generated-video.mp4'},
+      ]);
     });
 
     // -------------------------------------------------------------------

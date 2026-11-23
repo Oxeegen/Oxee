@@ -224,12 +224,22 @@ final class _HermesDesktopAdministration {
           "the gateway's add takes no values",
         );
       }
-      await mcpRequest(
+      final result = await mcpRequest(
         'mcp.servers.add',
         params: {'name': entry.name, 'preset': entry.name},
       );
+      // The dashboard install it falls back to can go on in the background.
+      stillInstalling = result['background'] == true;
     }
-    await reloadMcp();
+    // An install Hermes accepted is made, at once or in the background: a
+    // reload that fails after it (the server not ready to load yet) does
+    // not turn it into a failed add, which would be asked again. The next
+    // list read loads it.
+    try {
+      await reloadMcp();
+    } on Object {
+      // Made all the same.
+    }
     return stillInstalling;
   }
 
@@ -431,6 +441,7 @@ final class _HermesDesktopAdministration {
     }
 
     await _owner._ensureConnected();
+    await _owner._learnDesktopUploadContract();
     final support = await Future.wait<bool>([
       supported(
         () => _owner._rpc.request<Object?>(
@@ -457,7 +468,7 @@ final class _HermesDesktopAdministration {
       'jobs_admin': jobs,
       'sessions': true,
       'desktop_gateway': true,
-      'desktop_uploads': _owner._desktopContract >= 2,
+      'desktop_uploads': _owner._currentDesktopContract >= 2,
       'authoritative_running': _owner._authoritativeRunning,
     };
   }

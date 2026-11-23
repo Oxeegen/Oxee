@@ -1,10 +1,15 @@
-import 'package:flutter/foundation.dart' show Uint8List, immutable;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, Uint8List, defaultTargetPlatform, immutable;
 import 'package:intl/intl.dart';
+import 'package:conduit_core/features/release_notes/models/release_note.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../shared/utils/locale_display_formatters.dart';
 
 import 'package:conduit_core/features/chat/server_speech/direct_voice_provider_settings.dart';
+import 'package:conduit_core/features/direct_connections/controllers/direct_connection_editor_draft.dart'
+    show DirectConnectionEditorSource;
+import 'package:conduit_core/features/support/support_links.dart';
 import 'package:conduit_core/features/direct_connections/models/direct_connection_profile.dart';
 import 'package:conduit_core/features/hermes/models/hermes_config.dart';
 import 'package:conduit_core/features/hermes/models/hermes_connection_profile.dart';
@@ -23,6 +28,18 @@ import 'package:conduit_core/providers/app_providers.dart'
 
 import '../../features/hermes/widgets/hermes_connection_switcher.dart'
     show hermesConnectionSummary;
+import 'package:conduit_core/features/push/models/push_status.dart';
+import 'package:conduit_core/features/push/models/push_target.dart';
+import 'package:conduit_core/ports/push_platform_port.dart' show PushTransport;
+import '../../features/push/widgets/push_target_actions.dart'
+    show
+        kUnifiedPushDistributorsUrl,
+        pushStatusText,
+        pushTargetBusy,
+        pushTargetNeedsAttention;
+import '../../features/settings/pages/direct_connection_page_ids.dart';
+import '../../features/settings/pages/hermes_page_ids.dart';
+import '../../features/settings/pages/push_page_ids.dart';
 import 'account_display.dart';
 import 'message_action_settings.dart';
 import 'tts_voice_utils.dart';
@@ -75,29 +92,135 @@ List<NativeSheetItemConfig> buildNativeAboutItems(
       sfSymbol: 'number',
       kind: NativeSheetItemKind.info,
     ),
-  // Release notes and the licenses open Flutter pages, so they close the
-  // sheet like the other rows that leave it, and say so with a chevron.
+  // What's New and the licenses are pages of Settings's own.
   NativeSheetItemConfig(
     id: NativeSheetRoutes.releaseNotesManual,
     title: l10n.releaseNotesTitle,
     sfSymbol: 'sparkles',
-    showsDisclosure: true,
-    dismissOnSelect: true,
   ),
   NativeSheetItemConfig(
     id: 'github',
     title: l10n.githubRepository,
     sfSymbol: 'chevron.left.forwardslash.chevron.right',
-    url: 'https://github.com/Oxeegen/Oxee',
+    url: conduitRepositoryUrl,
   ),
   NativeSheetItemConfig(
     id: NativeSheetRoutes.openSourceLicenses,
     title: l10n.openSourceLicenses,
     sfSymbol: 'doc.text',
-    showsDisclosure: true,
-    dismissOnSelect: true,
   ),
 ];
+
+/// The SF Symbol for a release-note bullet's icon name, as the What's New
+/// sheet draws it; Hermes draws its mark instead.
+String _releaseNoteSymbol(String? name) => switch (name) {
+  'local' => 'externaldrive',
+  'direct' => 'bolt',
+  'polish' => 'paintbrush',
+  _ => 'sparkles',
+};
+
+/// What's New: each release in the app, newest first, its introduction and
+/// what it brought, then a way to rate the app and to support it.
+NativeSheetDetailConfig buildNativeReleaseNotesDetail(
+  AppLocalizations l10n, {
+  required List<ReleaseNote> notes,
+  required String reviewUrl,
+  required String supportUrl,
+}) => NativeSheetDetailConfig(
+  id: NativeSheetRoutes.releaseNotesManual,
+  title: l10n.releaseNotesTitle,
+  sections: [
+    for (final note in notes)
+      NativeSheetSectionConfig(
+        title: note.version,
+        items: [
+          NativeSheetItemConfig(
+            id: 'release-note-intro:${note.version}',
+            title: note.title,
+            kind: NativeSheetItemKind.readOnlyText,
+            value: note.intro,
+          ),
+          for (var index = 0; index < note.bullets.length; index++)
+            NativeSheetItemConfig(
+              id: 'release-note:${note.version}:$index',
+              title: note.bullets[index],
+              sfSymbol: _releaseNoteSymbol(note.iconNameForBullet(index)),
+              iconAsset: note.iconNameForBullet(index) == 'hermes'
+                  ? 'assets/icons/hermes_agent.png'
+                  : null,
+              kind: NativeSheetItemKind.info,
+            ),
+        ],
+      ),
+    NativeSheetSectionConfig(
+      footer: l10n.releaseNotesSupportPromptMessage,
+      items: [
+        NativeSheetItemConfig(
+          id: 'release-notes-review',
+          title: l10n.releaseNotesReviewButton,
+          sfSymbol: 'heart',
+          url: reviewUrl,
+        ),
+        NativeSheetItemConfig(
+          id: 'release-notes-support',
+          title: l10n.buyMeACoffeeTitle,
+          sfSymbol: 'gift',
+          url: supportUrl,
+        ),
+      ],
+    ),
+  ],
+);
+
+/// Prefix of a page showing one package's licenses.
+const nativeLicensePagePrefix = 'license:';
+
+/// The packages the app ships, each opening its licenses.
+NativeSheetDetailConfig buildNativeLicensesDetail(
+  AppLocalizations l10n,
+  Map<String, int> licenseCounts,
+) {
+  final packages = licenseCounts.keys.toList()
+    ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  return NativeSheetDetailConfig(
+    id: NativeSheetRoutes.openSourceLicenses,
+    title: l10n.openSourceLicenses,
+    sections: [
+      NativeSheetSectionConfig(
+        items: [
+          for (final package in packages)
+            NativeSheetItemConfig(
+              id: '$nativeLicensePagePrefix${Uri.encodeComponent(package)}',
+              title: package,
+              subtitle: '${licenseCounts[package]}',
+              sfSymbol: 'doc.text',
+            ),
+        ],
+      ),
+    ],
+  );
+}
+
+/// One package's licenses, each as selectable text.
+NativeSheetDetailConfig buildNativeLicenseDetail(
+  String package,
+  List<String> licenses,
+) => NativeSheetDetailConfig(
+  id: '$nativeLicensePagePrefix${Uri.encodeComponent(package)}',
+  title: package,
+  items: [
+    for (var index = 0; index < licenses.length; index++)
+      NativeSheetItemConfig(
+        id: 'license-text:$index',
+        // The native sheet draws no row without a title; the caption names
+        // the package, and which of its licenses this is.
+        title: licenses.length == 1 ? package : '$package (${index + 1})',
+        kind: NativeSheetItemKind.readOnlyText,
+        value: licenses[index],
+      ),
+  ],
+);
 
 /// Which rows of the native Settings root the signed-in account is offered.
 /// Each flag is read from the same provider the Flutter Settings page
@@ -110,6 +233,7 @@ class NativeProfileRootVisibility {
     this.showScheduledTasks = false,
     this.showPersonalConnections = false,
     this.showChatDataControls = false,
+    this.showNotificationsWithoutAccount = false,
     this.showLibreChatPersonalization = false,
   });
 
@@ -118,6 +242,10 @@ class NativeProfileRootVisibility {
   final bool showScheduledTasks;
   final bool showPersonalConnections;
   final bool showChatDataControls;
+
+  /// Whether Notifications is listed when there is no Open WebUI account
+  /// (with one it always is): a Hermes connection is saved, or push is on.
+  final bool showNotificationsWithoutAccount;
 
   /// LibreChat is in charge, with no Open WebUI account: its memories are
   /// on the Flutter Personalization page, as the Flutter Settings page has
@@ -132,6 +260,8 @@ class NativeProfileRootVisibility {
       other.showScheduledTasks == showScheduledTasks &&
       other.showPersonalConnections == showPersonalConnections &&
       other.showChatDataControls == showChatDataControls &&
+      other.showNotificationsWithoutAccount ==
+          showNotificationsWithoutAccount &&
       other.showLibreChatPersonalization == showLibreChatPersonalization;
 
   @override
@@ -141,6 +271,7 @@ class NativeProfileRootVisibility {
     showScheduledTasks,
     showPersonalConnections,
     showChatDataControls,
+    showNotificationsWithoutAccount,
     showLibreChatPersonalization,
   );
 }
@@ -189,6 +320,11 @@ List<NativeSheetSectionConfig> buildNativeProfileRootSections(
   int? otherAccountCount = 0,
 }) {
   final hasAccount = account != null;
+  final notificationsItem = NativeSheetItemConfig(
+    id: NativeSheetRoutes.notificationSettings,
+    title: l10n.notificationsTitle,
+    sfSymbol: 'bell',
+  );
   final cardItems = <NativeSheetItemConfig>[
     NativeSheetItemConfig(
       id: hasAccount ? NativeSheetRoutes.profile : nativeAccountsDetailId,
@@ -219,11 +355,7 @@ List<NativeSheetSectionConfig> buildNativeProfileRootSections(
   // system symbol's header is solid.
   final accountItems = <NativeSheetItemConfig>[
     if (hasAccount) ...[
-      NativeSheetItemConfig(
-        id: NativeSheetRoutes.notificationSettings,
-        title: l10n.notificationsTitle,
-        sfSymbol: 'bell',
-      ),
+      notificationsItem,
       NativeSheetItemConfig(
         id: NativeSheetRoutes.aiMemory,
         title: nativeAiMemoryTitle(l10n),
@@ -237,8 +369,8 @@ List<NativeSheetSectionConfig> buildNativeProfileRootSections(
     ] else if (visibility.showLibreChatPersonalization)
       // LibreChat's memories, drawn with the head AI & Memory uses for Open
       // WebUI's, in the root's one outline family.
-      _nativeRootPageItem(
-        nativeLibreChatPersonalizationActionId,
+      NativeSheetItemConfig(
+        id: nativeLibreChatPersonalizationActionId,
         title: l10n.personalization,
         sfSymbol: 'brain.head.profile',
       ),
@@ -263,18 +395,25 @@ List<NativeSheetSectionConfig> buildNativeProfileRootSections(
       title: l10n.voice,
       sfSymbol: 'waveform',
     ),
+    // Device-level notifications, as the Flutter Settings page lists them
+    // without an account.
+    if (!hasAccount && visibility.showNotificationsWithoutAccount)
+      notificationsItem,
   ];
   // Everyday server places: things to open and use, not to configure.
   final placeItems = <NativeSheetItemConfig>[
+    // A page of Settings's own in the native sheet; where Flutter draws
+    // Settings it is the Flutter calendar.
     if (visibility.showCalendar)
-      _nativeRootPageItem(
-        NativeSheetRoutes.calendar,
+      NativeSheetItemConfig(
+        id: NativeSheetRoutes.calendar,
         title: l10n.calendarTitle,
         sfSymbol: 'calendar',
       ),
     if (visibility.canManageWorkspace)
-      _nativeRootPageItem(
-        NativeSheetRoutes.workspace,
+      // A page of Settings's own: it opens inside Settings.
+      NativeSheetItemConfig(
+        id: NativeSheetRoutes.workspace,
         title: l10n.workspaceTitle,
         sfSymbol: 'square.grid.2x2',
       ),
@@ -282,21 +421,23 @@ List<NativeSheetSectionConfig> buildNativeProfileRootSections(
   // Power-user pages Advanced reveals. The group goes with its last row, so
   // turning Advanced off leaves no empty heading behind.
   final advancedItems = <NativeSheetItemConfig>[
+    // Pages of Settings's own: they open inside Settings.
     if (visibility.showScheduledTasks)
-      _nativeRootPageItem(
-        NativeSheetRoutes.scheduledTasks,
+      NativeSheetItemConfig(
+        id: NativeSheetRoutes.scheduledTasks,
         title: l10n.scheduledTasksTitle,
         sfSymbol: 'clock.arrow.circlepath',
       ),
     if (visibility.showPersonalConnections)
-      _nativeRootPageItem(
-        NativeSheetRoutes.personalConnections,
+      NativeSheetItemConfig(
+        id: NativeSheetRoutes.personalConnections,
         title: l10n.personalConnectionsTitle,
         sfSymbol: 'server.rack',
       ),
     if (visibility.showChatDataControls)
-      _nativeRootPageItem(
-        NativeSheetRoutes.chatDataControls,
+      // A page of Settings's own: it opens inside Settings.
+      NativeSheetItemConfig(
+        id: NativeSheetRoutes.chatDataControls,
         title: l10n.chatDataControlsTitle,
         sfSymbol: 'externaldrive',
       ),
@@ -358,7 +499,7 @@ List<NativeSheetSectionConfig> buildNativeProfileRootSections(
 /// Id of the native Accounts page, pushed from the account card.
 const nativeAccountsDetailId = 'accounts';
 
-/// The root row that opens the Flutter Personalization page while LibreChat
+/// The root row that opens the LibreChat account's memories while LibreChat
 /// is in charge.
 const nativeLibreChatPersonalizationActionId = 'librechat-personalization';
 
@@ -370,7 +511,9 @@ const nativeLibreChatPersonalizationActionId = 'librechat-personalization';
 /// page, adds any.
 ///
 /// [accounts] and [directProfiles] are null when they could not be read in
-/// time; [hermesInUseId] is null while Hermes is off.
+/// time; [hermesInUseId] is null while Hermes is off. An account or
+/// connection whose push scope is in [pushAttention] says its push setup
+/// needs the user.
 NativeSheetDetailConfig buildNativeAccountsDetail(
   AppLocalizations l10n, {
   required List<OpenWebUiAccountEntry>? accounts,
@@ -383,7 +526,14 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
   List<LibreChatAccount> libreChatAccounts = const [],
   String? libreChatInChargeId,
   bool libreChatInChargeSignedIn = true,
+  Set<String> pushAttention = const {},
 }) {
+  String? withAttention(String scope, String? subtitle) =>
+      nativePushAttentionSubtitle(l10n, pushAttention, scope, subtitle);
+  // A row whose push needs the user opens its push page from its menu.
+  List<NativeSheetRowAction> pushMenu(String scope) => [
+    if (pushAttention.contains(scope)) pushSettingsRowAction(l10n, scope),
+  ];
   final byServer = <String, List<OpenWebUiAccountEntry>>{};
   for (final entry in accounts ?? const <OpenWebUiAccountEntry>[]) {
     byServer.putIfAbsent(entry.server.id, () => []).add(entry);
@@ -425,8 +575,11 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
         for (final group in byServer.values)
           NativeSheetSectionConfig(
             items: [
+              // Opens the server's page: its accounts and addresses.
               NativeSheetItemConfig(
-                id: '$nativeAccountServerActionId:${group.first.server.id}',
+                id:
+                    '$nativeServerAddressesPagePrefix'
+                    '${Uri.encodeComponent(group.first.server.id)}',
                 title: serverDisplayName(group.first.server),
                 // A server known only by its address gets a server symbol;
                 // initials of "127.0.0.1" would read "12".
@@ -434,11 +587,17 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
                 avatarName: serverIsKnownOnlyByAddress(group.first.server)
                     ? null
                     : serverDisplayName(group.first.server),
-                dismissOnSelect: true,
-                actionId: nativeAccountServerActionId,
-                actionValue: group.first.server.id,
               ),
-              for (final entry in group) _nativeAccountItem(entry, l10n),
+              for (final entry in group)
+                buildNativeAccountItem(
+                  entry,
+                  l10n,
+                  subtitle: withAttention(
+                    PushTarget.openWebUiScope(entry.id),
+                    accountSubtitle(entry, l10n),
+                  ),
+                  rowActions: pushMenu(PushTarget.openWebUiScope(entry.id)),
+                ),
             ],
           ),
       if (libreChatEnabled || libreChatAccounts.isNotEmpty)
@@ -495,21 +654,23 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
         ),
       NativeSheetSectionConfig(
         items: [
+          // Hermes Agent's own page of Settings.
           NativeSheetItemConfig(
-            id: 'accounts-hermes',
+            id: hermesSettingsPageId,
             title: l10n.hermesAgentSettingsTitle,
             sfSymbol: 'sparkles',
             iconAsset: 'assets/icons/hermes_agent.png',
             iconSize: 26,
-            dismissOnSelect: true,
-            actionId: NativeSheetRoutes.hermes,
-            actionValue: true,
           ),
           for (final connection in hermesConnections)
             _nativeSwitchItem(
               id: '$nativeHermesUseActionId:${connection.id}',
               title: connection.name,
-              subtitle: hermesConnectionSummary(connection, l10n),
+              subtitle: withAttention(
+                PushTarget.hermesScope(connection.id),
+                hermesConnectionSummary(connection, l10n),
+              ),
+              rowActions: pushMenu(PushTarget.hermesScope(connection.id)),
               sfSymbol: connection.mode == HermesBackendMode.desktopGateway
                   ? 'desktopcomputer'
                   : 'cloud',
@@ -517,42 +678,43 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
               actionId: nativeHermesUseActionId,
               actionValue: connection.id,
             ),
+          // A connection is a form of Settings's own, not a sign-in.
           if (hermesConnections.isEmpty)
-            _nativeAddItem(
-              'accounts-hermes-add',
+            NativeSheetItemConfig(
+              id: hermesConnectConnectionPageId,
               title: l10n.hermesAddConnection,
-              kind: 'hermes',
+              sfSymbol: 'plus.circle',
+              accent: true,
             ),
         ],
       ),
+      // Direct's own page, then each of its accounts, opening its page in
+      // Settings: an Apple model's, or a provider's editor.
       NativeSheetSectionConfig(
         items: [
-          _nativeRootPageItem(
-            NativeSheetRoutes.directConnections,
+          NativeSheetItemConfig(
+            id: directConnectionsPageId,
             title: l10n.directConnectionsTitle,
             sfSymbol: 'link.circle',
           ),
           if (appleOnDevice)
             NativeSheetItemConfig(
-              id: 'accounts-apple-on-device',
+              id: directApplePageId(directAppleOnDevice),
               title: l10n.backendChooserAppleOnDeviceTitle,
               sfSymbol: 'iphone',
-              dismissOnSelect: true,
-              actionId: NativeSheetRoutes.directConnections,
-              actionValue: true,
             ),
           if (applePcc)
             NativeSheetItemConfig(
-              id: 'accounts-apple-pcc',
+              id: directApplePageId(directApplePcc),
               title: l10n.backendChooserApplePccTitle,
               sfSymbol: 'lock.shield',
-              dismissOnSelect: true,
-              actionId: NativeSheetRoutes.directConnections,
-              actionValue: true,
             ),
           for (final profile in saved)
             NativeSheetItemConfig(
-              id: '$nativeDirectEditActionId:${profile.id}',
+              id: directConnectionPageId(
+                DirectConnectionEditorSource.local,
+                profile.id,
+              ),
               title: profile.name,
               subtitle: [
                 directProviderName(profile, l10n),
@@ -561,9 +723,6 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
               sfSymbol: profile.adapterKey == kOllamaAdapterKey
                   ? 'desktopcomputer'
                   : 'cloud',
-              dismissOnSelect: true,
-              actionId: nativeDirectEditActionId,
-              actionValue: profile.id,
             ),
           // Not offered while the saved ones are unread: the Direct page
           // says why, and adds from there.
@@ -571,46 +730,216 @@ NativeSheetDetailConfig buildNativeAccountsDetail(
               saved.isEmpty &&
               !appleOnDevice &&
               !applePcc)
-            _nativeAddItem(
-              'accounts-direct-add',
+            NativeSheetItemConfig(
+              id: directConnectionPageId(
+                DirectConnectionEditorSource.local,
+                null,
+              ),
               title: l10n.addDirectConnection,
-              kind: 'direct',
+              sfSymbol: 'plus.circle',
+              accent: true,
             ),
         ],
       ),
       NativeSheetSectionConfig(
         items: [
-          _nativeAddItem(
-            nativeAccountsAddItemId,
+          // Opens the kinds of account to add, as Mail's Add Account does.
+          NativeSheetItemConfig(
+            id: nativeAccountsAddItemId,
             title: l10n.accountsAddAccount,
-            kind: null,
+            sfSymbol: 'plus.circle',
+            accent: true,
+            showsDisclosure: true,
           ),
         ],
       ),
       // With one account, Settings' Sign out (or LibreChat's) already signs
-      // out of it.
+      // out of it. With several, one of them can be left, or every one.
       if ((accounts?.length ?? 0) + libreChatAccounts.length > 1)
         NativeSheetSectionConfig(
-          items: [_nativeSignOutItem(l10n, title: l10n.accountsSignOutAll)],
+          items: [
+            NativeSheetItemConfig(
+              id: nativeAccountSignOutOfDetailId,
+              title: l10n.signOut,
+              sfSymbol: 'rectangle.portrait.and.arrow.right',
+              showsDisclosure: true,
+            ),
+            _nativeSignOutItem(l10n, title: l10n.accountsSignOutAll),
+          ],
         ),
     ],
   );
 }
 
+/// The Hermes pages Accounts and Add Account open, each filled in as it
+/// appears: Hermes Agent's own page, and the form adding a connection.
+List<NativeSheetDetailConfig> buildHermesAccountsDetails(
+  AppLocalizations l10n,
+) => [
+  buildNativeLoadingDetail(
+    l10n: l10n,
+    id: hermesSettingsPageId,
+    title: l10n.hermesAgentSettingsTitle,
+  ),
+  buildNativeLoadingDetail(
+    l10n: l10n,
+    id: hermesConnectConnectionPageId,
+    title: l10n.backendChooserHermesTitle,
+  ),
+];
+
 /// Id of the Add Account row that ends the native Accounts page.
 const nativeAccountsAddItemId = 'accounts-add';
 
-/// A saved Open WebUI account under its server: switched to on a tap, but
-/// the one in use, signed in, stays put.
-NativeSheetItemConfig _nativeAccountItem(
-  OpenWebUiAccountEntry entry,
+/// The Add Account page: each kind of account or connection there is to
+/// add. An account's sign-in closes the sheet and opens as a flow of its
+/// own; a provider's editor opens in Settings, the sheet staying open.
+NativeSheetDetailConfig buildNativeAddAccountDetail(
+  AppLocalizations l10n, {
+  required bool libreChatEnabled,
+}) {
+  NativeSheetItemConfig kind(
+    String id,
+    String title,
+    String subtitle, {
+    String sfSymbol = 'server.rack',
+    String? iconAsset,
+  }) => NativeSheetItemConfig(
+    id: '$nativeAccountsAddItemId-$id',
+    title: title,
+    subtitle: subtitle,
+    sfSymbol: sfSymbol,
+    iconAsset: iconAsset,
+    dismissOnSelect: true,
+    actionId: nativeAccountAddActionId,
+    actionValue: id,
+  );
+  return NativeSheetDetailConfig(
+    id: nativeAccountsAddItemId,
+    title: l10n.accountsAddAccount,
+    sections: [
+      NativeSheetSectionConfig(
+        items: [
+          kind(
+            'openWebUi',
+            l10n.backendChooserOpenWebUITitle,
+            l10n.backendChooserOpenWebUISubtitle,
+            iconAsset: 'assets/icons/open_webui.png',
+          ),
+          if (libreChatEnabled)
+            kind(
+              'libreChat',
+              l10n.libreChatTitle,
+              l10n.libreChatChooserSubtitle,
+              sfSymbol: 'bubble.left.and.bubble.right',
+            ),
+          // A Hermes connection is a form of Settings's own, not a sign-in.
+          NativeSheetItemConfig(
+            id: hermesConnectConnectionPageId,
+            title: l10n.backendChooserHermesTitle,
+            subtitle: l10n.backendChooserHermesSubtitle,
+            sfSymbol: 'server.rack',
+            iconAsset: 'assets/icons/hermes_agent.png',
+          ),
+          // A provider is a form of Settings's own, not a sign-in.
+          NativeSheetItemConfig(
+            id: directConnectionAddAccountPageId,
+            title: l10n.backendChooserDirectTitle,
+            subtitle: l10n.backendChooserDirectSubtitle,
+            sfSymbol: 'link.circle',
+          ),
+        ],
+      ),
+    ],
+  );
+}
+
+/// Id of the page that lists each saved account to sign out of alone.
+const nativeAccountSignOutOfDetailId = 'accounts-sign-out-of';
+
+/// The page that signs out of one saved account, Open WebUI's or
+/// LibreChat's, leaving the others signed in. Each row closes the native
+/// sheet first: signing out asks before it acts.
+NativeSheetDetailConfig buildNativeAccountSignOutDetail(
+  AppLocalizations l10n, {
+  required List<OpenWebUiAccountEntry>? accounts,
+  List<LibreChatAccount> libreChatAccounts = const [],
+}) {
+  NativeSheetItemConfig row({
+    required String id,
+    required String name,
+    required String? subtitle,
+    required String actionId,
+    required String actionValue,
+  }) => NativeSheetItemConfig(
+    id: id,
+    title: l10n.accountsSignOutOf(name),
+    subtitle: subtitle,
+    sfSymbol: 'rectangle.portrait.and.arrow.right',
+    destructive: true,
+    dismissOnSelect: true,
+    showsDisclosure: false,
+    actionId: actionId,
+    actionValue: actionValue,
+  );
+  return NativeSheetDetailConfig(
+    id: nativeAccountSignOutOfDetailId,
+    title: l10n.signOut,
+    sections: [
+      NativeSheetSectionConfig(
+        items: [
+          for (final entry in accounts ?? const <OpenWebUiAccountEntry>[])
+            row(
+              id: '$nativeAccountSignOutOfActionId:${entry.id}',
+              name: accountDisplayName(entry, l10n),
+              subtitle: serverDisplayName(entry.server),
+              actionId: nativeAccountSignOutOfActionId,
+              actionValue: entry.id,
+            ),
+          for (final account in libreChatAccounts)
+            row(
+              id: '$nativeLibreChatSignOutActionId:${account.id}',
+              name: account.displayName,
+              subtitle: account.serverTitle ?? account.host,
+              actionId: nativeLibreChatSignOutActionId,
+              actionValue: account.id,
+            ),
+        ],
+      ),
+    ],
+  );
+}
+
+/// Prefix of the page of one saved Open WebUI server, its accounts and
+/// addresses; the server's URI-encoded id follows.
+const nativeServerAddressesPagePrefix = 'server-addresses:';
+
+/// [subtitle] led by "Push needs attention" when [scope] is in
+/// [pushAttention], as the Flutter account rows' chip said.
+String? nativePushAttentionSubtitle(
   AppLocalizations l10n,
-) {
+  Set<String> pushAttention,
+  String scope,
+  String? subtitle,
+) => pushAttention.contains(scope)
+    ? [l10n.pushAttentionChip, ?subtitle].join(' · ')
+    : subtitle;
+
+/// A saved Open WebUI account under its server: switched to on a tap, but
+/// the one in use, signed in, stays put. [rowActions] are what else the row
+/// can do.
+NativeSheetItemConfig buildNativeAccountItem(
+  OpenWebUiAccountEntry entry,
+  AppLocalizations l10n, {
+  String? subtitle,
+  List<NativeSheetRowAction> rowActions = const [],
+}) {
   final name = accountDisplayName(entry, l10n);
   return _nativeSwitchItem(
+    rowActions: rowActions,
     id: '$nativeAccountSwitchActionId:${entry.id}',
     title: name,
-    subtitle: accountSubtitle(entry, l10n),
+    subtitle: subtitle ?? accountSubtitle(entry, l10n),
     avatarName: name,
     avatarBytes: _dataUrlBytes(entry.summary.profileImage),
     checked: entry.isActive,
@@ -633,7 +962,9 @@ NativeSheetItemConfig _nativeSwitchItem({
   String sfSymbol = 'person.crop.circle',
   String? avatarName,
   Uint8List? avatarBytes,
+  List<NativeSheetRowAction> rowActions = const [],
 }) => NativeSheetItemConfig(
+  rowActions: rowActions,
   id: id,
   title: title,
   subtitle: subtitle,
@@ -715,14 +1046,15 @@ const nativeSignOutActionId = 'sign-out';
 
 /// Native Settings rows for accounts and connections. A row that acts on
 /// one carries its id as its action value; an add row, the account sheet's
-/// tab for its kind (`openWebUi`, `libreChat`, `hermes`, `direct`), or true
+/// tab for its kind (`openWebUi`, `libreChat`), or true
 /// for the first.
 const nativeAccountSwitchActionId = 'account-switch';
 const nativeAccountAddActionId = 'account-add';
 const nativeAccountSignOutActionId = 'account-sign-out';
-const nativeAccountServerActionId = 'account-server';
+
+/// Signs out of the saved Open WebUI account it names, active or not.
+const nativeAccountSignOutOfActionId = 'account-sign-out-of';
 const nativeHermesUseActionId = 'account-hermes-use';
-const nativeDirectEditActionId = 'account-direct-edit';
 const nativeLibreChatUseActionId = 'account-librechat-use';
 const nativeLibreChatSignOutActionId = 'account-librechat-sign-out';
 
@@ -732,30 +1064,15 @@ List<NativeSheetItemConfig> buildNativeSupportItems(AppLocalizations l10n) => [
     id: 'buy-me-a-coffee',
     title: l10n.buyMeACoffeeTitle,
     sfSymbol: 'gift',
-    url: 'https://www.buymeacoffee.com/cogwheel0',
+    url: buyMeACoffeeUrl,
   ),
   NativeSheetItemConfig(
     id: 'github-sponsors',
     title: l10n.githubSponsorsTitle,
     sfSymbol: 'heart',
-    url: 'https://github.com/sponsors/cogwheel0',
+    url: githubSponsorsUrl,
   ),
 ];
-
-/// A root row that closes the sheet and opens a Flutter page; it sends its
-/// own id as the control id.
-NativeSheetItemConfig _nativeRootPageItem(
-  String id, {
-  required String title,
-  required String sfSymbol,
-}) => NativeSheetItemConfig(
-  id: id,
-  title: title,
-  sfSymbol: sfSymbol,
-  dismissOnSelect: true,
-  actionId: id,
-  actionValue: true,
-);
 
 /// The sections of the native Profile page. [accountProfile] supplies the
 /// About text, gender and birthday; with none loaded the rows show them as
@@ -804,6 +1121,27 @@ List<NativeSheetSectionConfig> buildNativeProfileDetailSections(
         ),
       ],
     ),
+    // What the server says about the account: its role, and whether it is
+    // active with the status its owner set.
+    if (accountProfile != null)
+      NativeSheetSectionConfig(
+        items: [
+          NativeSheetItemConfig(
+            id: 'profile-role',
+            title: l10n.roleLabel,
+            subtitle: _capitalized(accountProfile.role),
+            sfSymbol: 'person.crop.circle.badge.checkmark',
+            kind: NativeSheetItemKind.info,
+          ),
+          NativeSheetItemConfig(
+            id: 'profile-status',
+            title: l10n.accountStatus,
+            subtitle: nativeProfileStatusLabel(l10n, accountProfile),
+            sfSymbol: 'circle.lefthalf.filled',
+            kind: NativeSheetItemKind.info,
+          ),
+        ],
+      ),
     NativeSheetSectionConfig(
       items: [
         NativeSheetItemConfig(
@@ -814,6 +1152,29 @@ List<NativeSheetSectionConfig> buildNativeProfileDetailSections(
       ],
     ),
   ];
+}
+
+/// Active or inactive, then the status the account's owner set, if any:
+/// "Active • 🌴 On holiday".
+String nativeProfileStatusLabel(
+  AppLocalizations l10n,
+  AccountMetadata profile,
+) {
+  final base = profile.isActive ? l10n.activeStatus : l10n.inactiveStatus;
+  final parts = [
+    if (profile.statusEmoji?.trim() case final emoji? when emoji.isNotEmpty)
+      emoji,
+    if (profile.statusMessage?.trim() case final message?
+        when message.isNotEmpty)
+      message,
+  ];
+  return parts.isEmpty ? base : '$base • ${parts.join(' ')}';
+}
+
+String _capitalized(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return trimmed;
+  return '${trimmed[0].toUpperCase()}${trimmed.substring(1)}';
 }
 
 /// What the Profile details row holds now -- the gender and birthday set,
@@ -902,6 +1263,24 @@ NativeSheetDetailConfig buildNativeLoadingDetail({
   );
 }
 
+/// Which speech engines can work now: on this device, and on the server
+/// or provider in use. An engine that cannot is still listed, greyed, and
+/// a warning says so when it is the one chosen.
+@immutable
+class NativeVoiceEngineAvailability {
+  const NativeVoiceEngineAvailability({
+    this.deviceRecognition = true,
+    this.serverRecognition = true,
+    this.deviceSpeech = true,
+    this.serverSpeech = true,
+  });
+
+  final bool deviceRecognition;
+  final bool serverRecognition;
+  final bool deviceSpeech;
+  final bool serverSpeech;
+}
+
 class NativeAudioSheetParts {
   const NativeAudioSheetParts({
     required this.mainSections,
@@ -916,6 +1295,42 @@ class NativeAudioSheetParts {
 
 /// The Voice provider choice that clears it.
 const nativeNoVoiceProviderId = 'none';
+
+/// The Voice row that picks the language Android's own recognizer listens
+/// for, which opens the device's language list.
+const nativeDeviceSttLanguageId = 'stt-device-language';
+
+/// The Chats row that picks what holding the assistant button opens on
+/// Android, where Conduit can be the default assistant.
+const nativeAndroidAssistantTriggerId = 'android-assistant-trigger';
+
+/// The Notifications row that opens Android's notification settings for
+/// Conduit, where its channels are switched on and off.
+const nativeNotificationSystemSettingsId = 'notification-system-settings';
+
+/// The Notifications row that opens Android's "Alarms & reminders" screen for
+/// Conduit, shown while calendar reminders can't fire on the minute.
+const nativeNotificationCalendarExactId = 'notification-calendar-exact';
+
+/// Whether Voice offers the device recognizer's language: only on Android,
+/// and only while the device does the recognizing.
+bool shouldShowDeviceSttLanguageSetting(
+  TargetPlatform platform,
+  SttPreference preference,
+) =>
+    platform == TargetPlatform.android &&
+    preference == SttPreference.deviceOnly;
+
+/// What the device recognizer listens for: automatic, the system's
+/// language, or a locale.
+String deviceSttLanguageSubtitle(AppLocalizations l10n, AppSettings settings) {
+  final localeId = settings.voiceLocaleId;
+  if (localeId == null) return l10n.sttTranscriptionLanguageAuto;
+  if (localeId == SettingsService.voiceLocaleSystemDefault) {
+    return l10n.ttsSystemDefault;
+  }
+  return localeId;
+}
 
 /// The text fields of the Voice provider page, by item id.
 const nativeVoiceProviderFieldIds = {
@@ -939,6 +1354,8 @@ NativeAudioSheetParts buildNativeAudioSheetParts(
   List<DirectConnectionProfile> voiceProviderCandidates =
       const <DirectConnectionProfile>[],
   bool serverOffersVoiceChoice = true,
+  NativeVoiceEngineAvailability availability =
+      const NativeVoiceEngineAvailability(),
 }) {
   final sttSegment = NativeSheetItemConfig(
     id: 'stt-engine',
@@ -951,8 +1368,16 @@ NativeAudioSheetParts buildNativeAudioSheetParts(
     kind: NativeSheetItemKind.segment,
     value: appSettings.sttPreference.name,
     options: [
-      NativeSheetOptionConfig(id: 'deviceOnly', label: l10n.sttEngineDevice),
-      NativeSheetOptionConfig(id: 'serverOnly', label: l10n.sttEngineServer),
+      NativeSheetOptionConfig(
+        id: 'deviceOnly',
+        label: l10n.sttEngineDevice,
+        enabled: availability.deviceRecognition,
+      ),
+      NativeSheetOptionConfig(
+        id: 'serverOnly',
+        label: l10n.sttEngineServer,
+        enabled: availability.serverRecognition,
+      ),
     ],
   );
 
@@ -995,8 +1420,16 @@ NativeAudioSheetParts buildNativeAudioSheetParts(
     kind: NativeSheetItemKind.segment,
     value: appSettings.ttsEngine.name,
     options: [
-      NativeSheetOptionConfig(id: 'device', label: l10n.ttsEngineDevice),
-      NativeSheetOptionConfig(id: 'server', label: l10n.ttsEngineServer),
+      NativeSheetOptionConfig(
+        id: 'device',
+        label: l10n.ttsEngineDevice,
+        enabled: availability.deviceSpeech,
+      ),
+      NativeSheetOptionConfig(
+        id: 'server',
+        label: l10n.ttsEngineServer,
+        enabled: availability.serverSpeech,
+      ),
     ],
   );
 
@@ -1055,6 +1488,19 @@ NativeAudioSheetParts buildNativeAudioSheetParts(
 
   final sttItems = <NativeSheetItemConfig>[
     sttSegment,
+    // Android's recognizer takes a locale of its own; iOS's follows the
+    // system.
+    if (shouldShowDeviceSttLanguageSetting(
+      defaultTargetPlatform,
+      appSettings.sttPreference,
+    ))
+      NativeSheetItemConfig(
+        id: nativeDeviceSttLanguageId,
+        title: l10n.sttDeviceLanguage,
+        subtitle: deviceSttLanguageSubtitle(l10n, appSettings),
+        sfSymbol: 'globe',
+        showsDisclosure: true,
+      ),
     if (appSettings.sttPreference == SttPreference.serverOnly) ...[
       sttLanguageField,
       silenceSlider,
@@ -1105,6 +1551,7 @@ NativeAudioSheetParts buildNativeAudioSheetParts(
   final voiceProviderDetail = NativeSheetDetailConfig(
     id: NativeSheetRoutes.voiceProvider,
     title: l10n.voiceProviderTitle,
+    discardPrompt: nativeDiscardPrompt(l10n),
     sections: [
       NativeSheetSectionConfig(
         footer: voiceProviderCandidates.isEmpty
@@ -1220,8 +1667,27 @@ NativeAudioSheetParts buildNativeAudioSheetParts(
           ),
         ],
       ),
-      NativeSheetSectionConfig(items: sttItems),
-      NativeSheetSectionConfig(items: ttsItems),
+      // The chosen engine that cannot work says so under its group.
+      NativeSheetSectionConfig(
+        footer: switch (appSettings.sttPreference) {
+          SttPreference.deviceOnly when !availability.deviceRecognition =>
+            l10n.sttDeviceUnavailableWarning,
+          SttPreference.serverOnly when !availability.serverRecognition =>
+            l10n.sttServerUnavailableWarning,
+          _ => null,
+        },
+        items: sttItems,
+      ),
+      NativeSheetSectionConfig(
+        footer: switch (appSettings.ttsEngine) {
+          TtsEngine.device when !availability.deviceSpeech =>
+            l10n.ttsDeviceUnavailableWarning,
+          TtsEngine.server when !availability.serverSpeech =>
+            l10n.ttsServerUnavailableWarning,
+          _ => null,
+        },
+        items: ttsItems,
+      ),
       NativeSheetSectionConfig(
         footer: l10n.voiceProviderDescription,
         items: [
@@ -1252,12 +1718,28 @@ String _nativeVoiceSubtitle(AppLocalizations l10n, AppSettings settings) {
   return formatTtsVoiceDisplayName(voice);
 }
 
+/// Change Password's Done: the one control that sends the change.
+const nativePasswordSaveActionId = 'password-save';
+
+/// The Change Password page: three fields and Done, or, once [changed],
+/// a note that the password was changed and nothing more to do there.
 NativeSheetDetailConfig buildNativePasswordDetail(
   AppLocalizations l10n, {
   required bool passwordChangeEnabled,
+  bool changed = false,
   String? subtitle,
 }) {
-  final items = passwordChangeEnabled
+  final form = passwordChangeEnabled && !changed;
+  final items = changed && passwordChangeEnabled
+      ? [
+          NativeSheetItemConfig(
+            id: 'password-changed',
+            title: l10n.passwordUpdated,
+            sfSymbol: 'checkmark.circle',
+            kind: NativeSheetItemKind.info,
+          ),
+        ]
+      : passwordChangeEnabled
       ? [
           NativeSheetItemConfig(
             id: 'current-password',
@@ -1266,6 +1748,7 @@ NativeSheetDetailConfig buildNativePasswordDetail(
             sfSymbol: 'lock',
             kind: NativeSheetItemKind.secureTextField,
             placeholder: l10n.currentPassword,
+            passwordRole: NativeSheetPasswordRole.current,
           ),
           NativeSheetItemConfig(
             id: 'new-password',
@@ -1274,6 +1757,7 @@ NativeSheetDetailConfig buildNativePasswordDetail(
             sfSymbol: 'key',
             kind: NativeSheetItemKind.secureTextField,
             placeholder: l10n.newPassword,
+            passwordRole: NativeSheetPasswordRole.newPassword,
           ),
           NativeSheetItemConfig(
             id: 'confirm-password',
@@ -1282,6 +1766,7 @@ NativeSheetDetailConfig buildNativePasswordDetail(
             sfSymbol: 'checkmark.shield',
             kind: NativeSheetItemKind.secureTextField,
             placeholder: l10n.confirmNewPassword,
+            passwordRole: NativeSheetPasswordRole.newPassword,
           ),
         ]
       : [
@@ -1296,7 +1781,11 @@ NativeSheetDetailConfig buildNativePasswordDetail(
   return NativeSheetDetailConfig(
     id: 'password',
     title: l10n.changePasswordTitle,
-    subtitle: passwordChangeEnabled ? subtitle : null,
+    // Leaving with anything typed asks first; Back never sends it.
+    discardPrompt: form ? nativeDiscardPrompt(l10n) : null,
+    subtitle: form ? subtitle : null,
+    // Typing fills a draft; only Done sends it.
+    confirmActionId: form ? nativePasswordSaveActionId : null,
     items: items,
   );
 }
@@ -1364,6 +1853,7 @@ NativeSheetDetailConfig buildNativeOpenRouterImageGenerationModelDetail(
     id: 'default-image-generation-model',
     title: l10n.defaultImageGenerationModel,
     subtitle: l10n.defaultImageGenerationModelDescription,
+    discardPrompt: nativeDiscardPrompt(l10n),
     items: [
       NativeSheetItemConfig(
         id: 'default-image-generation-model',
@@ -1387,6 +1877,7 @@ NativeSheetDetailConfig buildNativeSystemPromptDetail(
     id: 'system-prompt',
     title: l10n.yourSystemPrompt,
     subtitle: subtitle ?? l10n.yourSystemPromptDescription,
+    discardPrompt: nativeDiscardPrompt(l10n),
     items: [
       NativeSheetItemConfig(
         id: 'system-prompt',
@@ -1401,25 +1892,31 @@ NativeSheetDetailConfig buildNativeSystemPromptDetail(
   );
 }
 
+/// The question a Settings form asks before its unsaved changes are dropped.
+NativeSheetDiscardPrompt nativeDiscardPrompt(AppLocalizations l10n) =>
+    NativeSheetDiscardPrompt(
+      title: l10n.workspaceEditorDiscardTitle,
+      message: l10n.workspaceEditorDiscardMessage,
+      discardLabel: l10n.workspaceEditorDiscardConfirm,
+      keepLabel: l10n.workspaceEditorKeepEditing,
+    );
+
 /// Control id the native Webhook destinations row sends to open the Flutter
 /// Notifications page, where the destinations are managed.
 const nativeNotificationTargetsActionId = 'notification-targets';
 
-/// The Webhook destinations row of the native Notifications sheet. The native
-/// sheet has no editor for them, so the row closes it and opens the Flutter
-/// page, which holds the list and editor. [count] is how many the account
-/// has; with none read yet the row shows no count.
+/// The Webhook destinations row of the Notifications page, which opens their
+/// list. [count] is how many the account has; with none read yet the row
+/// shows no count.
 NativeSheetItemConfig buildNativeNotificationTargetsItem(
   AppLocalizations l10n, {
   int? count,
 }) {
   return NativeSheetItemConfig(
-    id: 'notification-targets',
+    id: nativeNotificationTargetsActionId,
     title: l10n.notificationTargetsTitle,
     subtitle: count == null ? null : l10n.nativeWebhookDestinationsCount(count),
     sfSymbol: 'bell.and.waves.left.and.right',
-    dismissOnSelect: true,
-    actionId: nativeNotificationTargetsActionId,
   );
 }
 
@@ -1435,43 +1932,407 @@ NativeSheetSectionConfig buildNativeNotificationTargetsSection(
   );
 }
 
-/// Control id the native Add memory row sends to open the Flutter editor.
-const nativeMemoryEditorNewActionId = 'memory-editor-new';
+/// Control id of the native push switch.
+const nativePushEnabledId = 'push-enabled';
 
-/// Prefix of the control id a native memory row sends to open the Flutter
-/// editor for one memory; the memory id follows, URI-encoded.
-const nativeMemoryEditorActionPrefix = 'memory-editor:';
+/// Control id of the push row shown while notifications are blocked: it
+/// opens the system settings where they are allowed.
+const nativePushPermissionId = 'push-permission-denied';
 
-/// The Add memory row. The native sheet holds a content box and nothing else,
-/// so with [advanced] the row closes it and opens the Flutter editor, which
-/// also has the type and path.
-NativeSheetItemConfig buildNativeMemoryAddItem(
-  AppLocalizations l10n, {
-  required bool advanced,
+/// Control id prefix of an Android delivery row: `push-delivery:auto`,
+/// `push-delivery:fcm` or `push-delivery:unifiedPush`.
+const nativePushDeliveryPrefix = 'push-delivery:';
+
+/// Control id prefix of a UnifiedPush distributor row, with its name.
+const nativePushDistributorPrefix = 'push-distributor:';
+
+/// Control id of Reset Encryption Keys, under Advanced.
+const nativePushResetKeysId = 'push-reset-keys';
+
+/// Reads the UnifiedPush distributors again after a read that failed.
+const nativePushDistributorsRetryId = 'push-distributors-retry';
+
+/// The push groups of the Notifications page, on iOS and Android alike: the
+/// switch, and while push is on, a row into the per-target list and the
+/// privacy explainer. Android without a relay points at UnifiedPush; with
+/// notifications blocked a row opens the system settings. With Advanced on,
+/// Android chooses its delivery service and distributor, and either
+/// platform may reset its keys. [push] is null where push was never turned
+/// on; [distributors] is null until read.
+List<NativeSheetSectionConfig> buildNativePushSections(
+  AppLocalizations l10n,
+  PushState? push, {
+  bool android = false,
+  bool advanced = false,
+  List<String>? distributors,
+  bool distributorsFailed = false,
 }) {
+  final available = push?.available ?? true;
+  final enabled = push?.enabled ?? false;
+  // On while push can no longer work here, the switch still turns it off.
+  final switchable = available || enabled;
+  final attention = [
+    for (final target in push?.targets.values ?? const <PushTargetState>[])
+      if (pushTargetNeedsAttention(target)) target,
+  ];
+  NativeSheetItemConfig getDistributor(String id) => NativeSheetItemConfig(
+    id: id,
+    title: l10n.pushGetDistributor,
+    sfSymbol: 'link',
+    url: kUnifiedPushDistributorsUrl,
+    showsDisclosure: false,
+  );
+  final sections = <NativeSheetSectionConfig>[
+    NativeSheetSectionConfig(
+      title: l10n.pushSectionTitle,
+      items: [
+        NativeSheetItemConfig(
+          id: nativePushEnabledId,
+          title: l10n.pushEnabledTitle,
+          subtitle: available
+              ? l10n.pushEnabledDescription
+              : android
+              ? l10n.pushUnavailableAndroid
+              : l10n.pushUnavailableBuild,
+          sfSymbol: 'bell.badge',
+          kind: switchable
+              ? NativeSheetItemKind.toggle
+              : NativeSheetItemKind.info,
+          value: enabled,
+        ),
+        if (!available && android) getDistributor('push-get-distributor'),
+        if (enabled && (push?.permissionDenied ?? false))
+          NativeSheetItemConfig(
+            id: nativePushPermissionId,
+            title: l10n.pushStatusPermissionDenied,
+            subtitle: l10n.pushExplainPermissionDenied,
+            sfSymbol: 'bell.slash',
+            showsDisclosure: true,
+          ),
+        if (enabled && push != null)
+          NativeSheetItemConfig(
+            id: NativeSheetRoutes.pushTargets,
+            // Each account and connection, with its push status.
+            title: l10n.accountsTitle,
+            subtitle: attention.isEmpty ? null : l10n.pushAttentionChip,
+            sfSymbol: attention.isEmpty
+                ? 'checkmark.circle'
+                : 'exclamationmark.triangle',
+          ),
+        // A page of Settings's own.
+        NativeSheetItemConfig(
+          id: pushPrivacyPageId,
+          title: l10n.pushPrivacyTitle,
+          sfSymbol: 'lock.shield',
+        ),
+      ],
+    ),
+  ];
+  if (!advanced || !enabled || push == null) return sections;
+  if (android) {
+    final fcm =
+        push.relayConfigured &&
+        push.availableTransports.contains(PushTransport.fcm);
+    final choice = push.androidTransport;
+    final selectedDistributor = push.distributor ?? distributors?.firstOrNull;
+    NativeSheetItemConfig option(String name, String title, bool chosen) =>
+        NativeSheetItemConfig(
+          id: '$nativePushDeliveryPrefix$name',
+          title: title,
+          checked: chosen,
+          kind: chosen
+              ? NativeSheetItemKind.info
+              : NativeSheetItemKind.navigation,
+          showsDisclosure: false,
+        );
+    sections.add(
+      NativeSheetSectionConfig(
+        title: l10n.pushDeliveryTitle,
+        items: [
+          option('auto', l10n.pushDeliveryAutomatic, choice == null),
+          if (fcm)
+            option(
+              PushAndroidTransport.fcm.name,
+              l10n.pushDeliveryFcm,
+              choice == PushAndroidTransport.fcm,
+            ),
+          option(
+            PushAndroidTransport.unifiedPush.name,
+            l10n.pushDeliveryUnifiedPush,
+            choice == PushAndroidTransport.unifiedPush,
+          ),
+        ],
+      ),
+    );
+    if (choice == PushAndroidTransport.unifiedPush ||
+        (choice == null && !fcm)) {
+      sections.add(
+        NativeSheetSectionConfig(
+          title: l10n.pushDistributorTitle,
+          items: [
+            if (distributors == null && distributorsFailed) ...[
+              // Not read, with none read before: said, with another try.
+              NativeSheetItemConfig(
+                id: 'push-distributors-failed',
+                title: l10n.errorMessage,
+                sfSymbol: 'exclamationmark.triangle',
+                kind: NativeSheetItemKind.info,
+              ),
+              NativeSheetItemConfig(
+                id: nativePushDistributorsRetryId,
+                title: l10n.retry,
+                sfSymbol: 'arrow.clockwise',
+                accent: true,
+                showsDisclosure: false,
+              ),
+            ] else if (distributors == null)
+              buildNativeLoadingItem(l10n, id: 'push-distributors-loading')
+            else if (distributors.isEmpty) ...[
+              NativeSheetItemConfig(
+                id: 'push-no-distributor',
+                title: l10n.pushNoDistributor,
+                kind: NativeSheetItemKind.info,
+              ),
+              getDistributor('push-distributor-get'),
+            ] else
+              for (final distributor in distributors)
+                NativeSheetItemConfig(
+                  id: '$nativePushDistributorPrefix$distributor',
+                  title: distributor,
+                  checked: distributor == selectedDistributor,
+                  kind: distributor == selectedDistributor
+                      ? NativeSheetItemKind.info
+                      : NativeSheetItemKind.navigation,
+                  showsDisclosure: false,
+                ),
+          ],
+        ),
+      );
+    }
+  }
+  sections.add(
+    NativeSheetSectionConfig(
+      items: [
+        NativeSheetItemConfig(
+          id: nativePushResetKeysId,
+          title: l10n.pushResetKeys,
+          subtitle: l10n.pushResetKeysDescription,
+          sfSymbol: 'key',
+          destructive: true,
+          showsDisclosure: false,
+          confirmMessage: l10n.pushResetKeysConfirmMessage,
+        ),
+      ],
+    ),
+  );
+  return sections;
+}
+
+/// The list of push targets: each row says its status and opens the
+/// target's page of Settings, which has the one-tap fixes.
+NativeSheetDetailConfig buildNativePushTargetsDetail(
+  AppLocalizations l10n,
+  PushState push, {
+  required String Function(PushTarget target) titleOf,
+}) {
+  NativeSheetItemConfig row(PushTargetState target) => NativeSheetItemConfig(
+    id: pushTargetPageId(target.scope),
+    title: titleOf(target.target),
+    subtitle: pushStatusText(l10n, target),
+    sfSymbol: pushTargetBusy(target)
+        ? 'hourglass'
+        : pushTargetNeedsAttention(target)
+        ? 'exclamationmark.triangle'
+        : target.status == PushStatus.on
+        ? 'checkmark.circle'
+        : 'bell.slash',
+  );
+
+  return NativeSheetDetailConfig(
+    id: NativeSheetRoutes.pushTargets,
+    title: l10n.accountsTitle,
+    sections: [
+      if (push.enabled && push.permissionDenied)
+        NativeSheetSectionConfig(
+          items: [
+            NativeSheetItemConfig(
+              id: 'push-permission-denied',
+              title: l10n.pushStatusPermissionDenied,
+              subtitle: l10n.pushExplainPermissionDenied,
+              sfSymbol: 'bell.slash',
+              kind: NativeSheetItemKind.info,
+            ),
+          ],
+        ),
+      NativeSheetSectionConfig(
+        items: [for (final target in push.targets.values) row(target)],
+      ),
+    ],
+  );
+}
+
+/// Ids of the Add memory page with Advanced on: its fields, which wait for
+/// Done, and Done itself, which adds the memory with all three.
+const nativeMemoryNewContentId = 'memory-new-content';
+const nativeMemoryNewTypeId = 'memory-new-type';
+const nativeMemoryNewPathId = 'memory-new-path';
+const nativeMemoryNewSaveId = 'memory-new-save';
+
+/// Prefixes of the Advanced rows of one memory's page, which save its type
+/// and path as they change; the memory id follows, URI-encoded.
+const nativeMemoryTypePrefix = 'memory-type:';
+const nativeMemoryPathPrefix = 'memory-path:';
+
+/// The Add memory row. It opens the Add memory page.
+NativeSheetItemConfig buildNativeMemoryAddItem(AppLocalizations l10n) {
   return NativeSheetItemConfig(
     id: 'memory-add',
     title: l10n.addMemory,
     subtitle: l10n.manageMemoriesDescription,
     sfSymbol: 'plus.circle',
-    dismissOnSelect: advanced,
-    actionId: advanced ? nativeMemoryEditorNewActionId : null,
   );
 }
 
-NativeSheetDetailConfig buildNativeMemoryAddDetail(AppLocalizations l10n) {
+/// The Type choice of a memory: User or Context. A type this app does not
+/// know is kept, and listed, until another is chosen.
+NativeSheetItemConfig _nativeMemoryTypeItem(
+  AppLocalizations l10n, {
+  required String id,
+  required String? type,
+}) {
+  final known =
+      type == ServerMemory.userType || type == ServerMemory.contextType;
+  return NativeSheetItemConfig(
+    id: id,
+    title: l10n.memoryTypeLabel,
+    subtitle: switch (type) {
+      ServerMemory.contextType =>
+        l10n.personalizationMemoryTypeContextDescription,
+      _ when !known && type != null => l10n.personalizationMemoryTypeUnknown,
+      _ => l10n.personalizationMemoryTypeUserDescription,
+    },
+    sfSymbol: 'tag',
+    kind: NativeSheetItemKind.segment,
+    value: type ?? ServerMemory.userType,
+    options: [
+      NativeSheetOptionConfig(
+        id: ServerMemory.userType,
+        label: l10n.memoryTypeUser,
+      ),
+      NativeSheetOptionConfig(
+        id: ServerMemory.contextType,
+        label: l10n.memoryTypeContext,
+      ),
+      if (!known && type != null)
+        NativeSheetOptionConfig(id: type, label: type, enabled: false),
+    ],
+  );
+}
+
+NativeSheetItemConfig _nativeMemoryPathItem(
+  AppLocalizations l10n, {
+  required String id,
+  required String? path,
+}) => NativeSheetItemConfig(
+  id: id,
+  title: l10n.memoryPathLabel,
+  sfSymbol: 'text.alignleft',
+  kind: NativeSheetItemKind.textField,
+  value: path ?? '',
+  placeholder: l10n.memoryPathHint,
+);
+
+/// Why a memory page's action did not run, shown at the top of the page.
+NativeSheetItemConfig _nativeMemoryNotice(String pageId, String notice) =>
+    NativeSheetItemConfig(
+      id: '$pageId-notice',
+      title: notice,
+      sfSymbol: 'exclamationmark.triangle',
+      kind: NativeSheetItemKind.info,
+    );
+
+/// The row of the Add memory page that sends its text again after adding it
+/// failed.
+const nativeMemoryAddRetryId = 'memory-add-retry';
+
+/// Prefix of the row of a memory's page that saves its text again after a
+/// save failed; the memory's URI-encoded id follows.
+const nativeMemorySaveRetryPrefix = 'memory-save-retry:';
+
+/// Sends again the text its page last failed to send. The row holds no
+/// text of its own: the Settings controller keeps the attempt, so a Retry
+/// never sends text older than what was typed since.
+NativeSheetItemConfig _nativeMemoryRetry(AppLocalizations l10n, String id) =>
+    NativeSheetItemConfig(
+      id: id,
+      title: l10n.retry,
+      sfSymbol: 'arrow.clockwise',
+      accent: true,
+    );
+
+/// The Add memory page. The text alone is added as soon as it is done;
+/// with [advanced] the page also has the type and path, and Done adds the
+/// memory with all three. [content], [type] and [path] are what the page
+/// holds, and [notice] why adding it did not go through; with [canRetry],
+/// the text alone has a row that sends it again.
+NativeSheetDetailConfig buildNativeMemoryAddDetail(
+  AppLocalizations l10n, {
+  bool advanced = false,
+  String content = '',
+  String type = ServerMemory.userType,
+  String? path,
+  String? notice,
+  bool canRetry = false,
+}) {
+  const pageId = 'memory-add';
+  if (!advanced) {
+    return NativeSheetDetailConfig(
+      id: pageId,
+      title: l10n.addMemory,
+      subtitle: l10n.memoryEditorDescription,
+      discardPrompt: nativeDiscardPrompt(l10n),
+      items: [
+        if (notice != null) _nativeMemoryNotice(pageId, notice),
+        if (notice != null && canRetry && content.trim().isNotEmpty)
+          _nativeMemoryRetry(l10n, nativeMemoryAddRetryId),
+        NativeSheetItemConfig(
+          id: 'memory-add-content',
+          title: l10n.addMemory,
+          sfSymbol: 'plus.circle',
+          kind: NativeSheetItemKind.multilineTextField,
+          value: content,
+          placeholder: l10n.memoryHint,
+        ),
+      ],
+    );
+  }
   return NativeSheetDetailConfig(
-    id: 'memory-add',
+    id: pageId,
     title: l10n.addMemory,
-    subtitle: l10n.memoryEditorDescription,
-    items: [
-      NativeSheetItemConfig(
-        id: 'memory-add-content',
-        title: l10n.addMemory,
-        sfSymbol: 'plus.circle',
-        kind: NativeSheetItemKind.multilineTextField,
-        value: '',
-        placeholder: l10n.memoryHint,
+    discardPrompt: nativeDiscardPrompt(l10n),
+    confirmActionId: nativeMemoryNewSaveId,
+    confirmActionLabel: l10n.save,
+    sections: [
+      if (notice != null)
+        NativeSheetSectionConfig(items: [_nativeMemoryNotice(pageId, notice)]),
+      NativeSheetSectionConfig(
+        footer: l10n.memoryEditorDescription,
+        items: [
+          NativeSheetItemConfig(
+            id: nativeMemoryNewContentId,
+            title: l10n.addMemory,
+            sfSymbol: 'quote.bubble',
+            kind: NativeSheetItemKind.multilineTextField,
+            value: content,
+            placeholder: l10n.memoryHint,
+          ),
+        ],
+      ),
+      NativeSheetSectionConfig(
+        items: [
+          _nativeMemoryTypeItem(l10n, id: nativeMemoryNewTypeId, type: type),
+          _nativeMemoryPathItem(l10n, id: nativeMemoryNewPathId, path: path),
+        ],
       ),
     ],
   );
@@ -1492,40 +2353,75 @@ String nativeSheetMemoryClassification(
   return path == null || path.isEmpty ? type : '$type · $path';
 }
 
-/// The detail for each memory: its text and Delete, plus with [advanced] a row
-/// that opens the Flutter editor for the type and path.
+/// The page of each memory: its text, with [advanced] its type and path,
+/// each saved as it changes, then Delete.
 List<NativeSheetDetailConfig> buildNativeMemoryEditDetails(
   AppLocalizations l10n,
   List<ServerMemory> memories, {
   bool advanced = false,
+}) => [
+  for (final memory in memories)
+    buildNativeMemoryEditDetail(l10n, memory, advanced: advanced),
+];
+
+/// The page of [memory]. [content] is the text the page holds, when it is
+/// not yet the memory's, and [notice] why a change to it did not go
+/// through; with [canRetry], the text has a row that saves it again.
+NativeSheetDetailConfig buildNativeMemoryEditDetail(
+  AppLocalizations l10n,
+  ServerMemory memory, {
+  bool advanced = false,
+  String? content,
+  String? notice,
+  bool canRetry = false,
 }) {
-  return [
-    for (final memory in memories)
-      NativeSheetDetailConfig(
-        id: 'memory-edit:${Uri.encodeComponent(memory.id)}',
-        title: l10n.editMemory,
-        subtitle: l10n.memoryEditorDescription,
+  final encoded = Uri.encodeComponent(memory.id);
+  final pageId = 'memory-edit:$encoded';
+  return NativeSheetDetailConfig(
+    id: pageId,
+    title: l10n.editMemory,
+    discardPrompt: nativeDiscardPrompt(l10n),
+    sections: [
+      if (notice != null)
+        NativeSheetSectionConfig(
+          items: [
+            _nativeMemoryNotice(pageId, notice),
+            if (canRetry && content != null)
+              _nativeMemoryRetry(l10n, '$nativeMemorySaveRetryPrefix$encoded'),
+          ],
+        ),
+      NativeSheetSectionConfig(
+        footer: l10n.memoryEditorDescription,
         items: [
           NativeSheetItemConfig(
-            id: 'memory-save:${Uri.encodeComponent(memory.id)}',
+            id: 'memory-save:$encoded',
             title: l10n.editMemory,
             sfSymbol: 'quote.bubble',
             kind: NativeSheetItemKind.multilineTextField,
-            value: memory.content,
+            value: content ?? memory.content,
             placeholder: l10n.memoryHint,
           ),
-          if (advanced)
-            NativeSheetItemConfig(
-              id: 'memory-classification:${Uri.encodeComponent(memory.id)}',
-              title: l10n.memoryTypeLabel,
-              subtitle: nativeSheetMemoryClassification(l10n, memory),
-              sfSymbol: 'tag',
-              dismissOnSelect: true,
-              actionId:
-                  '$nativeMemoryEditorActionPrefix${Uri.encodeComponent(memory.id)}',
+        ],
+      ),
+      if (advanced)
+        NativeSheetSectionConfig(
+          items: [
+            _nativeMemoryTypeItem(
+              l10n,
+              id: '$nativeMemoryTypePrefix$encoded',
+              type: memory.type,
             ),
+            _nativeMemoryPathItem(
+              l10n,
+              id: '$nativeMemoryPathPrefix$encoded',
+              path: memory.path,
+            ),
+          ],
+        ),
+      NativeSheetSectionConfig(
+        items: [
           NativeSheetItemConfig(
-            id: 'memory-delete:${Uri.encodeComponent(memory.id)}',
+            id: 'memory-delete:$encoded',
             title: l10n.deleteMemory,
             subtitle: l10n.deleteMemoryConfirm,
             sfSymbol: 'trash',
@@ -1533,7 +2429,8 @@ List<NativeSheetDetailConfig> buildNativeMemoryEditDetails(
           ),
         ],
       ),
-  ];
+    ],
+  );
 }
 
 List<NativeSheetDetailConfig> buildNativeModelPromptLoadingDetails(
@@ -1545,6 +2442,7 @@ List<NativeSheetDetailConfig> buildNativeModelPromptLoadingDetails(
       NativeSheetDetailConfig(
         id: 'model-prompt:${Uri.encodeComponent(model.id)}',
         title: l10n.modelSystemPromptTitle(model.name),
+        discardPrompt: nativeDiscardPrompt(l10n),
         items: [
           buildNativeLoadingItem(
             l10n,
@@ -1640,6 +2538,9 @@ List<NativeSheetOptionConfig> nativeLanguageDropdownOptions(
     NativeSheetOptionConfig(id: 'ja', label: l10n.japanese),
   ];
 }
+
+/// Id of the Connection health page, which follows the connection live.
+const nativeSocketHealthDetailId = 'socket-health';
 
 String nativeSocketHealthSummary(AppLocalizations l10n, SocketHealth? health) {
   if (health == null) return l10n.socketNotConnected;

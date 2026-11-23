@@ -11,6 +11,7 @@ Future<void> _sendMessageInternal(
   onAssistantPlaceholderCreated,
   ChatSendVoiceContext? voice,
   void Function()? onTurnStarted,
+  List<FileUploadState>? attachmentStates,
 ]) async {
   final libreChatSelected = ref.read(selectedModelProvider) as Model?;
   final libreChatActive = ref.read(activeConversationProvider) as Conversation?;
@@ -162,10 +163,15 @@ Future<void> _sendMessageInternal(
   final directSendConversationId = currentConversation == null
       ? null
       : _directRunOwnerScopeForConversation(ref, currentConversation);
-  final directAttachmentContentTypes = _durableAttachmentContentTypesFromState(
+  final directAttachmentFacts = _durableAttachmentFactsFromState(
     ref,
     attachments ?? const <String>[],
+    states: attachmentStates,
   );
+  final directAttachmentNames = <String>[
+    for (final attachment in attachments ?? const <String>[])
+      ?directAttachmentFacts[attachment]?.name,
+  ];
   Stream<RemapEvent>? directRemapEvents;
   SyncEngine? directOpenWebUiSyncEngine;
   if (sendMutationOwner.usesOpenWebUiContext) {
@@ -198,6 +204,7 @@ Future<void> _sendMessageInternal(
           selectedModel: selectedModel,
           text: message,
           attachmentIds: attachments,
+          attachmentStates: attachmentStates,
           contextAttachments: contextAttachments,
         )
       : null;
@@ -205,6 +212,7 @@ Future<void> _sendMessageInternal(
       ? await _prepareDirectDocuments(
           ref,
           attachmentIds: attachments,
+          attachmentStates: attachmentStates,
           supportsOpenRouterPdfInputs:
               directRoute.profile.supportsOpenRouterPdfInputs,
         )
@@ -235,10 +243,20 @@ Future<void> _sendMessageInternal(
   final serverFileIds = <String>[];
 
   if (attachments != null && preparedHermesTurn == null) {
+    final trayNames = <String, String>{
+      for (final file
+          in attachmentStates ??
+              ref.read(attachedFilesProvider) as List<FileUploadState>)
+        ?file.fileId: file.fileName,
+    };
     for (final attachment in attachments) {
       if (attachment.startsWith('data:image/')) {
         // Legacy base64 format - keep for backwards compatibility
-        legacyBase64Images.add({'type': 'image', 'url': attachment});
+        legacyBase64Images.add({
+          'type': 'image',
+          'url': attachment,
+          'name': ?trayNames[attachment],
+        });
       } else if (!(preparedDirectDocuments?.attachmentIds.contains(
             attachment,
           ) ??
@@ -305,6 +323,7 @@ Future<void> _sendMessageInternal(
       if (directRoute != null) 'transport': kDirectTransport,
       if (selectedModel.name.trim().isNotEmpty)
         'modelName': selectedModel.name.trim(),
+      ...tetherAnswerRecord(selectedModel),
     },
   );
   final voiceReply = voice?.reply;
@@ -369,6 +388,7 @@ Future<void> _sendMessageInternal(
           openWebUiSyncEngine: directOpenWebUiSyncEngine,
           pendingFolderId:
               pendingFolderIdOverride ?? ref.read(pendingFolderIdProvider),
+          attachmentNames: directAttachmentNames,
         );
       } finally {
         await owner?.releaseDatabaseLease();
@@ -601,7 +621,7 @@ Future<void> _sendMessageInternal(
           : null;
       final failed = (visible ?? assistantPlaceholder).copyWith(
         isStreaming: false,
-        error: ChatMessageError(content: chatErrorContentForException(error)),
+        error: chatMessageErrorFor(error),
       );
       if (hermesOwner.isActive(ref)) {
         messagesNotifier.updateMessageById(assistantMessageId, (_) => failed);
@@ -678,6 +698,7 @@ Future<void> _sendMessageInternal(
         openWebUiSyncEngine: directOpenWebUiSyncEngine,
         pendingFolderId:
             pendingFolderIdOverride ?? ref.read(pendingFolderIdProvider),
+        attachmentNames: directAttachmentNames,
       );
       final runOwner = owner;
       if (runOwner == null) return;
@@ -737,7 +758,7 @@ Future<void> _sendMessageInternal(
           sourceApi: directSourceApi,
           sourceAuthSnapshot: directSourceAuthSnapshot,
           cancelToken: preflightCancelToken,
-          capturedContentTypes: directAttachmentContentTypes,
+          capturedFacts: directAttachmentFacts,
           requireSourceContext: () =>
               _requireDirectOwnerSourceAuthSession(ref, runOwner),
         ),
@@ -885,7 +906,7 @@ Future<void> _sendMessageInternal(
           assistantPlaceholder;
       final failedSnapshot = failed.copyWith(
         isStreaming: false,
-        error: ChatMessageError(content: chatErrorContentForException(error)),
+        error: chatMessageErrorFor(error),
       );
       if (ownerIsActive) {
         if (unavailableOwner?.placeholderWasDurablyDeleted == true) {
@@ -918,6 +939,13 @@ Future<void> _sendMessageInternal(
             _isDirectConversationOwnerActive(ref, failedOwner)) {
           notifier.updateMessageById(assistantMessageId, (_) => failedSnapshot);
         }
+        await _announceDirectRunCompletion(
+          ref,
+          registry,
+          reservation,
+          owner: failedOwner,
+          message: failedSnapshot,
+        );
       }
       rethrow;
     } finally {
@@ -1173,6 +1201,10 @@ Future<void> _sendMessageInternal(
     return;
   }
 
+  final isTemporary =
+      (activeConversation != null && isTemporaryChat(activeConversation.id)) ||
+      ref.read(temporaryChatEnabledProvider);
+
   // Get conversation history for context
   final List<ChatMessage> messages = ref.read(chatMessagesProvider);
   final List<Map<String, dynamic>> conversationMessages =
@@ -1185,8 +1217,10 @@ Future<void> _sendMessageInternal(
       // Prepare cleaned text content (strip tool details etc.)
       final cleaned = outboundProviderReplayText(msg);
 
+      // Only a temporary chat's request keeps its history
+      // ([_buildChatCompletionMessages]), so only there are images fetched.
       final List<String> ids = msg.attachmentIds ?? const <String>[];
-      if (ids.isNotEmpty) {
+      if (ids.isNotEmpty && isTemporary) {
         final messageMap = await _buildMessagePayloadWithAttachments(
           api: api!,
           role: msg.role,
@@ -1226,9 +1260,6 @@ Future<void> _sendMessageInternal(
   final selectedToolIds = toolIds ?? const <String>[];
   final toolIdsForApi = _extractToolIdsForApi(selectedToolIds);
   final selectedTerminalId = ref.read(selectedTerminalIdProvider);
-  final isTemporary =
-      (activeConversation != null && isTemporaryChat(activeConversation.id)) ||
-      ref.read(temporaryChatEnabledProvider);
 
   // Check feature toggles for API (gated by server availability)
   final webSearchEnabled =
@@ -1406,6 +1437,10 @@ Future<void> _sendMessageInternal(
         ref,
         now: DateTime.now(),
         userSettings: userSettingsData,
+        prompts: _openWebUiRequestPrompts(
+          requestMessages,
+          models: <Model?>[selectedModel],
+        ),
       );
     } catch (e) {
       DebugLogger.error(
@@ -1440,6 +1475,23 @@ Future<void> _sendMessageInternal(
       );
     }
 
+    // Clear context attachments after successfully initiating the message send.
+    // This prevents stale attachments from being included in subsequent messages.
+    void clearSentContextAttachments() {
+      try {
+        final ownerStillActive =
+            submittedOwner != null &&
+            activeOpenWebUiChatIdForMutation(ref, submittedOwner) != null;
+        if (ownerStillActive &&
+            identical(
+              ref.read(contextAttachmentsProvider),
+              contextAttachments,
+            )) {
+          ref.read(contextAttachmentsProvider.notifier).clear();
+        }
+      } catch (_) {}
+    }
+
     try {
       requireOpenWebUiPreflightOwner();
       _admitPersonalToolServers(
@@ -1449,30 +1501,46 @@ Future<void> _sendMessageInternal(
         messageId: assistantMessageId,
         admitted: admittedToolServers,
       );
-      final session = await api.sendMessageSession(
-        messages: requestMessages,
-        model: serverModelId,
-        conversationId: submittedOwner?.chatId,
-        terminalId: terminalIdForApi,
-        toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
-        filterIds: filterIdsForApi,
-        enableWebSearch: webSearchEnabled,
-        enableImageGeneration: imageGenerationEnabled,
-        enableCodeInterpreter: codeInterpreterEnabled,
-        isVoiceMode: isVoiceMode,
-        modelItem: modelItem,
-        sessionIdOverride: socketSessionId,
-        toolServers: toolServers,
-        backgroundTasks: bgTasks,
-        responseMessageId: assistantMessageId,
-        userSettings: userSettingsData,
-        chatParams: turnSettings.chatParams,
-        reasoningEffort: turnSettings.reasoningEffort,
-        parentId: userMessageMap?['parentId']?.toString(),
-        userMessage: userMessageMap,
-        variables: promptVariables,
-        files: _extractTopLevelRequestFiles(userMessageMap),
-      );
+      final ChatCompletionSession session;
+      try {
+        session = await api.sendMessageSession(
+          messages: requestMessages,
+          model: serverModelId,
+          conversationId: submittedOwner?.chatId,
+          terminalId: terminalIdForApi,
+          toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
+          filterIds: filterIdsForApi,
+          enableWebSearch: webSearchEnabled,
+          enableImageGeneration: imageGenerationEnabled,
+          enableCodeInterpreter: codeInterpreterEnabled,
+          isVoiceMode: isVoiceMode,
+          modelItem: modelItem,
+          sessionIdOverride: socketSessionId,
+          toolServers: toolServers,
+          backgroundTasks: bgTasks,
+          responseMessageId: assistantMessageId,
+          userSettings: userSettingsData,
+          chatParams: turnSettings.chatParams,
+          reasoningEffort: turnSettings.reasoningEffort,
+          parentId: userMessageMap?['parentId']?.toString(),
+          userMessage: userMessageMap,
+          variables: promptVariables,
+          files: _extractTopLevelRequestFiles(userMessageMap),
+          viaTether: answerViaTether(placeholder),
+          authSnapshot: submittedOwner?.authSnapshot,
+        );
+      } on ChatCompletionHeld {
+        // Only a saved chat is held, so it has an owner.
+        await settleHeldOpenWebUiCompletion(
+          ref,
+          api: api,
+          owner: submittedOwner!,
+          questionId: userMessageMap?['id']?.toString(),
+          assistantMessageIds: [assistantMessageId],
+        );
+        clearSentContextAttachments();
+        return;
+      }
 
       if (submittedOwner != null) {
         submittedOwner.chatId = await resolveOpenWebUiCompletionChatId(
@@ -1511,6 +1579,7 @@ Future<void> _sendMessageInternal(
             // Inline sends have no requestCompletion outbox op that could
             // replay this POST when a legacy placeholder row is absent.
             requireDurableSubmittedMarker: false,
+            viaTether: answerViaTether(placeholder),
           );
         }
       } else {
@@ -1547,6 +1616,7 @@ Future<void> _sendMessageInternal(
           filterIds: filterIdsForApi,
           ownsActiveConversation: () =>
               activeOpenWebUiChatIdForMutation(ref, submittedOwner!) != null,
+          viaTether: answerViaTether(placeholder),
         );
         if (!attached) {
           if (isTemporary) {
@@ -1558,6 +1628,7 @@ Future<void> _sendMessageInternal(
               owner: submittedOwner!,
               assistantMessageId: assistantMessageId,
               requireDurableSubmittedMarker: false,
+              viaTether: answerViaTether(placeholder),
             );
           }
         }
@@ -1572,18 +1643,7 @@ Future<void> _sendMessageInternal(
       }
     }
 
-    // Clear context attachments after successfully initiating the message send.
-    // This prevents stale attachments from being included in subsequent messages.
-    try {
-      final ownerStillActive =
-          submittedOwner != null &&
-          activeOpenWebUiChatIdForMutation(ref, submittedOwner) != null;
-      if (ownerStillActive &&
-          identical(ref.read(contextAttachmentsProvider), contextAttachments)) {
-        ref.read(contextAttachmentsProvider.notifier).clear();
-      }
-    } catch (_) {}
-
+    clearSentContextAttachments();
     return;
   } catch (e, st) {
     // Clean up buffering on error
@@ -1615,24 +1675,8 @@ Future<void> _sendMessageInternal(
       );
     }
     // A 401 or 403 here may be a model provider rejecting its API key, which
-    // Open WebUI passes through, or the session ending. Ask the session
-    // endpoint: as everywhere else, the auth interceptor reports its refusal
-    // as the session ending, and a provider's refusal only marks the reply.
-    if (e is ChatCompletionHttpException && e.mayRejectSession) {
-      final ApiService? api = ref.read(apiServiceProvider) as ApiService?;
-      if (api != null) {
-        unawaited(
-          api.getCurrentUser().then<void>(
-            (_) {},
-            onError: (Object error) => DebugLogger.log(
-              'session-check-after-refused-completion',
-              scope: 'chat/providers',
-              data: {'errorType': error.runtimeType.toString()},
-            ),
-          ),
-        );
-      }
-    }
+    // Open WebUI passes through, or the session ending.
+    _checkSessionAfterRefusedCompletion(ref, e);
   }
 }
 
@@ -1712,6 +1756,13 @@ Future<String> _temporaryChatIdForSession(
   return renewedId;
 }
 
+/// The error an answer that failed with [e] keeps: its words, and the failed
+/// relay to one of the user's devices the refusal reported.
+ChatMessageError chatMessageErrorFor(Object e) => ChatMessageError(
+  content: chatErrorContentForException(e),
+  relay: e is ChatCompletionHttpException ? e.relay : null,
+);
+
 /// Returns a user-friendly error description based on the exception.
 String chatErrorContentForException(Object e) {
   if (e is _DirectConversationOwnerUnavailable) {
@@ -1728,8 +1779,19 @@ String chatErrorContentForException(Object e) {
       e.detail.trim() == TemporaryChatUnavailable.serverDetail) {
     return TemporaryChatUnavailable.userMessage;
   }
+  // Any other refusal in the server's own words ("Model not found", a
+  // provider's "Incorrect API key provided"), as Open WebUI's client shows
+  // it: only the server knows why it said no.
+  if (e is ChatCompletionHttpException) {
+    final words = _serverRefusalWords(e.detail);
+    if (words != null) return words;
+  }
+  // Only a regeneration whose question has an answer gets here: anything
+  // else the server holds waits for its answer.
+  if (e is ChatCompletionHeld) return kReplyStillRunningMessage;
   if (e is HermesAttachmentsUnsupportedException) return e.message;
   if (e is HermesDesktopGatewayStartingException) return e.message;
+  if (e is HermesGatewaySignInRequired) return e.message;
   if (e is HermesChatInputException) return e.message;
   if (e is HermesLocalDocumentException) return e.message;
   if (e is DirectChatInputException) return e.message;
@@ -1761,6 +1823,39 @@ String chatErrorContentForException(Object e) {
     return 'An unexpected error occurred while processing your request. '
         'Please try again or check your connection.';
   }
+}
+
+/// The text of a refused completion request when it reads as words to a
+/// person: not empty, not a page of HTML from a proxy, not a JSON body (a
+/// validation error's field list) and not a wall of text.
+String? _serverRefusalWords(String detail) {
+  final words = detail.trim();
+  if (words.isEmpty || words.length > 600) return null;
+  if (words.startsWith('<') || words.startsWith('{') || words.startsWith('[')) {
+    return null;
+  }
+  return words;
+}
+
+/// Asks the session endpoint after a completion the server refused with 401
+/// or 403. A model provider's own refusal of its API key comes through as
+/// one, as does the session ending; as everywhere else, the auth interceptor
+/// reports the session endpoint's refusal as the session ending, and a
+/// provider's refusal only marks the reply.
+void _checkSessionAfterRefusedCompletion(dynamic ref, Object error) {
+  if (error is! ChatCompletionHttpException || !error.mayRejectSession) return;
+  final ApiService? api = ref.read(apiServiceProvider) as ApiService?;
+  if (api == null) return;
+  unawaited(
+    api.getCurrentUser().then<void>(
+      (_) {},
+      onError: (Object error) => DebugLogger.log(
+        'session-check-after-refused-completion',
+        scope: 'chat/providers',
+        data: {'errorType': error.runtimeType.toString()},
+      ),
+    ),
+  );
 }
 
 // Save current conversation to OpenWebUI server

@@ -27,7 +27,13 @@ enum OutboxKind {
   noteCreate,
   noteUpdate,
   noteDelete,
-  notePin;
+  notePin,
+
+  /// Messages to delete from the server's copy of a chat, one by one
+  /// ([kDeleteMessagesIdsKey]): the empty answers of a question Open WebUI
+  /// holds behind a running reply, which the server answers only once
+  /// nothing answers it. Never coalesced; a message already gone is done.
+  deleteMessages;
 
   /// Parses a persisted kind name; null for an unknown/legacy string so the
   /// drainer can skip it without crashing (A1).
@@ -73,6 +79,11 @@ class RequestCompletionPayload {
     this.sessionIdOverride,
     this.chatSettings,
     this.comparison,
+    this.stopped = false,
+    this.submitted = false,
+    this.held = false,
+    this.heldQuestionId,
+    this.heldEarlierIds = const <String>[],
   });
 
   /// The placeholder assistant message id — the SAME id used for the in-memory
@@ -109,6 +120,30 @@ class RequestCompletionPayload {
   /// groups still finds the primary answer.
   final ComparisonGroupSnapshot? comparison;
 
+  /// A Stop reached this turn before its request went out (at admission, or
+  /// while an attempt prepared it): it never sends, on any attempt, retry or
+  /// later run of the app, and its answer is settled as stopped instead.
+  final bool stopped;
+
+  /// The server took the request ([ChatsDao.recordCompletionSubmitted]).
+  /// Every later attempt only collects the answers, by pull, and never sends
+  /// the request again. Kept here, beside the op, because a pull rewrites the
+  /// answers' rows and the mark on them with it. An op queued before this
+  /// field existed has only that mark.
+  final bool submitted;
+
+  /// The request went out and the server held its question [heldQuestionId]
+  /// behind a reply still running ([ChatsDao.recordHeldTurn]). Every later
+  /// attempt only settles the turn, its empty answers' delete included, and
+  /// never sends it again. Kept here, beside the op, because a pull rewrites
+  /// the answers' rows.
+  final bool held;
+  final String? heldQuestionId;
+
+  /// The empty answers an earlier hold of [heldQuestionId] left, which this
+  /// turn's settle takes for no answer either.
+  final List<String> heldEarlierIds;
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'assistantMessageId': assistantMessageId,
     'model': model,
@@ -122,6 +157,11 @@ class RequestCompletionPayload {
     if (sessionIdOverride != null) 'sessionIdOverride': sessionIdOverride,
     if (chatSettings != null) 'chatSettings': chatSettings!.toJson(),
     if (comparison != null) 'comparison': comparison!.toJson(),
+    if (stopped) 'stopped': true,
+    if (submitted) 'submitted': true,
+    if (held) 'held': true,
+    if (heldQuestionId != null) 'heldQuestionId': heldQuestionId,
+    if (heldEarlierIds.isNotEmpty) 'heldEarlierIds': heldEarlierIds,
   };
 
   static RequestCompletionPayload fromJson(Map<String, dynamic> json) {
@@ -148,6 +188,13 @@ class RequestCompletionPayload {
       comparison: json.containsKey('comparison')
           ? ComparisonGroupSnapshot.fromJson(json['comparison'])
           : null,
+      stopped: json['stopped'] == true,
+      submitted: json['submitted'] == true,
+      held: json['held'] == true,
+      heldQuestionId: json['heldQuestionId'] is String
+          ? json['heldQuestionId'] as String
+          : null,
+      heldEarlierIds: _stringList(json['heldEarlierIds']),
     );
   }
 
@@ -176,6 +223,9 @@ const Set<String> kUpdateChatEditFlagKeys = <String>{
   kUpdateChatParamsEditKey,
   kUpdateChatBranchEditKey,
 };
+
+/// Payload key of a `deleteMessages` op: the ids of the messages to delete.
+const String kDeleteMessagesIdsKey = 'messageIds';
 
 /// Payload key of a `folderUpsert` op that opens or closes the folder in the
 /// sidebar (see [OutboxDao.folderIdsWithUnsentExpandedEdit]).
@@ -336,15 +386,10 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
   /// createChat) from running — §7.2 "requestCompletion executes only after the
   /// chat's preceding ops succeeded". The manual-retry affordance
   /// ([requeueParked]) re-arms the parked head, which then unblocks its
-  /// dependents on the next claim.
+  /// dependents on the next claim. A parked op that nothing depends on
+  /// ([parkedOpHoldsUpLaterOps]) blocks nothing.
   Future<bool> _isChatHead(OutboxOp op) async {
-    final blockingStatuses = _failedPredecessorsBlock(op)
-        ? const [
-            OutboxStatus.pending,
-            OutboxStatus.inFlight,
-            OutboxStatus.failed,
-          ]
-        : const [OutboxStatus.pending, OutboxStatus.inFlight];
+    final live = [OutboxStatus.pending, OutboxStatus.inFlight];
     final predecessor =
         await (select(outboxOps)
               ..where(
@@ -354,20 +399,76 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
                         ? t.chatId.isNull()
                         : t.chatId.equals(op.chatId!)) &
                     t.seq.isSmallerThanValue(op.seq) &
-                    t.status.isIn(blockingStatuses),
+                    (_failedPredecessorsBlock(op)
+                        ? t.status.isIn(live) |
+                              (t.status.equals(OutboxStatus.failed) &
+                                  t.kind
+                                      .equals(OutboxKind.deleteMessages.name)
+                                      .not())
+                        : t.status.isIn(live)),
               )
               ..limit(1))
             .getSingleOrNull();
     return predecessor == null;
   }
 
+  /// Whether a parked op of [kind] holds up the later ops of its chat. A
+  /// held answer's delete does not: a pull and a push leave that answer out
+  /// while its delete waits, parked or not, and nothing after it needs it
+  /// gone from the server. It is sent again once the session is found to
+  /// still own the chat (`PushSync.rearmOwnedMessageDeletes`).
+  static bool parkedOpHoldsUpLaterOps(String kind) =>
+      kind != OutboxKind.deleteMessages.name;
+
+  /// The parked ops of [kind], oldest first.
+  Future<List<OutboxOp>> parkedOfKind(OutboxKind kind) =>
+      (select(outboxOps)
+            ..where(
+              (t) =>
+                  t.kind.equals(kind.name) &
+                  t.status.equals(OutboxStatus.failed),
+            )
+            ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
+          .get();
+
   bool _failedPredecessorsBlock(OutboxOp op) {
     return switch (OutboxKind.fromName(op.kind)) {
       OutboxKind.deleteChat ||
+      OutboxKind.deleteMessages ||
       OutboxKind.folderDelete ||
       OutboxKind.noteDelete => false,
       _ => true,
     };
+  }
+
+  /// The op [seq] as it is stored now, or null once it is gone.
+  Future<OutboxOp?> opBySeq(int seq) =>
+      (select(outboxOps)..where((t) => t.seq.equals(seq))).getSingleOrNull();
+
+  /// Whether a Stop marked the `requestCompletion` op of
+  /// [assistantMessageId] in [chatId] ([RequestCompletionPayload.stopped]).
+  Future<bool> completionStopped(
+    String chatId,
+    String assistantMessageId,
+  ) async {
+    final ops =
+        await (select(outboxOps)..where(
+              (t) =>
+                  t.chatId.equals(chatId) &
+                  t.kind.equals(OutboxKind.requestCompletion.name),
+            ))
+            .get();
+    return ops.any((op) {
+      final Object? payload;
+      try {
+        payload = jsonDecode(op.payload);
+      } on FormatException {
+        return false;
+      }
+      return payload is Map &&
+          payload['assistantMessageId'] == assistantMessageId &&
+          payload['stopped'] == true;
+    });
   }
 
   /// Removes a completed op (A2 — no terminal history, mirrors the lean
@@ -638,6 +739,33 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         .write(OutboxOpsCompanion(chatId: Value(toChatId)));
   }
 
+  /// Whether some op waits to be sent: one pending or under way that heads
+  /// its queue ([_isChatHead]), as the drainer would claim it. The ops behind
+  /// it follow it; with no such op, every live one is held up for good behind
+  /// a parked op, which only a manual retry moves.
+  Stream<bool> watchWaitingToBeSent() {
+    return (select(outboxOps)
+          ..where(
+            (t) => t.status.isIn(const [
+              OutboxStatus.pending,
+              OutboxStatus.inFlight,
+            ]),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
+        .watch()
+        .asyncMap((live) async {
+          // Only the first live op of a queue can head it.
+          final queues = <(String, String?)>{};
+          for (final op in live) {
+            final queue = (_domainKindNamesForName(op.kind).first, op.chatId);
+            if (!queues.add(queue)) continue;
+            if (await _isChatHead(op)) return true;
+          }
+          return false;
+        })
+        .distinct();
+  }
+
   /// Live count of not-yet-terminal ops (pending|inFlight) — drives the
   /// "drain on increase" trigger (A7).
   Stream<int> watchPendingCount() {
@@ -683,6 +811,55 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         .watch();
   }
 
+  /// The live ops (pending, in flight or parked; seq ASC) of every chat
+  /// that has a queued request-completion, or of [chatId] alone. A chat's
+  /// ops run in order, so what holds an answer's request up can be an
+  /// earlier op of its chat, its create or update: the queued-completion
+  /// display (`queuedCompletionDisplaysOf`) reads them together.
+  Stream<List<OutboxOp>> watchChatQueuesWithCompletions({String? chatId}) {
+    final withCompletion = selectOnly(outboxOps)
+      ..addColumns([outboxOps.chatId])
+      ..where(
+        outboxOps.kind.equals(OutboxKind.requestCompletion.name) &
+            outboxOps.status.isIn(const [
+              OutboxStatus.pending,
+              OutboxStatus.failed,
+            ]),
+      );
+    return (select(outboxOps)
+          ..where(
+            (t) =>
+                t.status.isIn(const [
+                  OutboxStatus.pending,
+                  OutboxStatus.inFlight,
+                  OutboxStatus.failed,
+                ]) &
+                t.chatId.isInQuery(withCompletion) &
+                (chatId == null
+                    ? const Constant<bool>(true)
+                    : t.chatId.equals(chatId)),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
+        .watch();
+  }
+
+  /// Queued request-completion ops in every chat (pending|failed, seq ASC):
+  /// what a host that shows several chats at once watches to know which
+  /// chats' queued answers changed.
+  Stream<List<OutboxOp>> watchQueuedCompletions() {
+    return (select(outboxOps)
+          ..where(
+            (t) =>
+                t.kind.equals(OutboxKind.requestCompletion.name) &
+                t.status.isIn(const [
+                  OutboxStatus.pending,
+                  OutboxStatus.failed,
+                ]),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.seq)]))
+        .watch();
+  }
+
   /// All pending ops for [chatId] (seq ASC) — coalescing + tests (A2).
   Future<List<OutboxOp>> pendingForChat(
     String chatId, {
@@ -716,16 +893,44 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
   Future<bool> hasPendingBranchEdit(String chatId) =>
       _hasPendingUpdateFlag(chatId, kUpdateChatBranchEditKey);
 
-  Future<bool> _hasPendingUpdateFlag(String chatId, String flag) async {
+  /// Whether an `updateChat` op for [chatId] has not yet been confirmed by the
+  /// server (pending, in flight, or parked as failed): a local change the
+  /// server may not hold.
+  Future<bool> hasUnconfirmedUpdate(String chatId) async =>
+      (await _updateOpsFor(chatId)).isNotEmpty;
+
+  /// The messages of chat [chatId] that a `deleteMessages` op has still to
+  /// delete on the server (pending, in flight, or parked as failed). The
+  /// server's copy may still hold them, and a pull keeps them out.
+  Future<Set<String>> unsentMessageDeletes(String chatId) async {
     final ops =
         await (select(outboxOps)..where(
               (t) =>
                   t.chatId.equals(chatId) &
-                  t.kind.equals(OutboxKind.updateChat.name),
+                  t.kind.equals(OutboxKind.deleteMessages.name),
             ))
             .get();
+    return {
+      for (final op in ops)
+        if (_decodePayload(op.payload)[kDeleteMessagesIdsKey]
+            case final List ids)
+          for (final id in ids)
+            if (id is String) id,
+    };
+  }
+
+  Future<bool> _hasPendingUpdateFlag(String chatId, String flag) async {
+    final ops = await _updateOpsFor(chatId);
     return ops.any((op) => _decodePayload(op.payload)[flag] == true);
   }
+
+  Future<List<OutboxOp>> _updateOpsFor(String chatId) =>
+      (select(outboxOps)..where(
+            (t) =>
+                t.chatId.equals(chatId) &
+                t.kind.equals(OutboxKind.updateChat.name),
+          ))
+          .get();
 
   /// The folders whose opening or closing in the sidebar the server has not
   /// confirmed yet: a `folderUpsert` carrying `isExpanded` that is pending, in
@@ -811,7 +1016,14 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         // Refresh the surviving create's contentHash too; crash-heal matches
         // the server-created chat against the CURRENT rows pushCreateChat will
         // POST.
-        final create = newestOfKind(OutboxKind.createChat);
+        //
+        // Not a create whose chat already has its server id: it reached the
+        // server, and run again it sends nothing (`PushSync.pushCreateChat`),
+        // so the edit needs an update of its own, and the create's
+        // fingerprint must stay the snapshot it sent.
+        final create = chatId.startsWith('local:')
+            ? newestOfKind(OutboxKind.createChat)
+            : null;
         if (create != null) {
           return _CoalesceDecision(
             insert: false,
@@ -844,7 +1056,11 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
       case OutboxKind.deleteChat:
         // Annihilates EVERY earlier pending op for this chat.
         final priorDelete = newestOfKind(OutboxKind.deleteChat);
-        if (pendingKinds.contains(OutboxKind.createChat)) {
+        // A create whose chat already has its server id reached the server
+        // (its done mark was lost, and run again it sends nothing): the
+        // server copy must be deleted too, or the next pull brings it back.
+        if (chatId.startsWith('local:') &&
+            pendingKinds.contains(OutboxKind.createChat)) {
           // Never reached the server ⇒ pure local drop: delete all pending,
           // emit no deleteChat op.
           return _CoalesceDecision(
@@ -862,6 +1078,7 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         );
 
       case OutboxKind.requestCompletion:
+      case OutboxKind.deleteMessages:
         // Never coalesced; ordered after preceding ops by seq (A3).
         return const _CoalesceDecision(insert: true);
 
@@ -895,7 +1112,13 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         return const _CoalesceDecision(insert: true);
 
       case OutboxKind.folderDelete:
-        final hasLocalCreate = pending.any(_isLocalFolderCreate);
+        // As for chats and notes: a create whose folder already has its
+        // server id reached the server. Its op keeps the local id in its
+        // payload (the remap rewrites only the op's folder id), so the
+        // folder id the delete names decides, or the next pull brings the
+        // folder back.
+        final hasLocalCreate =
+            chatId.startsWith('local:') && pending.any(_isLocalFolderCreate);
         final priorDelete = newestOfKind(OutboxKind.folderDelete);
         return _CoalesceDecision(
           // A brand-new local folderUpsert means the folder never reached the
@@ -928,7 +1151,13 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         // carries the latest title/data. Refresh the surviving create's
         // contentHash too; crash-heal matches the server-created note against
         // the CURRENT row content that pushNoteCreate will POST.
-        final create = newestOfKind(OutboxKind.noteCreate);
+        //
+        // As for chats: not a create whose note already has its server id.
+        // It reached the server, and run again it sends nothing
+        // (`NotePushSync.pushNoteCreate`), so the edit needs its own update.
+        final create = chatId.startsWith('local:')
+            ? newestOfKind(OutboxKind.noteCreate)
+            : null;
         if (create != null) {
           final note = await attachedDatabase.notesDao.getNote(chatId);
           if (note == null) {
@@ -990,7 +1219,10 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
       case OutboxKind.noteDelete:
         // Annihilates EVERY earlier pending op for this note.
         final priorDelete = newestOfKind(OutboxKind.noteDelete);
-        if (pendingKinds.contains(OutboxKind.noteCreate)) {
+        // As for chats: a create whose note already has its server id reached
+        // the server, so the server copy must be deleted too.
+        if (chatId.startsWith('local:') &&
+            pendingKinds.contains(OutboxKind.noteCreate)) {
           // Never reached the server ⇒ pure local drop: delete all pending,
           // emit no noteDelete op. NotesDao.tombstoneWithOutbox removes the
           // local note row inline after this returns -1.
@@ -1052,6 +1284,7 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
       OutboxKind.updateChat,
       OutboxKind.deleteChat,
       OutboxKind.requestCompletion,
+      OutboxKind.deleteMessages,
     ].map((kind) => kind.name).toList();
   }
 
@@ -1155,6 +1388,14 @@ class OutboxDao extends DatabaseAccessor<AppDatabase> with _$OutboxDaoMixin {
         break;
       case OutboxKind.notePin:
         _require(payload['desired'] is bool, 'notePin.desired must be a bool');
+        break;
+      case OutboxKind.deleteMessages:
+        final ids = payload[kDeleteMessagesIdsKey];
+        _require(
+          ids is List && ids.isNotEmpty && ids.every((id) => id is String),
+          'deleteMessages.$kDeleteMessagesIdsKey must be a non-empty String '
+          'list',
+        );
         break;
     }
   }

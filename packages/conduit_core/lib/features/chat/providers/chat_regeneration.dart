@@ -7,15 +7,21 @@ const String kHermesStoredUserContentKey = 'hermesStoredContent';
 /// A Desktop Gateway session's place to cut before [replayedUserIndex], or
 /// null when the turn goes to a new session instead: the REST transport
 /// replays an explicit history, and a chat with no session has nothing to
-/// cut. [rowId] is null when the replayed turn never reached the session,
-/// which then only gets the prompt again.
+/// cut. [rowId] is null when the replayed turn never reached the session
+/// and nothing stored after it needs to go, which then only gets the prompt
+/// again. [promptStored] says whether the session holds the replayed turn
+/// itself.
 ///
 /// [originalText] is the replayed prompt as the session stores it, when an
 /// edit has already changed it on screen. [previousText] is the text shown
 /// before that edit: a turn edited before is stored with that one once the
 /// earlier edit went through, and with [originalText] when it did not.
+///
+/// [promptNeverSent] marks a replayed prompt that never reached the session
+/// even where the chat no longer shows the note that says so (an edit drops
+/// it with everything after the prompt).
 @visibleForTesting
-Future<({String sessionId, int? rowId, int? lastRowId})?>
+Future<({String sessionId, int? rowId, int? lastRowId, bool promptStored})?>
 hermesDesktopRewindTarget({
   required HermesBackendService? service,
   required Conversation? conversation,
@@ -23,6 +29,7 @@ hermesDesktopRewindTarget({
   required int replayedUserIndex,
   String? originalText,
   String? previousText,
+  bool promptNeverSent = false,
 }) async {
   if (service is! HermesDesktopTurnService ||
       replayedUserIndex < 0 ||
@@ -43,7 +50,11 @@ hermesDesktopRewindTarget({
   // have been cleared yet) counts only at the turn's place: out of place it
   // may be a later turn another app sent with it.
   final shown = messages[replayedUserIndex].content.trim();
-  int? find(String? text) => hermesTranscriptUserRowIndex(
+  final neverSent =
+      promptNeverSent || hermesUserTurnNeverSent(messages, replayedUserIndex);
+  int? find(String? text) => neverSent
+      ? null
+      : hermesTranscriptUserRowIndex(
     transcript: transcript,
     messages: messages,
     index: replayedUserIndex,
@@ -72,24 +83,64 @@ hermesDesktopRewindTarget({
   }
   final rowId = row == null ? null : hermesTranscriptRowId(transcript[row]);
   if (rowId != null) {
-    return (sessionId: sessionId, rowId: rowId, lastRowId: lastRowId);
-  }
-  var ordinal = 0;
-  for (var index = 0; index < replayedUserIndex; index++) {
-    if (messages[index].role == 'user') ordinal++;
-  }
-  final storedTurns = transcript
-      .where((row) => hermesTranscriptUserContent(row) != null)
-      .length;
-  if (storedTurns > ordinal) {
-    // The session holds this turn or a later one, and neither can be told
-    // apart for certain: sending again uncut would leave them in place.
-    throw StateError(
-      'This message could not be found in the Hermes chat. Reopen the chat '
-      'and try again.',
+    return (
+      sessionId: sessionId,
+      rowId: rowId,
+      lastRowId: lastRowId,
+      promptStored: true,
     );
   }
-  return (sessionId: sessionId, rowId: null, lastRowId: lastRowId);
+  final ordinal = hermesSentUserTurnsBefore(messages, replayedUserIndex);
+  final userRows = <int>[
+    for (var index = 0; index < transcript.length; index++)
+      if (hermesTranscriptUserContent(transcript[index]) != null) index,
+  ];
+  if (userRows.length > ordinal) {
+    // A prompt kept off a model switch has no row of its own: what the
+    // session stores after the turns kept before it goes, as it left the
+    // chat, once those turns are certainly the session's own.
+    var previous = replayedUserIndex - 1;
+    while (previous >= 0 &&
+        (messages[previous].role != 'user' ||
+            hermesUserTurnNeverSent(messages, previous))) {
+      previous--;
+    }
+    final cut =
+        neverSent &&
+            (ordinal == 0 ||
+                hermesTranscriptUserRowIndex(
+                      transcript: transcript,
+                      messages: messages,
+                      index: previous,
+                      // Every earlier turn in its place: a text found out
+                      // of place says nothing of the turns before it.
+                      inPlaceOnly: true,
+                    ) ==
+                    userRows[ordinal - 1])
+        ? hermesTranscriptRowId(transcript[userRows[ordinal]])
+        : null;
+    // Otherwise the session holds this turn or a later one, and neither can
+    // be told apart for certain: sending again uncut would leave them in
+    // place.
+    if (cut == null) {
+      throw StateError(
+        'This message could not be found in the Hermes chat. Reopen the chat '
+        'and try again.',
+      );
+    }
+    return (
+      sessionId: sessionId,
+      rowId: cut,
+      lastRowId: lastRowId,
+      promptStored: false,
+    );
+  }
+  return (
+    sessionId: sessionId,
+    rowId: null,
+    lastRowId: lastRowId,
+    promptStored: false,
+  );
 }
 
 Future<void> _regenerateHermesMessage(
@@ -101,6 +152,7 @@ Future<void> _regenerateHermesMessage(
   required HermesBackendService? serviceGeneration,
   String? originalUserContent,
   String? previousUserContent,
+  bool promptNeverSent = false,
 }) async {
   final reasoningEffort = ref.read(configuredReasoningEffortProvider);
   final activeAtStart = ref.read(activeConversationProvider) as Conversation?;
@@ -142,6 +194,12 @@ Future<void> _regenerateHermesMessage(
   final replayedFiles = replayedUser?.files ?? const <Map<String, dynamic>>[];
   final replayedAttachments = replayedUser?.attachmentIds ?? const <String>[];
   final assistantMessageId = previousAssistant?.id ?? const Uuid().v4();
+  // A prompt kept off a model switch stays unsent until Hermes takes it: a
+  // replay that ends before then leaves it as it was.
+  final keptUnsent =
+      promptNeverSent ||
+      (replayedUserIndex >= 0 &&
+          hermesUserTurnNeverSent(existingMessages, replayedUserIndex));
   final notifier = ref.read(chatMessagesProvider.notifier);
   ChatMessage assistantMessage({
     required bool isStreaming,
@@ -157,7 +215,11 @@ Future<void> _regenerateHermesMessage(
     versions: previousAssistant == null
         ? const <ChatMessageVersion>[]
         : _buildReplayVersions(previousAssistant),
-    metadata: {'modelName': selectedModel.name, 'transport': kHermesTransport},
+    metadata: {
+      'modelName': selectedModel.name,
+      'transport': kHermesTransport,
+      if (keptUnsent) kHermesModelSwitchKeptKey: true,
+    },
   );
   void installAssistant(ChatMessage message) {
     if (previousAssistant == null) {
@@ -176,10 +238,7 @@ Future<void> _regenerateHermesMessage(
       'File attachments cannot be regenerated. Send the file again.',
     );
     installAssistant(
-      assistantMessage(
-        isStreaming: false,
-        error: ChatMessageError(content: chatErrorContentForException(error)),
-      ),
+      assistantMessage(isStreaming: false, error: chatMessageErrorFor(error)),
     );
     throw error;
   }
@@ -212,6 +271,7 @@ Future<void> _regenerateHermesMessage(
     replayedUserIndex: replayedUserIndex,
     originalText: texts.originalText,
     previousText: texts.previousText,
+    promptNeverSent: promptNeverSent,
   );
   if (!chatMutationTokenStillActive(ref, mutationOwner)) return;
   if (!configController.sessionActionAdmissionIsCurrent(configAdmission) ||
@@ -233,6 +293,7 @@ Future<void> _regenerateHermesMessage(
     forceNewSession: rewind == null,
     truncateBeforeRowId: rewind?.rowId,
     truncateSeenThroughRowId: rewind?.lastRowId,
+    replaysStoredPrompt: rewind?.promptStored ?? false,
     // Regeneration branches from [continuityMessages]. Chaining the response
     // being replaced would restore the wrong tail and the wrong server session.
     previousResponseIdOverride: null,
@@ -608,7 +669,7 @@ Future<void> _regenerateDirectMessage(
         assistant;
     final failedSnapshot = failed.copyWith(
       isStreaming: false,
-      error: ChatMessageError(content: chatErrorContentForException(error)),
+      error: chatMessageErrorFor(error),
     );
     if (ownerIsActive) {
       notifier.failLastStreamingAssistant(
@@ -633,6 +694,13 @@ Future<void> _regenerateDirectMessage(
         notifier.updateMessageById(assistant.id, (_) => failedSnapshot);
       }
     }
+    await _announceDirectRunCompletion(
+      ref,
+      registry,
+      reservation,
+      owner: owner,
+      message: failedSnapshot,
+    );
     rethrow;
   } finally {
     await databaseLease?.release();
@@ -666,6 +734,9 @@ Future<void> regenerateEditedHermesUserMessage(
   if (index < 0) throw StateError('The Hermes user message was not found.');
 
   final original = messages[index];
+  // A prompt kept off a model switch has no stored text: the edit drops the
+  // note that says so, and the cut falls after the turns before it.
+  final neverSent = hermesUserTurnNeverSent(messages, index);
   // The text the session stores for this turn, kept until it is replaced:
   // a retry after a replacement that failed before its cut finds the turn
   // by it.
@@ -680,7 +751,7 @@ Future<void> regenerateEditedHermesUserMessage(
     metadata: <String, dynamic>{
       ...?original.metadata,
       'childrenIds': const <String>[],
-      kHermesStoredUserContentKey: storedContent,
+      if (!neverSent) kHermesStoredUserContentKey: storedContent,
     },
   );
   final notifier =
@@ -697,8 +768,9 @@ Future<void> regenerateEditedHermesUserMessage(
       null,
       // A Desktop session finds the turn to cut by the text it stored: the
       // one before any edit, or the one shown now once an edit went through.
-      hermesOriginalUserContent: storedContent,
-      hermesPreviousUserContent: original.content,
+      hermesOriginalUserContent: neverSent ? null : storedContent,
+      hermesPreviousUserContent: neverSent ? null : original.content,
+      hermesPromptNeverSent: neverSent,
     );
     await forgetReplacedHermesStoredContent(ref, messageId: messageId);
   } catch (_) {
@@ -852,6 +924,7 @@ Future<void> regenerateMessage(
   bool Function()? ownsPreparationState,
   String? hermesOriginalUserContent,
   String? hermesPreviousUserContent,
+  bool hermesPromptNeverSent = false,
 }) async {
   final conversationAtRegenerationStart =
       ref.read(activeConversationProvider) as Conversation?;
@@ -970,6 +1043,7 @@ Future<void> regenerateMessage(
       serviceGeneration: hermesServiceGeneration,
       originalUserContent: hermesOriginalUserContent,
       previousUserContent: hermesPreviousUserContent,
+      promptNeverSent: hermesPromptNeverSent,
     );
     return;
   }
@@ -1024,6 +1098,14 @@ Future<void> regenerateMessage(
   ChatSendPlaceholderHandle? regenerationPlaceholder;
   var regenerationPlaceholderWasEstablished = false;
   ChatCompletionSession? submittedSession;
+  void stopSubmittedTasks(ChatCompletionSession? session) => unawaited(
+    _stopRequestTasksQuietly(
+      api,
+      administrator: _maySingleTasksBeStopped(ref),
+      taskIds: [?session?.taskId],
+      session: regenerationOwner.authSnapshot,
+    ),
+  );
   void requireRegenerationOwner() {
     final activeChatId = activeOpenWebUiChatIdForMutation(
       ref,
@@ -1103,6 +1185,9 @@ Future<void> regenerateMessage(
     final List<ChatMessage> messages = ref.read(chatMessagesProvider);
     final List<Map<String, dynamic>> conversationMessages =
         <Map<String, dynamic>>[];
+    final isTemporary =
+        isTemporaryChat(activeConversation.id) ||
+        ref.read(temporaryChatEnabledProvider);
     var lastUserIndex = -1;
     for (var index = messages.length - 1; index >= 0; index--) {
       if (messages[index].role == 'user') {
@@ -1126,7 +1211,9 @@ Future<void> regenerateMessage(
             ? List<String>.from(attachments)
             : (msg.attachmentIds ?? const <String>[]);
 
-        if (messageAttachments.isNotEmpty) {
+        // Only a temporary chat's request keeps its history
+        // ([_buildChatCompletionMessages]), so only there are images fetched.
+        if (messageAttachments.isNotEmpty && isTemporary) {
           final messageMap = await _buildMessagePayloadWithAttachments(
             api: api,
             role: msg.role,
@@ -1166,9 +1253,6 @@ Future<void> regenerateMessage(
       legacyChatSystem: activeConversation.systemPrompt,
       globalSystem: userSystemPrompt,
     );
-    final isTemporary =
-        isTemporaryChat(activeConversation.id) ||
-        ref.read(temporaryChatEnabledProvider);
     final requestMessages = _buildChatCompletionMessages(
       conversationMessages: conversationMessages,
       isTemporary: isTemporary,
@@ -1206,6 +1290,8 @@ Future<void> regenerateMessage(
       }
     }
 
+    // A new attempt for the same answer: a Stop of an earlier one is over.
+    api?.beginSend(assistantMessageId);
     await _preseedAssistantAndPersist(
       ref,
       existingAssistantId: assistantMessageId,
@@ -1215,9 +1301,14 @@ Future<void> regenerateMessage(
         _openWebUiRegenerationAttemptMetadataKey: regenerationAttemptId,
         if (comparisonTarget != null)
           kMessageModelIdxMetadataKey: comparisonTarget.slot,
+        ...tetherAnswerRecord(selectedModel),
       },
     );
     regenerationPlaceholderWasEstablished = true;
+    final viaTether = _answerRecordsViaTether(
+      ref.read(chatMessagesProvider) as List<ChatMessage>,
+      assistantMessageId,
+    );
     if (!ownsLiveRegenerationPlaceholder()) {
       _clearOpenWebUiRegenerationAttemptMarker(
         ref,
@@ -1362,6 +1453,10 @@ Future<void> regenerateMessage(
         ref,
         now: DateTime.now(),
         userSettings: userSettingsData,
+        prompts: _openWebUiRequestPrompts(
+          requestMessages,
+          models: <Model?>[selectedModel],
+        ),
       );
     } catch (_) {}
 
@@ -1374,6 +1469,20 @@ Future<void> regenerateMessage(
         useModelIdForModels: openWebUiDirectRoute != null,
       );
     } catch (_) {}
+    // Open WebUI holds a regeneration under a reply still running as it holds
+    // a new message, and answers the held copy under new ids: an answer the
+    // question has would be left behind. Such a regeneration names the
+    // answer it asks for, which the server never holds; one whose question
+    // has none yet waits as a send does if held. Null when it has one.
+    final questionId = parentMsgMap?['id']?.toString() ?? lastUserMessageId;
+    final earlierHolds = isTemporary
+        ? const <String>{}
+        : await _heldQuestionEarlierHolds(
+            ref,
+            regenerationOwner,
+            questionId: questionId,
+            placeholderId: assistantMessageId,
+          );
     if (!ownsLiveRegenerationPlaceholder()) {
       _clearOpenWebUiRegenerationAttemptMarker(
         ref,
@@ -1409,39 +1518,63 @@ Future<void> regenerateMessage(
         admitted: admittedToolServers,
       );
       // Use transport-aware session dispatch
-      final session = await api!.sendMessageSession(
-        messages: requestMessages,
-        model: serverModelId,
-        conversationId: regenerationOwner.chatId,
-        terminalId: terminalIdForApi,
-        toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
-        filterIds: selectedFilterIds.isNotEmpty ? selectedFilterIds : null,
-        enableWebSearch: webSearchEnabled,
-        enableImageGeneration: imageGenerationEnabled,
-        enableCodeInterpreter: codeInterpreterEnabled,
-        modelItem: modelItem,
-        sessionIdOverride: socketSessionId,
-        toolServers: toolServers,
-        backgroundTasks: bgTasks,
-        responseMessageId: assistantMessageId,
-        userSettings: userSettingsData,
-        chatParams: turnSettings.chatParams,
-        reasoningEffort: turnSettings.reasoningEffort,
-        parentId: parentMsgMap?['parentId']?.toString(),
-        userMessage: parentMsgMap,
-        variables: promptVars2,
-        files: _extractTopLevelRequestFiles(parentMsgMap),
-        // Only this one answer is asked for again, in its own column.
-        messageIds: comparisonTarget == null
-            ? null
-            : [
-                ChatCompletionTarget(
-                  modelId: serverModelId,
-                  messageId: assistantMessageId,
-                  modelIdx: comparisonTarget.slot,
-                ),
-              ],
-      );
+      final ChatCompletionSession session;
+      try {
+        session = await api!.sendMessageSession(
+          messages: requestMessages,
+          model: serverModelId,
+          conversationId: regenerationOwner.chatId,
+          terminalId: terminalIdForApi,
+          toolIds: toolIdsForApi.isNotEmpty ? toolIdsForApi : null,
+          filterIds: selectedFilterIds.isNotEmpty ? selectedFilterIds : null,
+          enableWebSearch: webSearchEnabled,
+          enableImageGeneration: imageGenerationEnabled,
+          enableCodeInterpreter: codeInterpreterEnabled,
+          modelItem: modelItem,
+          sessionIdOverride: socketSessionId,
+          toolServers: toolServers,
+          backgroundTasks: bgTasks,
+          responseMessageId: assistantMessageId,
+          userSettings: userSettingsData,
+          chatParams: turnSettings.chatParams,
+          reasoningEffort: turnSettings.reasoningEffort,
+          parentId: parentMsgMap?['parentId']?.toString(),
+          userMessage: parentMsgMap,
+          variables: promptVars2,
+          files: _extractTopLevelRequestFiles(parentMsgMap),
+          // Only this one answer is asked for again, in its own column.
+          messageIds: comparisonTarget == null
+              ? null
+              : [
+                  ChatCompletionTarget(
+                    modelId: serverModelId,
+                    messageId: assistantMessageId,
+                    modelIdx: comparisonTarget.slot,
+                  ),
+                ],
+          viaTether: viaTether,
+          regenerationMessageId: earlierHolds == null
+              ? assistantMessageId
+              : null,
+          authSnapshot: regenerationOwner.authSnapshot,
+        );
+      } on ChatCompletionHeld {
+        // Regenerated under a reply still running (on another device): the
+        // server holds the question, and answers it once that reply ends
+        // only while nothing answers it. One with an answer of its own, held
+        // by a server not known to read what it names, fails as any
+        // regeneration does, and keeps that answer here.
+        if (earlierHolds == null) rethrow;
+        await settleHeldOpenWebUiCompletion(
+          ref,
+          api: api,
+          owner: regenerationOwner,
+          questionId: questionId,
+          assistantMessageIds: [assistantMessageId],
+          earlierHoldIds: earlierHolds,
+        );
+        return;
+      }
       submittedSession = session;
 
       // Stop/replacement can race the completion POST itself. The request may
@@ -1453,7 +1586,7 @@ Future<void> regenerateMessage(
           ) &&
           !ownsLiveRegenerationPlaceholder()) {
         await _abortQuietly(session);
-        _stopOpenWebUiTaskQuietly(api, session.taskId);
+        stopSubmittedTasks(session);
         _clearOpenWebUiRegenerationAttemptMarker(
           ref,
           regenerationPlaceholderForAttempt,
@@ -1489,6 +1622,7 @@ Future<void> regenerateMessage(
             assistantMessageId: assistantMessageId,
             // Regeneration is an inline request, not a replayable outbox op.
             requireDurableSubmittedMarker: false,
+            viaTether: viaTether,
           );
         }
         return;
@@ -1496,7 +1630,7 @@ Future<void> regenerateMessage(
       regenerationOwner.chatId = activeOwnerChatId;
       if (!ownsLiveRegenerationPlaceholder()) {
         await _abortQuietly(session);
-        _stopOpenWebUiTaskQuietly(api, session.taskId);
+        stopSubmittedTasks(session);
         _clearOpenWebUiRegenerationAttemptMarker(
           ref,
           regenerationPlaceholderForAttempt,
@@ -1538,13 +1672,14 @@ Future<void> regenerateMessage(
         ownsActiveConversation: () =>
             activeOpenWebUiChatIdForMutation(ref, regenerationOwner) != null,
         ownsPendingPlaceholder: ownsLiveRegenerationPlaceholder,
+        viaTether: viaTether,
       );
       if (!attached) {
         final ownerIsStillActive =
             activeOpenWebUiChatIdForMutation(ref, regenerationOwner) != null;
         if (ownerIsStillActive && !ownsLiveRegenerationPlaceholder()) {
           await _abortQuietly(session);
-          _stopOpenWebUiTaskQuietly(api, session.taskId);
+          stopSubmittedTasks(session);
           _clearOpenWebUiRegenerationAttemptMarker(
             ref,
             regenerationPlaceholderForAttempt,
@@ -1558,6 +1693,7 @@ Future<void> regenerateMessage(
             owner: regenerationOwner,
             assistantMessageId: assistantMessageId,
             requireDurableSubmittedMarker: false,
+            viaTether: viaTether,
           );
         }
       } else {
@@ -1579,7 +1715,7 @@ Future<void> regenerateMessage(
     if (session != null) {
       await _abortQuietly(session);
     }
-    _stopOpenWebUiTaskQuietly(api, session?.taskId);
+    stopSubmittedTasks(session);
     final placeholder = regenerationPlaceholder;
     if (regenerationPlaceholderWasEstablished &&
         placeholder != null &&
@@ -1598,9 +1734,65 @@ Future<void> regenerateMessage(
       error: error,
       placeholder: regenerationPlaceholder,
       submittedTaskId: session?.taskId,
+      authSnapshot: regenerationOwner.authSnapshot,
     );
     Error.throwWithStackTrace(error, stackTrace);
   }
+}
+
+/// The answers of question [questionId] besides [placeholderId] when all of
+/// them are empty ones a hold of it left, and null once one of them answers
+/// it. An earlier hold's answer is marked held ([kCompletionHeldMetadataKey])
+/// in the transcript, or the stored chat knows it as one
+/// ([ChatsDao.questionAnswers]): the transcript's copy is usually the one its
+/// send showed, which no mark reaches, and the stored row may be one a pull
+/// wrote.
+///
+/// The transcript is read only while it shows [owner]'s chat: message ids
+/// are a chat's own, and another chat may hold the same ones.
+Future<Set<String>?> _heldQuestionEarlierHolds(
+  dynamic ref,
+  OpenWebUiCompletionOwner owner, {
+  required String? questionId,
+  required String placeholderId,
+}) async {
+  final earlierHolds = <String>{};
+  if (questionId == null) return earlierHolds;
+  final shownAnswers = <ChatMessage>[];
+  if (activeOpenWebUiChatIdForMutation(ref, owner) != null) {
+    final shown = ref.read(chatMessagesProvider) as List<ChatMessage>;
+    final at = shown.indexWhere((m) => m.id == questionId);
+    if (at >= 0) {
+      for (final later in shown.skip(at + 1)) {
+        if (later.role == 'user') break;
+        if (later.role == 'assistant') shownAnswers.add(later);
+      }
+    }
+  }
+  final stored =
+      await owner.database?.chatsDao.questionAnswers(
+        owner.chatId,
+        questionId,
+      ) ??
+      (answers: const <String>[], holds: const <String>{});
+  // Whether [id] answers the question: false for an earlier hold's, noted.
+  bool answers(String id, {Object? metadata}) {
+    if (id == placeholderId || earlierHolds.contains(id)) return false;
+    if ((metadata is Map && metadata[kCompletionHeldMetadataKey] == true) ||
+        stored.holds.contains(id)) {
+      earlierHolds.add(id);
+      return false;
+    }
+    return true;
+  }
+
+  for (final answer in shownAnswers) {
+    if (answers(answer.id, metadata: answer.metadata)) return null;
+  }
+  for (final id in stored.answers) {
+    if (answers(id)) return null;
+  }
+  return earlierHolds;
 }
 
 const String _openWebUiRegenerationAttemptMetadataKey =
@@ -1715,6 +1907,7 @@ void _settleFailedOpenWebUiRegeneration({
   required Object error,
   required ChatSendPlaceholderHandle? placeholder,
   required String? submittedTaskId,
+  required ApiAuthSnapshot? authSnapshot,
 }) {
   if (placeholder == null) return;
   final ownedAssistant = _ownedMarkedOpenWebUiRegenerationPlaceholder(
@@ -1732,8 +1925,15 @@ void _settleFailedOpenWebUiRegeneration({
     api?.cancelStreamingMessage(ownedAssistant.id);
   }
   final metadataTaskId = metadata?['taskId']?.toString();
-  if (metadataTaskId != submittedTaskId) {
-    _stopOpenWebUiTaskQuietly(api, metadataTaskId);
+  if (metadataTaskId != null && metadataTaskId != submittedTaskId) {
+    unawaited(
+      _stopRequestTasksQuietly(
+        api,
+        administrator: _maySingleTasksBeStopped(ref),
+        taskIds: [metadataTaskId],
+        session: authSnapshot,
+      ),
+    );
   }
   (ref.read(chatMessagesProvider.notifier) as ChatMessagesNotifier)
       .failLastStreamingAssistant(
@@ -1741,13 +1941,4 @@ void _settleFailedOpenWebUiRegeneration({
         assistantMessageId: placeholder.assistantMessageId,
       );
   _clearOpenWebUiRegenerationAttemptMarker(ref, placeholder);
-}
-
-void _stopOpenWebUiTaskQuietly(ApiService? api, String? taskId) {
-  if (api == null || taskId == null || taskId.isEmpty) return;
-  unawaited(() async {
-    try {
-      await api.stopTask(taskId);
-    } catch (_) {}
-  }());
 }

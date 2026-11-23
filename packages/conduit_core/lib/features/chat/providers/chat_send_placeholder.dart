@@ -197,7 +197,10 @@ void recoverFailedChatSend(
 /// Removes the optimistic rows of a send that never committed, for a caller
 /// that keeps the content to send again. Marking the assistant failed instead
 /// would leave a turn on screen that the retry then sends a second time.
-void discardUncommittedChatSend(dynamic ref, ChatSendPlaceholderHandle? handle) {
+void discardUncommittedChatSend(
+  dynamic ref,
+  ChatSendPlaceholderHandle? handle,
+) {
   if (handle == null) return;
   final active = ref.read(activeConversationProvider) as Conversation?;
   handle._followOpenWebUiRemap(
@@ -285,6 +288,11 @@ Future<void> durableSend(
   onAssistantPlaceholderCreated,
   void Function(ChatSendAdmissionReceipt receipt)? onAdmissionCommitted,
   void Function()? onTurnStarted,
+
+  /// The composer's files [attachments] were taken from, as the send took
+  /// them. The send reads them here, not in the tray, which may have changed
+  /// since. Null reads the tray.
+  List<FileUploadState>? attachmentStates,
 }) async {
   Future<void> inlineSend() {
     if (onAdmissionCommitted != null) {
@@ -300,8 +308,10 @@ Future<void> durableSend(
       onAssistantPlaceholderCreated,
       voice,
       onTurnStarted,
+      attachmentStates,
     );
   }
+
   final voiceReply = voice?.reply;
 
   final activeAtSendStart = ref.read(activeConversationProvider);
@@ -441,6 +451,7 @@ Future<void> durableSend(
       'childrenIds': const <String>[],
       if (selectedModel.name.trim().isNotEmpty)
         'modelName': selectedModel.name.trim(),
+      if (voiceReply == null) ...tetherAnswerRecord(selectedModel),
     },
   );
   final assistantPlaceholder = voiceReply == null
@@ -458,6 +469,12 @@ Future<void> durableSend(
     assistantMessageId: assistantMessageId,
     mutationOwner: sendMutationOwner,
   );
+  // A Stop from here on, while admission reads settings, stays with the send
+  // and is written into its operation ([RequestCompletionPayload.stopped]).
+  final admissionApi = sendMutationOwner.openWebUiApi is ApiService
+      ? sendMutationOwner.openWebUiApi as ApiService
+      : null;
+  admissionApi?.beginSend(assistantMessageId);
   onAssistantPlaceholderCreated?.call(sendHandle);
 
   final chatLocks = ref.read(chatLocksProvider);
@@ -477,6 +494,7 @@ Future<void> durableSend(
       attachmentList,
       sourceApi: sendMutationOwner.openWebUiApi,
       sourceAuthSnapshot: sendMutationOwner.openWebUiAuthSnapshot,
+      attachmentStates: attachmentStates,
       requireSourceContext: () =>
           _requireChatMutationOpenWebUiAuthSession(ref, sendMutationOwner),
     );
@@ -531,6 +549,7 @@ Future<void> durableSend(
         globals: admissionGlobals,
         legacyChatSystem: legacyChatSystem,
       ),
+      stopped: admissionApi?.sendStopped(assistantMessageId) ?? false,
     );
 
     var activeConversation = activeAtSendStart;
@@ -553,6 +572,7 @@ Future<void> durableSend(
         files: durableFiles,
         modelId: selectedModel.id,
         modelName: selectedModel.name,
+        viaTether: isTetherModel(selectedModel),
         now: now,
         chatParams: draftChatParams,
         voice: voice,
@@ -649,6 +669,7 @@ Future<void> durableSend(
           modelName: selectedModel.name,
           timestamp: now,
           voiceReply: voiceReply,
+          viaTether: isTetherModel(selectedModel),
         ),
       );
 
@@ -737,6 +758,7 @@ Map<String, dynamic> _buildDurableNewChatBlob({
   required List<Map<String, dynamic>> files,
   required String modelId,
   required String modelName,
+  required bool viaTether,
   required int now,
   Map<String, dynamic> chatParams = const <String, dynamic>{},
   ChatSendVoiceContext? voice,
@@ -766,6 +788,7 @@ Map<String, dynamic> _buildDurableNewChatBlob({
           modelName: modelName,
           timestamp: now,
           voiceReply: voice?.reply,
+          viaTether: viaTether,
         ),
       },
     },
@@ -774,7 +797,8 @@ Map<String, dynamic> _buildDurableNewChatBlob({
 
 /// A new answer's row: empty until its model fills it, or, for [voiceReply],
 /// the voice's finished reply stored under the voice model as Open WebUI's
-/// web client stores it.
+/// web client stores it. [viaTether] records that one of the user's devices
+/// offers [modelId].
 Map<String, dynamic> _durableAssistantPayload({
   required String id,
   required String parentId,
@@ -782,6 +806,7 @@ Map<String, dynamic> _durableAssistantPayload({
   required String modelName,
   required int timestamp,
   ChatVoiceReply? voiceReply,
+  bool viaTether = false,
 }) {
   final trimmedModelName = voiceReply?.model ?? modelName.trim();
   return <String, dynamic>{
@@ -797,7 +822,8 @@ Map<String, dynamic> _durableAssistantPayload({
       'done': true,
       'modelIdx': 0,
       'meta': {'voice': voiceReply.voice},
-    },
+    } else if (viaTether)
+      'metadata': <String, dynamic>{kCompletionViaTetherKey: true},
   };
 }
 
@@ -818,7 +844,30 @@ Map<String, dynamic> debugBuildDurableAssistantPayloadForTesting({
   );
 }
 
-typedef _AttachmentTypeMap = Map<String, String>;
+/// What a sent file's descriptor says about it beyond its id, as Open WebUI's
+/// own client writes a user message's `files`: the type it is shown as, and
+/// the name and size every client shows the stored copy by.
+final class _AttachmentFacts {
+  const _AttachmentFacts({this.contentType, this.name, this.size});
+
+  final String? contentType;
+  final String? name;
+  final int? size;
+
+  bool get complete =>
+      (contentType?.isNotEmpty ?? false) && (name?.isNotEmpty ?? false);
+
+  /// These facts, with what they lack taken from [other].
+  _AttachmentFacts fill(_AttachmentFacts other) => _AttachmentFacts(
+    contentType: (contentType?.isNotEmpty ?? false)
+        ? contentType
+        : other.contentType,
+    name: (name?.isNotEmpty ?? false) ? name : other.name,
+    size: size ?? other.size,
+  );
+}
+
+typedef _AttachmentFactsMap = Map<String, _AttachmentFacts>;
 
 Future<List<Map<String, dynamic>>> _resolveDurableFilesFor(
   dynamic ref,
@@ -826,23 +875,31 @@ Future<List<Map<String, dynamic>>> _resolveDurableFilesFor(
   required Object? sourceApi,
   ApiAuthSnapshot? sourceAuthSnapshot,
   CancelToken? cancelToken,
-  _AttachmentTypeMap? capturedContentTypes,
+  _AttachmentFactsMap? capturedFacts,
+  List<FileUploadState>? attachmentStates,
   void Function()? requireSourceContext,
 }) async {
   if (attachments.isEmpty) return const [];
 
-  final contentTypes = capturedContentTypes == null
-      ? _durableAttachmentContentTypesFromState(ref, attachments)
-      : Map<String, String>.from(capturedContentTypes);
+  final facts = capturedFacts == null
+      ? _durableAttachmentFactsFromState(
+          ref,
+          attachments,
+          states: attachmentStates,
+        )
+      : Map<String, _AttachmentFacts>.from(capturedFacts);
+  // The server's record of a file has what the composer and the cached list
+  // do not: the type of a document, and the name of one attached from
+  // elsewhere.
   final missingIds = attachments
       .where((id) => !id.startsWith('data:image/'))
-      .where((id) => (contentTypes[id] ?? '').isEmpty)
+      .where((id) => !(facts[id]?.complete ?? false))
       .toSet();
 
   final dynamic api = sourceApi;
   if (api != null && missingIds.isNotEmpty) {
     requireSourceContext?.call();
-    final fetchedTypes = await Future.wait(
+    final fetched = await Future.wait(
       missingIds.map((id) async {
         try {
           requireSourceContext?.call();
@@ -855,9 +912,7 @@ Future<List<Map<String, dynamic>>> _resolveDurableFilesFor(
               : await api.getFileInfo(id);
           requireSourceContext?.call();
           if (raw is! Map) return null;
-          final contentType = _contentTypeFromFileInfo(raw);
-          if (contentType.isEmpty) return null;
-          return MapEntry(id, contentType);
+          return MapEntry(id, _attachmentFactsFromFileInfo(raw));
         } on _DirectOpenWebUiAuthSessionChanged {
           rethrow;
         } catch (_) {
@@ -866,40 +921,51 @@ Future<List<Map<String, dynamic>>> _resolveDurableFilesFor(
       }),
     );
     requireSourceContext?.call();
-    for (final entry in fetchedTypes) {
-      if (entry != null) contentTypes[entry.key] = entry.value;
+    for (final entry in fetched) {
+      if (entry == null) continue;
+      facts[entry.key] = facts[entry.key]?.fill(entry.value) ?? entry.value;
     }
   }
 
-  return _durableFilesFor(attachments, contentTypes: contentTypes);
+  return _durableFilesFor(attachments, facts: facts);
 }
 
-_AttachmentTypeMap _durableAttachmentContentTypesFromState(
+/// What the files [attachments] name are, read from [states] (the files a
+/// send took), or else from the tray and the queued drafts.
+_AttachmentFactsMap _durableAttachmentFactsFromState(
   dynamic ref,
-  List<String> attachments,
-) {
-  final ids = attachments.where((id) => !id.startsWith('data:image/')).toSet();
-  if (ids.isEmpty) return <String, String>{};
+  List<String> attachments, {
+  List<FileUploadState>? states,
+}) {
+  // A data-URL image is named only by the file it came from.
+  final ids = attachments.toSet();
+  if (ids.isEmpty) return <String, _AttachmentFacts>{};
 
-  final contentTypes = <String, String>{};
+  final facts = <String, _AttachmentFacts>{};
 
   try {
     // Files of drafts queued behind a response are no longer in the tray.
-    for (final file in [
-      ...ref.read(attachedFilesProvider) as List<FileUploadState>,
-      for (final held
-          in ref.read(queuedDraftAttachmentsProvider)
-              as List<QueuedDraftAttachment>)
-        held.upload,
-    ]) {
+    for (final file
+        in states ??
+            [
+              ...ref.read(attachedFilesProvider) as List<FileUploadState>,
+              for (final held in ref.read(
+                queuedDraftAttachmentsProvider,
+              ) as List<QueuedDraftAttachment>)
+                held.upload,
+            ]) {
       final fileId = file.fileId;
-      if (fileId == null || !ids.contains(fileId) || file.isImage != true) {
-        continue;
-      }
-      final contentType = _getMimeTypeFromFileName(file.fileName);
-      if (contentType != null && contentType.isNotEmpty) {
-        contentTypes[fileId] = contentType;
-      }
+      if (fileId == null || !ids.contains(fileId)) continue;
+      // An image's type from its name; a document's is the server's.
+      final contentType = file.isImage == true
+          ? _getMimeTypeFromFileName(file.fileName)
+          : null;
+      final name = file.fileName.trim();
+      facts[fileId] = _AttachmentFacts(
+        contentType: (contentType?.isNotEmpty ?? false) ? contentType : null,
+        name: name.isEmpty ? null : name,
+        size: file.fileSize > 0 ? file.fileSize : null,
+      );
     }
   } catch (_) {}
 
@@ -907,15 +973,20 @@ _AttachmentTypeMap _durableAttachmentContentTypesFromState(
     final cachedFiles = ref.read(userFilesProvider).asData?.value;
     if (cachedFiles != null) {
       for (final FileInfo file in cachedFiles) {
+        if (!ids.contains(file.id)) continue;
         final contentType = file.mimeType.trim();
-        if (ids.contains(file.id) && contentType.isNotEmpty) {
-          contentTypes[file.id] = contentType;
-        }
+        final name = file.displayName.trim();
+        final cached = _AttachmentFacts(
+          contentType: contentType.isEmpty ? null : contentType,
+          name: name.isEmpty ? null : name,
+          size: file.size > 0 ? file.size : null,
+        );
+        facts[file.id] = facts[file.id]?.fill(cached) ?? cached;
       }
     }
   } catch (_) {}
 
-  return contentTypes;
+  return facts;
 }
 
 String _contentTypeFromFileInfo(Map<dynamic, dynamic> fileInfo) {
@@ -929,25 +1000,47 @@ String _contentTypeFromFileInfo(Map<dynamic, dynamic> fileInfo) {
   return contentType?.toString().trim() ?? '';
 }
 
+/// What Open WebUI's record of a file (`GET /api/v1/files/{id}`) says of it:
+/// the original name under `meta.name` (`filename` on older servers), and
+/// its type and size.
+_AttachmentFacts _attachmentFactsFromFileInfo(Map<dynamic, dynamic> fileInfo) {
+  final meta = fileInfo['meta'] ?? fileInfo['metadata'];
+  final contentType = _contentTypeFromFileInfo(fileInfo);
+  final name =
+      ((meta is Map ? meta['name'] : null) ??
+              fileInfo['filename'] ??
+              fileInfo['name'])
+          ?.toString()
+          .trim();
+  final size = (meta is Map ? meta['size'] : null) ?? fileInfo['size'];
+  return _AttachmentFacts(
+    contentType: contentType.isEmpty ? null : contentType,
+    name: (name?.isEmpty ?? true) ? null : name,
+    size: size is num && size > 0 ? size.toInt() : null,
+  );
+}
+
 List<Map<String, dynamic>> _durableFilesFor(
   List<String> attachments, {
-  _AttachmentTypeMap contentTypes = const {},
+  _AttachmentFactsMap facts = const {},
 }) {
   return [
     for (final id in attachments)
       if (id.startsWith('data:image/'))
-        <String, dynamic>{'type': 'image', 'url': id}
+        <String, dynamic>{'type': 'image', 'url': id, 'name': ?facts[id]?.name}
       else
-        _durableFileFor(id, contentType: contentTypes[id]),
+        _durableFileFor(id, facts[id] ?? const _AttachmentFacts()),
   ];
 }
 
-Map<String, dynamic> _durableFileFor(String id, {String? contentType}) {
-  final normalizedContentType = contentType?.trim() ?? '';
+Map<String, dynamic> _durableFileFor(String id, _AttachmentFacts facts) {
+  final normalizedContentType = facts.contentType?.trim() ?? '';
   final file = <String, dynamic>{
     'type': normalizedContentType.startsWith('image/') ? 'image' : 'file',
     'id': id,
     'url': id,
+    'name': ?facts.name,
+    'size': ?facts.size,
   };
   if (normalizedContentType.isNotEmpty) {
     file['content_type'] = normalizedContentType;
@@ -959,14 +1052,47 @@ Map<String, dynamic> _durableFileFor(String id, {String? contentType}) {
 List<Map<String, dynamic>> buildDurableFilesForTest(
   List<String> attachments, {
   Map<String, String> contentTypes = const {},
+  Map<String, String> names = const {},
+  Map<String, int> sizes = const {},
 }) {
-  return _durableFilesFor(attachments, contentTypes: contentTypes);
+  return _durableFilesFor(
+    attachments,
+    facts: {
+      for (final id in {...contentTypes.keys, ...names.keys, ...sizes.keys})
+        id: _AttachmentFacts(
+          contentType: contentTypes[id],
+          name: names[id],
+          size: sizes[id],
+        ),
+    },
+  );
 }
+
+/// [_resolveDurableFilesFor] over the composer's state in [ref] and the
+/// files API of [sourceApi].
+@visibleForTesting
+Future<List<Map<String, dynamic>>> resolveDurableFilesForTest(
+  dynamic ref,
+  List<String> attachments, {
+  required Object? sourceApi,
+}) => _resolveDurableFilesFor(ref, attachments, sourceApi: sourceApi);
 
 String _titleFromText(String text) {
   final trimmed = text.trim();
   if (trimmed.isEmpty) return 'New Chat';
   return trimmed.length <= 50 ? trimmed : trimmed.substring(0, 50);
+}
+
+/// What names a chat begun with [turn]: its words, or its files' names when
+/// it was sent without any.
+String _titleSourceOf(ChatMessage? turn) {
+  if (turn == null) return '';
+  if (turn.content.trim().isNotEmpty) return turn.content;
+  return [
+    for (final file in turn.files ?? const <Map<String, dynamic>>[])
+      if (file['name'] case final String name when name.trim().isNotEmpty)
+        name.trim(),
+  ].join(', ');
 }
 
 // Send message function for widgets
@@ -1000,8 +1126,16 @@ Future<void> sendMessageWithContainer(
 /// Bridges the chat send pipeline to the direct Hermes runs transport, wiring
 /// the chat notifier callbacks and resolving multi-turn / memory continuity.
 /// Derives a short session title from the first user message.
-String _deriveHermesSessionTitle(String input) {
-  final trimmed = input.trim().replaceAll(RegExp(r'\s+'), ' ');
+///
+/// A turn sent without words is named by its files, read from the last user
+/// message of [messages].
+String _deriveHermesSessionTitle(String input, Iterable<ChatMessage> messages) {
+  final source = input.trim().isNotEmpty
+      ? input
+      : _titleSourceOf(
+          messages.where((message) => message.role == 'user').lastOrNull,
+        );
+  final trimmed = source.trim().replaceAll(RegExp(r'\s+'), ' ');
   if (trimmed.isEmpty) return 'New Hermes chat';
   return trimmed.length <= 60 ? trimmed : '${trimmed.substring(0, 60)}…';
 }

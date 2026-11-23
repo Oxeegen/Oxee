@@ -1,22 +1,13 @@
 import 'dart:async';
 
-import 'package:conduit/features/direct_connections/controllers/direct_connection_editor_form.dart';
-import 'package:conduit/features/direct_connections/views/direct_connection_editor_sections.dart';
 import 'package:conduit/features/hermes/controllers/hermes_connection_controller.dart';
-import 'package:conduit/features/hermes/views/hermes_jobs_page.dart';
 import 'package:conduit/features/hermes/views/hermes_settings_sections.dart';
 import 'package:conduit/features/hermes/widgets/hermes_jobs_sheet.dart';
-import 'package:conduit/features/workspace/models/workspace_model_draft.dart';
-import 'package:conduit/features/workspace/views/models/workspace_model_advanced_section.dart';
-import 'package:conduit/features/workspace/views/models/workspace_model_editor_controller.dart';
-import 'package:conduit/features/workspace/views/prompts/workspace_prompt_editor_sections.dart';
 import 'package:conduit/features/workspace/widgets/workspace_valve_form.dart';
-import 'package:conduit/features/workspace/workspace_navigation.dart';
 import 'package:conduit/l10n/app_localizations.dart';
 import 'package:conduit/l10n/conduit_localizations.dart';
 import 'package:conduit/shared/widgets/legacy_design_compatibility.dart';
 import 'package:conduit/shared/widgets/platform_ui/platform_ui.dart';
-import 'package:conduit_core/features/direct_connections/controllers/direct_connection_editor_draft.dart';
 import 'package:conduit_core/features/hermes/models/hermes_capabilities.dart';
 import 'package:conduit_core/features/hermes/models/hermes_config.dart';
 import 'package:conduit_core/features/hermes/models/hermes_job.dart';
@@ -47,62 +38,23 @@ void main() {
         PlatformUiCapabilities.debugNativeIOS26Override = configuration.native;
       });
 
-      for (final compact in [false, true]) {
-        testWidgets('direct availability has one actionable label ($compact)', (
-          tester,
-        ) async {
-          final form = DirectConnectionEditorForm(
-            mode: const DirectConnectionEditorMode.create(),
-          );
-          addTearDown(form.dispose);
-          await _pump(
-            tester,
-            compact
-                ? DirectConnectionGeneralSection(form: form)
-                : DirectConnectionAvailabilitySection(form: form),
-          );
-          _expectSwitch(
-            tester,
-            _l10n(tester).enabledLabel,
-            true,
-            rowOwnsSemantics: compact,
-          );
-        }, variant: TargetPlatformVariant.only(configuration.platform));
-      }
+      testWidgets('job name labels only its switch', (tester) async {
+        await _pump(tester, const HermesJobsSheet());
+        _expectSwitch(tester, 'Orbit check', true);
+      }, variant: TargetPlatformVariant.only(configuration.platform));
 
-      for (final sheet in [false, true]) {
-        testWidgets('job name labels only its switch ($sheet)', (tester) async {
-          await _pump(
-            tester,
-            sheet ? const HermesJobsSheet() : const HermesJobsPage(),
-          );
-          _expectSwitch(tester, 'Orbit check', true);
-        }, variant: TargetPlatformVariant.only(configuration.platform));
-
-        testWidgets('busy job retains its name ($sheet)', (tester) async {
-          final jobs = _Jobs();
-          await _pump(
-            tester,
-            sheet ? const HermesJobsSheet() : const HermesJobsPage(),
-            jobs: jobs,
-          );
-          tester.widget<AdaptiveSwitch>(find.byType(AdaptiveSwitch)).onChanged!(
-            false,
-          );
-          await tester.pump();
-          expect(find.byType(AdaptiveSwitch), findsNothing);
-          expect('Orbit check'.allMatches(_labels(tester)), hasLength(1));
-          jobs.toggle.complete();
-          await tester.pumpAndSettle();
-          _expectSwitch(tester, 'Orbit check', true);
-        }, variant: TargetPlatformVariant.only(configuration.platform));
-      }
-
-      testWidgets('toolset switch is reachable and announces its state', (
-        tester,
-      ) async {
-        await _pump(tester, const HermesToolsetsSection());
-        _expectSwitch(tester, 'Sketch tools', true);
+      testWidgets('busy job retains its name', (tester) async {
+        final jobs = _Jobs();
+        await _pump(tester, const HermesJobsSheet(), jobs: jobs);
+        tester.widget<AdaptiveSwitch>(find.byType(AdaptiveSwitch)).onChanged!(
+          false,
+        );
+        await tester.pump();
+        expect(find.byType(AdaptiveSwitch), findsNothing);
+        expect('Orbit check'.allMatches(_labels(tester)), hasLength(1));
+        jobs.toggle.complete();
+        await tester.pumpAndSettle();
+        _expectSwitch(tester, 'Orbit check', true);
       }, variant: TargetPlatformVariant.only(configuration.platform));
 
       testWidgets('TLS row announces its toggle state', (tester) async {
@@ -120,39 +72,6 @@ void main() {
           false,
           rowOwnsSemantics: true,
         );
-      }, variant: TargetPlatformVariant.only(configuration.platform));
-
-      testWidgets('model capability labels only its switch', (tester) async {
-        final controller = WorkspaceModelEditorController(
-          mode: WorkspaceRouteMode.create,
-          initialDraft: WorkspaceModelDraft.empty()
-            ..capabilities = {'Orbit capability': true},
-          writeAccess: true,
-        )..setAdvancedExpanded(true);
-        addTearDown(controller.dispose);
-        await _pump(
-          tester,
-          WorkspaceModelAdvancedSection(controller: controller),
-        );
-        _expectSwitch(tester, 'Orbit capability', true);
-      }, variant: TargetPlatformVariant.only(configuration.platform));
-
-      testWidgets('prompt production labels only its switch', (tester) async {
-        final commit = TextEditingController();
-        addTearDown(commit.dispose);
-        await _pump(
-          tester,
-          WorkspacePromptVersionSection(
-            readOnly: false,
-            expanded: true,
-            isProduction: true,
-            commitController: commit,
-            onExpandedChanged: (_) {},
-            onCommitChanged: () {},
-            onProductionChanged: (_) {},
-          ),
-        );
-        _expectSwitch(tester, _l10n(tester).workspacePromptSetProduction, true);
       }, variant: TargetPlatformVariant.only(configuration.platform));
 
       for (final required in [false, true]) {

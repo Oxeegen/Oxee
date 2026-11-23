@@ -53,7 +53,9 @@ UPSTREAM_HERMES_NAME = BRAND["upstreamHermesName"]
 WORD = re.compile(r"(?<![A-Za-z0-9_$])" + UPSTREAM_NAME + r"(?![A-Za-z0-9_])")
 
 # Never rewritten: vendored reference checkouts and generated output.
-EXCLUDED_PARTS = {"openwebui-src", "hermes-src", "third_party", "build", ".dart_tool", "Pods", ".git"}
+# conduit_protocol: the wire protocol between upstream's desktop app, its daemon
+# and the phone (not shipped by Oxee); its tests compare against goldens.
+EXCLUDED_PARTS = {"openwebui-src", "hermes-src", "third_party", "build", ".dart_tool", "Pods", ".git", "conduit_protocol"}
 EXCLUDED_SUFFIXES = (".g.dart", ".freezed.dart", ".g.swift", ".mocks.dart")
 
 
@@ -430,16 +432,14 @@ IDENTITY: dict[str, list[tuple[str, str]]] = {
         ("'group.app.cogwheel.conduit'", "'" + BRAND["appGroupId"] + "'"),
         ("'group.app.cogwheel.conduit.x2662v5dt2.debug'", "'" + BRAND["debugAppGroupId"] + "'"),
     ],
-    "lib/features/profile/views/about_page.dart": [
-        ("'https://github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"] + "'"),
-        ("'github.com/cogwheel0/conduit'", "'" + BRAND["repoUrl"].split("://", 1)[1] + "'"),
-    ],
     # Wikipedia's API asks clients to name a contact in the User-Agent.
     "packages/conduit_ddgs/lib/src/engines/wikipedia.dart": [
         ("(https://github.com/cogwheel0/conduit) conduit_ddgs", "(" + BRAND["repoUrl"] + ") conduit_ddgs"),
     ],
-    "lib/core/utils/native_sheet_utils.dart": [
-        ("url: 'https://github.com/cogwheel0/conduit',", "url: '" + BRAND["repoUrl"] + "',"),
+    # About's source-repository row.
+    "packages/conduit_core/lib/features/support/support_links.dart": [
+        ("const conduitRepositoryUrl = 'https://github.com/cogwheel0/conduit';",
+         "const conduitRepositoryUrl = '" + BRAND["repoUrl"] + "';"),
     ],
     "lib/features/release_notes/data/release_links.dart": [
         ("'https://play.google.com/store/apps/details?id=" + UPSTREAM_BUNDLE_ID + "'", "'" + BRAND["playStoreUrl"] + "'"),
@@ -451,9 +451,24 @@ IDENTITY: dict[str, list[tuple[str, str]]] = {
     "ios/Runner/Runner.entitlements": [
         ("\t<key>com.apple.developer.private-cloud-compute</key>\n\t<true/>\n", ""),
         ("\t<key>com.apple.developer.carplay-voice-based-conversation</key>\n\t<true/>\n", ""),
+        ("\t<key>aps-environment</key>\n\t<string>$(APS_ENVIRONMENT)</string>\n", ""),
+    ],
+    # Push needs a relay to Apple; Oxeegen runs none yet (Settings leaves
+    # push out, lib/brand/oxee_brand.dart). So the app claims no push
+    # (aps-environment, above) and the notification extension no App Group:
+    # signing needs no extra capability on the Apple account.
+    "ios/NotificationService/NotificationService.entitlements": [
+        ("\t<key>com.apple.security.application-groups</key>\n\t<array>\n\t\t<string>$(APP_GROUP_ID)</string>\n\t</array>\n", ""),
     ],
     "ios/Flutter/PccSdk.xcconfig": [
         ("CONDUIT_PCC_ENTITLEMENT_FLAG = CONDUIT_PCC_ENTITLEMENT\n", "CONDUIT_PCC_ENTITLEMENT_FLAG =\n"),
+    ],
+    # Browser sign-in's redirect scheme stays upstream's "conduit" (it is what
+    # an Open WebUI admin registers); the test checks it matches whatever its
+    # case, so its "Conduit" is data, not the product name.
+    "android/app/src/test/kotlin/app/cogwheel/conduit/BrowserAuthFlowStateTest.kt": [
+        ('BrowserAuthRedirect.of("' + NAME + '", "OAuth", "/callback")',
+         'BrowserAuthRedirect.of("' + UPSTREAM_NAME + '", "OAuth", "/callback")'),
     ],
 }
 

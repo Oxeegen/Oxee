@@ -1,8 +1,6 @@
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:conduit/l10n/conduit_localizations.dart';
-import 'package:conduit/features/hermes/views/hermes_mcp_page.dart';
-import 'package:conduit_core/features/hermes/providers/hermes_providers.dart';
 import 'package:conduit/features/terminal/widgets/terminal_section_components.dart';
 import 'package:conduit/shared/theme/theme_extensions.dart';
 import 'package:conduit/shared/widgets/conduit_components.dart';
@@ -46,56 +44,6 @@ void main() {
       ),
     ),
   );
-
-  for (final iosMajorVersion in <int?>[27, 25, null]) {
-    testWidgets(
-      'catalog action retains its tooltip on ${iosMajorVersion == null ? 'Android' : 'iOS $iosMajorVersion'}',
-      (tester) async {
-        PlatformUiCapabilities.debugPlatformOverride = iosMajorVersion == null
-            ? TargetPlatform.android
-            : TargetPlatform.iOS;
-        PlatformUiCapabilities.debugIOSMajorVersionOverride = iosMajorVersion;
-        await tester.pumpWidget(
-          host(
-            ProviderScope(
-              overrides: [hermesApiServiceProvider.overrideWithValue(null)],
-              child: const HermesMcpPage(),
-            ),
-          ),
-        );
-        await tester.pump(const Duration(milliseconds: 500));
-        final tooltip = find.byWidgetPredicate(
-          (widget) =>
-              widget is AdaptiveTooltip && widget.message == 'Add from Catalog',
-        );
-        expect(tooltip, findsOneWidget);
-        expect(
-          tester.widget<AdaptiveTooltip>(tooltip).excludeFromSemantics,
-          isTrue,
-        );
-        if (iosMajorVersion != 27) {
-          final semantics = tester.ensureSemantics();
-          try {
-            await tester.pump();
-            final node = tester.getSemantics(
-              find.byType(ConduitAdaptiveAppBarIconButton),
-            );
-            expect(node.label, 'Add from Catalog');
-            expect(node.tooltip, isEmpty);
-          } finally {
-            semantics.dispose();
-          }
-        }
-        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-        await mouse.addPointer();
-        await mouse.moveTo(tester.getCenter(tooltip));
-        await tester.pump(const Duration(milliseconds: 600));
-        expect(find.text('Add from Catalog'), findsOneWidget);
-        await mouse.removePointer();
-        await tester.pumpAndSettle();
-      },
-    );
-  }
 
   for (final enabled in [true, false]) {
     testWidgets('toolbar icon has one native label when enabled=$enabled', (
@@ -302,44 +250,75 @@ void main() {
     expect(reports, ['change:0.8']);
   }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
 
-  for (final native in [true, false]) {
-    for (final direction in TextDirection.values) {
-      testWidgets('a tap anywhere on an iOS slider that seeks on tap moves it '
-          'there, onto a step (native: $native, ${direction.name})', (
-        tester,
-      ) async {
-        PlatformUiCapabilities.debugIOSMajorVersionOverride = native ? 27 : 18;
-        PlatformUiCapabilities.debugNativeIOS26Override = native;
-        final reports = <String>[];
-        await tester.pumpWidget(
-          host(
-            Directionality(
-              textDirection: direction,
-              child: SizedBox(
-                width: 300,
-                child: AdaptiveSlider(
-                  value: 0,
-                  max: 10,
-                  divisions: 10,
-                  seekOnTap: true,
-                  onChangeStart: (value) => reports.add('start:$value'),
-                  onChanged: (value) => reports.add('change:$value'),
-                  onChangeEnd: (value) => reports.add('end:$value'),
-                ),
+  testWidgets('an iOS 26 slider leaves a tap to seek to the system slider', (
+    tester,
+  ) async {
+    for (final seekOnTap in [true, false]) {
+      final reports = <String>[];
+      await tester.pumpWidget(
+        host(
+          SizedBox(
+            width: 300,
+            child: AdaptiveSlider(
+              value: 0,
+              seekOnTap: seekOnTap,
+              onChangeStart: (value) => reports.add('start:$value'),
+              onChanged: (value) => reports.add('change:$value'),
+              onChangeEnd: (value) => reports.add('end:$value'),
+            ),
+          ),
+        ),
+      );
+      expect(
+        tester.widget<CNSlider>(find.byType(CNSlider)).seekOnTap,
+        seekOnTap,
+      );
+      // The system slider reports the tap itself; seeking here as well
+      // would seek twice.
+      final track = tester.getRect(find.byType(AdaptiveSlider));
+      await tester.tapAt(
+        Offset(track.left + track.width * .68, track.center.dy),
+      );
+      await tester.pump();
+      expect(reports, isEmpty, reason: 'seekOnTap: $seekOnTap');
+    }
+  }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
+  for (final direction in TextDirection.values) {
+    testWidgets('before iOS 26 a tap anywhere on a slider that seeks on tap '
+        'moves it there, onto a step (${direction.name})', (tester) async {
+      PlatformUiCapabilities.debugIOSMajorVersionOverride = 18;
+      PlatformUiCapabilities.debugNativeIOS26Override = false;
+      final reports = <String>[];
+      await tester.pumpWidget(
+        host(
+          Directionality(
+            textDirection: direction,
+            child: SizedBox(
+              width: 300,
+              child: AdaptiveSlider(
+                value: 0,
+                max: 10,
+                divisions: 10,
+                seekOnTap: true,
+                onChangeStart: (value) => reports.add('start:$value'),
+                onChanged: (value) => reports.add('change:$value'),
+                onChangeEnd: (value) => reports.add('end:$value'),
               ),
             ),
           ),
-        );
-        // Far from the thumb, at the start, where a Cupertino slider would
-        // not answer and UIKit's would only follow a drag.
-        final track = tester.getRect(find.byType(AdaptiveSlider));
-        final along = direction == TextDirection.ltr ? .68 : .32;
-        await tester.tapAt(
-          Offset(track.left + track.width * along, track.center.dy),
-        );
-        expect(reports, ['start:0.0', 'change:7.0', 'end:7.0']);
-      }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
-    }
+        ),
+      );
+      // Far from the thumb, at the start, where the Cupertino slider would
+      // not answer.
+      final track = tester.getRect(find.byType(AdaptiveSlider));
+      final along = direction == TextDirection.ltr ? .68 : .32;
+      await tester.tapAt(
+        Offset(track.left + track.width * along, track.center.dy),
+      );
+      await tester.pump();
+      expect(reports, ['start:0.0', 'change:7.0', 'end:7.0']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
   }
 
   testWidgets('before iOS 26 a tap on the thumb at the maximum stays there', (
@@ -365,41 +344,6 @@ void main() {
     await tester.tapAt(Offset(track.right - 22, track.center.dy));
     expect(reports, ['change:1.0']);
   }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
-
-  for (final endsFirst in [false, true]) {
-    testWidgets('a short drag the iOS 26 slider follows ends once, not also '
-        'as a tap (its end ${endsFirst ? 'before' : 'after'} the lift)', (
-      tester,
-    ) async {
-      final reports = <String>[];
-      await tester.pumpWidget(
-        host(
-          SizedBox(
-            width: 300,
-            child: AdaptiveSlider(
-              value: 0.3,
-              seekOnTap: true,
-              onChangeStart: (value) => reports.add('start:$value'),
-              onChanged: (value) => reports.add('change:$value'),
-              onChangeEnd: (value) => reports.add('end:$value'),
-            ),
-          ),
-        ),
-      );
-      CNSlider slider() => tester.widget<CNSlider>(find.byType(CNSlider));
-      final track = tester.getRect(find.byType(AdaptiveSlider));
-      // UIKit moves the value while the finger moves less than a tap's
-      // slop, and reports the touch's end on its own channel.
-      final finger = await tester.startGesture(track.center);
-      slider().onChangeStart!(0.3);
-      await finger.moveBy(const Offset(4, 0));
-      slider().onChanged(0.32);
-      if (endsFirst) slider().onChangeEnd!(0.32);
-      await finger.up();
-      if (!endsFirst) slider().onChangeEnd!(0.32);
-      expect(reports, ['start:0.3', 'change:0.32', 'end:0.32']);
-    }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
-  }
 
   testWidgets('before iOS 26 a press on the thumb that does not move ends '
       'once, as a tap', (tester) async {

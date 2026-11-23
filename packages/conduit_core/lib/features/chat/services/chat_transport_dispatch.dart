@@ -52,6 +52,11 @@ void writeTransportMetadata({
     meta['transport'] = session.transport.name;
     if (session.taskId != null && session.taskId!.isNotEmpty) {
       meta['taskId'] = session.taskId;
+      // The task's chat goes with it: only an administrator may stop a task
+      // by its id, and a Stop can come before the task's socket binding.
+      if (session.conversationId != null) {
+        meta['taskConversationId'] = session.conversationId;
+      }
     }
     if (session.abort != null) {
       meta['hasActiveAbortHandle'] = true;
@@ -190,21 +195,30 @@ void configureRemoteTaskMonitoring({
 /// Inspects the message's transport metadata to choose the right
 /// cancellation path:
 /// - **httpStream / abort handle** → `cancelStreamingMessage()`
-/// - **taskSocket / task ID** → `stopTask()`
+/// - **taskSocket / task ID** → `stopTasksByChat()` for the task's chat;
+///   `stopTask()` only for a task with no chat, which only an administrator
+///   may stop, and which is otherwise refused.
 /// - Mixed (abort + task) → both paths are invoked.
 ///
 /// Both are started before this returns. The result completes once the server
 /// has answered the task stop, and says whether it accepted it; a message with
 /// no task has nothing to refuse. Callers that only fire the stop may ignore it.
-Future<bool> stopActiveTransport(ChatMessage message, ApiService? api) async {
+Future<bool> stopActiveTransport(
+  ChatMessage message,
+  ApiService? api, {
+  Future<Object?>? beforeTaskStop,
+}) async {
   final meta = message.metadata;
   final transport = meta?['transport']?.toString();
   final hasAbortHandle = meta?['hasActiveAbortHandle'] == true;
 
-  // Abort HTTP stream / cancel token
-  if (transport == 'httpStream' || hasAbortHandle) {
+  // Abort HTTP stream / cancel token, and a request still on its way before
+  // any transport attached: with no socket, Open WebUI answers it only once
+  // the whole reply is written.
+  if (transport == null || transport == 'httpStream' || hasAbortHandle) {
     api?.cancelStreamingMessage(message.id);
   }
+  if (beforeTaskStop != null) await beforeTaskStop;
 
   // Stop background task
   final taskId = meta?['taskId']?.toString();
@@ -308,6 +322,11 @@ Future<bool> dispatchChatTransport({
   /// The assistant message ids of the turn's other answers. The stream sees the
   /// transcript as if only its own answer ended it.
   List<String> slotSiblingIds = const <String>[],
+
+  /// Whether the answer's model is one the user's devices offer through
+  /// Tether, as the request recorded when it was sent. A failure the stream
+  /// reports is read with it.
+  bool viaTether = false,
 }) async {
   bool ownsConversation() => ownsActiveConversation?.call() ?? true;
   bool ownsPending() =>
@@ -416,6 +435,7 @@ Future<bool> dispatchChatTransport({
     workerManager: workerManager,
     filterIds: filterIds,
     allowForeignMessageBinding: slot == null,
+    viaTether: viaTether,
     appendToLastMessage: (c) {
       if (!ownsConversation()) return;
       if (slot != null) {
