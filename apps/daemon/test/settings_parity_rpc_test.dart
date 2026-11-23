@@ -554,7 +554,7 @@ void main() {
         AboutInfo.fromJson,
       );
       expect(about.server, isFalse);
-      expect(about.repositoryUrl, 'https://github.com/cogwheel0/conduit');
+      expect(about.repositoryUrl, 'https://github.com/Oxeegen/Oxee');
       expect(
         about.githubSponsorsUrl,
         startsWith('https://github.com/sponsors'),

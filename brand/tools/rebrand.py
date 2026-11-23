@@ -436,10 +436,14 @@ IDENTITY: dict[str, list[tuple[str, str]]] = {
     "packages/conduit_ddgs/lib/src/engines/wikipedia.dart": [
         ("(https://github.com/cogwheel0/conduit) conduit_ddgs", "(" + BRAND["repoUrl"] + ") conduit_ddgs"),
     ],
-    # About's source-repository row.
+    # About's source-repository row, and the desktop daemon's test of it.
     "packages/conduit_core/lib/features/support/support_links.dart": [
         ("const conduitRepositoryUrl = 'https://github.com/cogwheel0/conduit';",
          "const conduitRepositoryUrl = '" + BRAND["repoUrl"] + "';"),
+    ],
+    "apps/daemon/test/settings_parity_rpc_test.dart": [
+        ("expect(about.repositoryUrl, 'https://github.com/cogwheel0/conduit');",
+         "expect(about.repositoryUrl, '" + BRAND["repoUrl"] + "');"),
     ],
     "lib/features/release_notes/data/release_links.dart": [
         ("'https://play.google.com/store/apps/details?id=" + UPSTREAM_BUNDLE_ID + "'", "'" + BRAND["playStoreUrl"] + "'"),
